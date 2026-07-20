@@ -3,6 +3,9 @@ use std::{env, fs, io::ErrorKind, path::PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+pub static STATE_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Serialize, Deserialize)]
 pub enum Phase {
     Evacuating,
@@ -94,10 +97,10 @@ mod tests {
 
     #[test]
     fn state_roundtrip() {
-        std::env::set_var(
-            "HERDR_NVIM_STATE_DIR",
-            std::env::temp_dir().join("hn-state-test"),
-        );
+        let _lock = STATE_DIR_LOCK.lock().unwrap();
+        let old = std::env::var_os("HERDR_NVIM_STATE_DIR");
+        let state_dir = std::env::temp_dir().join("hn-state-test");
+        std::env::set_var("HERDR_NVIM_STATE_DIR", &state_dir);
         let s = StateFile {
             phase: Phase::Open,
             workspace: "wT".into(),
@@ -119,5 +122,10 @@ mod tests {
         assert_eq!(loaded.plan_steps.len(), 1);
         remove("wT").unwrap();
         assert!(load("wT").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(state_dir);
+        match old {
+            Some(value) => std::env::set_var("HERDR_NVIM_STATE_DIR", value),
+            None => std::env::remove_var("HERDR_NVIM_STATE_DIR"),
+        }
     }
 }
