@@ -93,39 +93,71 @@ pub fn remove(workspace: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs, path::PathBuf, sync::MutexGuard};
+
     use super::*;
+
+    struct StateDirGuard {
+        _lock: MutexGuard<'static, ()>,
+        old: Option<std::ffi::OsString>,
+        dir: PathBuf,
+    }
+
+    impl StateDirGuard {
+        fn new(dir: PathBuf) -> Self {
+            let lock = STATE_DIR_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let old = env::var_os("HERDR_NVIM_STATE_DIR");
+            let _ = fs::remove_dir_all(&dir);
+            env::set_var("HERDR_NVIM_STATE_DIR", &dir);
+            Self {
+                _lock: lock,
+                old,
+                dir,
+            }
+        }
+    }
+
+    impl Drop for StateDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+            match &self.old {
+                Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
+                None => env::remove_var("HERDR_NVIM_STATE_DIR"),
+            }
+        }
+    }
+
+    fn with_state_dir(test: impl FnOnce()) {
+        let _guard = StateDirGuard::new(env::temp_dir().join("hn-state-test"));
+        test();
+    }
 
     #[test]
     fn state_roundtrip() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap();
-        let old = std::env::var_os("HERDR_NVIM_STATE_DIR");
-        let state_dir = std::env::temp_dir().join("hn-state-test");
-        std::env::set_var("HERDR_NVIM_STATE_DIR", &state_dir);
-        let s = StateFile {
-            phase: Phase::Open,
-            workspace: "wT".into(),
-            tab: "wT:t1".into(),
-            anchor: "wT:p1".into(),
-            parking_tab: None,
-            parked: vec![],
-            plan_steps: vec![PlanStep {
-                pane: "wT:p2".into(),
-                dir: "right".into(),
-                target: "wT:p1".into(),
-                ratio: 0.4,
-            }],
-            sidebar_pane: Some("wT:p9".into()),
-        };
-        save(&s).unwrap();
-        let loaded = load("wT").unwrap().unwrap();
-        assert_eq!(loaded.tab, "wT:t1");
-        assert_eq!(loaded.plan_steps.len(), 1);
-        remove("wT").unwrap();
-        assert!(load("wT").unwrap().is_none());
-        let _ = std::fs::remove_dir_all(state_dir);
-        match old {
-            Some(value) => std::env::set_var("HERDR_NVIM_STATE_DIR", value),
-            None => std::env::remove_var("HERDR_NVIM_STATE_DIR"),
-        }
+        with_state_dir(|| {
+            let s = StateFile {
+                phase: Phase::Open,
+                workspace: "wT".into(),
+                tab: "wT:t1".into(),
+                anchor: "wT:p1".into(),
+                parking_tab: None,
+                parked: vec![],
+                plan_steps: vec![PlanStep {
+                    pane: "wT:p2".into(),
+                    dir: "right".into(),
+                    target: "wT:p1".into(),
+                    ratio: 0.4,
+                }],
+                sidebar_pane: Some("wT:p9".into()),
+            };
+            save(&s).unwrap();
+            let loaded = load("wT").unwrap().unwrap();
+            assert_eq!(loaded.tab, "wT:t1");
+            assert_eq!(loaded.plan_steps.len(), 1);
+            remove("wT").unwrap();
+            assert!(load("wT").unwrap().is_none());
+        });
     }
 }

@@ -95,6 +95,9 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     };
 
     let sidebar = h.split_pane(&plan.anchor, Dir::Right, 0.5, true)?;
+    state_file.sidebar_pane = Some(sidebar.clone());
+    state::save(&state_file)?;
+
     h.run_in_pane(&sidebar, sidebar_cmd)?;
     for step in &plan.steps {
         h.move_pane(
@@ -123,6 +126,12 @@ pub fn recover(h: &mut dyn Herdr, workspace: &str) -> Result<()> {
     };
     if !matches!(state_file.phase, Phase::Evacuating) {
         return Ok(());
+    }
+
+    if let Some(sidebar) = state_file.sidebar_pane.as_deref() {
+        if h.pane_alive(sidebar)? {
+            h.close_pane(sidebar)?;
+        }
     }
 
     for step in &state_file.plan_steps {
@@ -186,7 +195,11 @@ mod tests {
     use std::{
         collections::VecDeque,
         env, fs,
-        sync::atomic::{AtomicUsize, Ordering},
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            MutexGuard,
+        },
     };
 
     use super::*;
@@ -286,22 +299,46 @@ mod tests {
         }
     }
 
+    struct StateDirGuard {
+        _lock: MutexGuard<'static, ()>,
+        old: Option<std::ffi::OsString>,
+        dir: PathBuf,
+    }
+
+    impl StateDirGuard {
+        fn new(dir: PathBuf) -> Self {
+            let lock = state::STATE_DIR_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let old = env::var_os("HERDR_NVIM_STATE_DIR");
+            let _ = fs::remove_dir_all(&dir);
+            env::set_var("HERDR_NVIM_STATE_DIR", &dir);
+            Self {
+                _lock: lock,
+                old,
+                dir,
+            }
+        }
+    }
+
+    impl Drop for StateDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+            match &self.old {
+                Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
+                None => env::remove_var("HERDR_NVIM_STATE_DIR"),
+            }
+        }
+    }
+
     fn with_state_dir(test: impl FnOnce()) {
-        let _lock = state::STATE_DIR_LOCK.lock().unwrap();
         let dir = env::temp_dir().join(format!(
             "herdr-nvim-maneuver-{}-{}",
             std::process::id(),
             TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let old = env::var_os("HERDR_NVIM_STATE_DIR");
-        let _ = fs::remove_dir_all(&dir);
-        env::set_var("HERDR_NVIM_STATE_DIR", &dir);
+        let _guard = StateDirGuard::new(dir);
         test();
-        let _ = fs::remove_dir_all(dir);
-        match old {
-            Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
-            None => env::remove_var("HERDR_NVIM_STATE_DIR"),
-        }
     }
 
     #[test]
@@ -378,6 +415,57 @@ mod tests {
             assert_eq!(
                 h.ops,
                 vec![
+                    "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false",
+                    "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
+                ]
+            );
+            assert!(state::load("wT").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn recover_closes_orphaned_sidebar_before_replaying_moves() {
+        with_state_dir(|| {
+            let mut saved_state = evacuating_state();
+            saved_state.sidebar_pane = Some("wT:p99".into());
+            state::save(&saved_state).unwrap();
+            let mut h = MockHerdr {
+                pane_alive_results: VecDeque::from([Ok(true)]),
+                ..Default::default()
+            };
+
+            recover(&mut h, "wT").unwrap();
+
+            assert_eq!(
+                h.ops,
+                vec![
+                    "alive wT:p99",
+                    "close wT:p99",
+                    "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false",
+                    "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
+                ]
+            );
+            assert!(state::load("wT").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn recover_skips_closing_dead_orphaned_sidebar() {
+        with_state_dir(|| {
+            let mut saved_state = evacuating_state();
+            saved_state.sidebar_pane = Some("wT:p99".into());
+            state::save(&saved_state).unwrap();
+            let mut h = MockHerdr {
+                pane_alive_results: VecDeque::from([Ok(false)]),
+                ..Default::default()
+            };
+
+            recover(&mut h, "wT").unwrap();
+
+            assert_eq!(
+                h.ops,
+                vec![
+                    "alive wT:p99",
                     "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false",
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                 ]
