@@ -25,7 +25,11 @@ function M.decorate(id)
   local label = c.text
   if #label > 30 then label = label:sub(1, 30) .. "…" end
   decorations[id] = vim.api.nvim_buf_set_extmark(c.bufnr, comments.ns, c.start_line - 1, 0, {
-    end_row = c.end_line - 1,
+    -- end_row/end_col are exclusive. Use the start of the line after the
+    -- selected range so one-line comments highlight that line, and multi-line
+    -- comments include the final selected line.
+    end_row = c.end_line,
+    end_col = 0,
     hl_group = "HerdrNvimComment",
     hl_eol = true,
     virt_text = { { "● " .. label, "Comment" } },
