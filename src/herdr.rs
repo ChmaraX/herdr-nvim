@@ -66,6 +66,24 @@ impl CliHerdr {
             .with_context(|| format!("failed to parse JSON from {command}"))
     }
 
+    /// Runs a `herdr` subcommand that is not expected to emit JSON (e.g.
+    /// `pane run`, which prints nothing on success). Only the exit status is
+    /// inspected; stdout is ignored entirely so an empty response is not
+    /// mistaken for a parse error.
+    fn run_raw(args: &[String]) -> Result<()> {
+        let command = format!("herdr {}", args.join(" "));
+        let output = Command::new("herdr")
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to run {command}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("{command} failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+
     fn panes() -> Result<Vec<(String, String)>> {
         let value = Self::run(&args(&["pane", "list"]))?;
         let panes = value
@@ -158,8 +176,9 @@ impl Herdr for CliHerdr {
     }
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
-        Self::run(&args(&["pane", "run", pane, cmd]))?;
-        Ok(())
+        // `herdr pane run` returns empty stdout on success, so it must not go
+        // through the JSON-parsing `run` helper.
+        Self::run_raw(&args(&["pane", "run", pane, cmd]))
     }
 
     fn close_pane(&mut self, pane: &str) -> Result<()> {
