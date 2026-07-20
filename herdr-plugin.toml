@@ -9,7 +9,7 @@ description = "Full-height nvim sidebar with agent annotations: toggle with one 
 id = "toggle"
 title = "nvim sidebar: toggle"
 contexts = ["pane", "workspace"]
-command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-nvim\" toggle"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 
 [[build]]
 command = ["bash", "herdr/install.sh"]
