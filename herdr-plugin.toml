@@ -1,0 +1,15 @@
+id = "adamchmara.herdr-nvim"
+name = "herdr-nvim"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+platforms = ["macos", "linux"]
+description = "Full-height nvim sidebar with agent annotations: toggle with one key, comment code, send to any agent."
+
+[[actions]]
+id = "toggle"
+title = "nvim sidebar: toggle"
+contexts = ["pane", "workspace"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-nvim\" toggle"]
+
+[[build]]
+command = ["bash", "herdr/install.sh"]
