@@ -84,7 +84,20 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
          pcall(function() vim.opt.rtp:append({root:?}); require('herdr-nvim').setup() end) end}})",
         root = plugin_root.display().to_string()
     );
-    let child = Command::new("nvim")
+    // The daemon must outlive the sidebar pane that spawns it (that is the whole
+    // point of a persistent per-workspace daemon). It is spawned from inside the
+    // sidebar pane's process, and when herdr closes that pane it tears down the
+    // pane's SESSION -- every process sharing the pane's controlling terminal is
+    // killed, regardless of process group or where it sits in the ppid tree
+    // (verified live: a bare child, a child in its own process group, and even a
+    // child reparented to init all die; only a process in its OWN session
+    // survives). So put the daemon in a fresh session via setsid(2) before exec,
+    // detaching it from the pane's controlling terminal so the pane-close
+    // teardown can no longer reach it.
+    use std::os::unix::process::CommandExt;
+
+    let mut command = Command::new("nvim");
+    command
         .arg("--headless")
         .arg("--listen")
         .arg(socket)
@@ -94,12 +107,29 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
         .arg(&vim_enter)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the pre_exec closure runs in the forked child after fork() and
+    // before exec(). It only calls setsid(2), which is async-signal-safe and
+    // touches no memory shared with the parent, so it is safe in this context.
+    // setsid returns -1 if the caller is already a process-group leader; a fresh
+    // fork never is, so it succeeds, but we ignore the result either way because
+    // a failure here must not abort the (otherwise valid) exec.
+    unsafe {
+        command.pre_exec(|| {
+            extern "C" {
+                fn setsid() -> i32;
+            }
+            setsid();
+            Ok(())
+        });
+    }
+    let child = command
         .spawn()
         .context("failed to spawn nvim daemon (is nvim installed?)")?;
 
-    // Detach: read the pid (useful for diagnostics) and drop the handle without
-    // waiting, so the daemon outlives the process that spawned it.
+    // Read the pid (useful for diagnostics) and drop the handle without waiting:
+    // the daemon is now a session leader in its own session and keeps running,
+    // tracked from here on only by its socket.
     let _pid = child.id();
     drop(child);
     Ok(())
