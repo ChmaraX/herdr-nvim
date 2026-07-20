@@ -15,7 +15,10 @@ local function fake_exec(out, code)
 end
 
 T.test("agents: parses list and normalizes fields", function()
+  local previous = vim.env.HERDR_WORKSPACE_ID
+  vim.env.HERDR_WORKSPACE_ID = nil
   local list, err = agents.list(fake_exec(fixture))
+  vim.env.HERDR_WORKSPACE_ID = previous
   T.eq(err, nil)
   T.eq(#list, 2)
   local by_pane = {}
@@ -35,11 +38,12 @@ T.test("agents: no current workspace sorts by title", function()
   T.eq(list[2].title, "π - proj-a")
 end)
 
-T.test("agents: current workspace sorts first", function()
+T.test("agents: current workspace excludes other workspaces", function()
   vim.env.HERDR_WORKSPACE_ID = "wB"
   local list = agents.list(fake_exec(fixture))
-  T.eq(list[1].pane_id, "wB:p2")
   vim.env.HERDR_WORKSPACE_ID = nil
+  T.eq(#list, 1)
+  T.eq(list[1].pane_id, "wB:p2")
 end)
 
 T.test("agents: CLI failure returns err", function()

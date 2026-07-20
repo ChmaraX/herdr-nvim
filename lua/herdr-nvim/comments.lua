@@ -7,7 +7,7 @@ function M.add(bufnr, start_line, end_line, text)
   local id = next_id
   next_id = next_id + 1
   local extmark = vim.api.nvim_buf_set_extmark(bufnr, M.ns, start_line - 1, 0, {
-    end_row = end_line - 1,
+    end_row = end_line,
     end_col = 0,
     right_gravity = false,
     end_right_gravity = true,
@@ -22,7 +22,7 @@ local function resolve(id)
   local pos = vim.api.nvim_buf_get_extmark_by_id(e.bufnr, M.ns, e.extmark, { details = true })
   if not pos or #pos == 0 then return nil end
   local start_line = pos[1] + 1
-  local end_line = (pos[3] and pos[3].end_row or pos[1]) + 1
+  local end_line = pos[3] and pos[3].end_row or (pos[1] + 1)
   if end_line < start_line then end_line = start_line end
   return {
     id = id,

@@ -69,11 +69,16 @@ function M.list_comments()
 end
 
 function M._git_context()
-  local root = vim.system({ "git", "rev-parse", "--show-toplevel" }, { text = true }):wait()
-  if root.code ~= 0 then return nil end
-  local branch = vim.system({ "git", "branch", "--show-current" }, { text = true }):wait()
+  local ok_root, root = pcall(function()
+    return vim.system({ "git", "rev-parse", "--show-toplevel" }, { text = true }):wait()
+  end)
+  if not ok_root or root.code ~= 0 then return nil end
+  local ok_branch, branch = pcall(function()
+    return vim.system({ "git", "branch", "--show-current" }, { text = true }):wait()
+  end)
+  if not ok_branch then return nil end
   return string.format("repo: %s, branch: %s",
-    vim.fn.fnamemodify(vim.trim(root.stdout), ":t"), vim.trim(branch.stdout or ""))
+    vim.fn.fnamemodify(vim.trim(root.stdout or ""), ":t"), vim.trim(branch.stdout or ""))
 end
 
 function M.send_all(opts)

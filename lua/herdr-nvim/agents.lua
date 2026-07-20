@@ -15,22 +15,20 @@ function M.list(exec)
   if not ok or type(decoded) ~= "table" then return nil, "herdr agent list: unparseable JSON" end
   local raw = (decoded.result or {}).agents or {}
   local out = {}
-  for _, a in ipairs(raw) do
-    table.insert(out, {
-      pane_id = a.pane_id,
-      workspace_id = a.workspace_id,
-      kind = a.agent or "unknown",
-      status = a.agent_status or "unknown",
-      cwd = a.cwd or "",
-      title = a.terminal_title or a.agent or "agent",
-    })
-  end
   local here = vim.env.HERDR_WORKSPACE_ID
-  table.sort(out, function(x, y)
-    local xh, yh = x.workspace_id == here, y.workspace_id == here
-    if xh ~= yh then return xh end
-    return x.title < y.title
-  end)
+  for _, a in ipairs(raw) do
+    if not here or a.workspace_id == here then
+      table.insert(out, {
+        pane_id = a.pane_id,
+        workspace_id = a.workspace_id,
+        kind = a.agent or "unknown",
+        status = a.agent_status or "unknown",
+        cwd = a.cwd or "",
+        title = a.terminal_title or a.agent or "agent",
+      })
+    end
+  end
+  table.sort(out, function(x, y) return x.title < y.title end)
   return out
 end
 

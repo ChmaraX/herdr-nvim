@@ -51,6 +51,15 @@ T.test("init: editing a comment refreshes its decoration", function()
   T.eq(labels, { "● new text" })
 end)
 
+T.test("init: git context returns nil when git cannot spawn", function()
+  local original = vim.system
+  vim.system = function() error("ENOENT: git") end
+  local ok, context = pcall(hn._git_context)
+  vim.system = original
+  T.ok(ok)
+  T.eq(context, nil)
+end)
+
 T.test("init: send_all formats, dispatches, clears", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
