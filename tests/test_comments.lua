@@ -1,0 +1,59 @@
+local comments = require("herdr-nvim.comments")
+
+local function scratch(lines, name)
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+  if name then vim.api.nvim_buf_set_name(b, name) end
+  return b
+end
+
+T.test("comments: add + get returns live data", function()
+  comments.clear()
+  local b = scratch({ "l1", "l2", "l3", "l4" }, "/tmp/hn-a.lua")
+  local id = comments.add(b, 2, 3, "fix this")
+  local c = comments.get(id)
+  T.eq({ c.start_line, c.end_line, c.text }, { 2, 3, "fix this" })
+  T.ok(c.file:match("hn%-a%.lua$"))
+end)
+
+T.test("comments: range tracks edits above it", function()
+  comments.clear()
+  local b = scratch({ "l1", "l2", "l3", "l4" })
+  local id = comments.add(b, 3, 4, "x")
+  vim.api.nvim_buf_set_lines(b, 0, 0, false, { "new0", "new1" }) -- insert 2 lines at top
+  local c = comments.get(id)
+  T.eq({ c.start_line, c.end_line }, { 5, 6 })
+end)
+
+T.test("comments: snippet returns current covered lines", function()
+  comments.clear()
+  local b = scratch({ "a", "b", "c" })
+  local id = comments.add(b, 2, 3, "x")
+  vim.api.nvim_buf_set_lines(b, 1, 2, false, { "B-EDITED" })
+  T.eq(comments.snippet(id), { "B-EDITED", "c" })
+end)
+
+T.test("comments: edit, delete, list ordering", function()
+  comments.clear()
+  local b1 = scratch({ "x" }, "/tmp/hn-b.lua")
+  local b2 = scratch({ "x", "y" }, "/tmp/hn-a2.lua")
+  local i1 = comments.add(b1, 1, 1, "one")
+  local i2 = comments.add(b2, 2, 2, "two")
+  local i3 = comments.add(b2, 1, 1, "three")
+  T.ok(comments.edit(i1, "one-edited"))
+  T.eq(comments.get(i1).text, "one-edited")
+  -- sorted by file then start_line: hn-a2:1, hn-a2:2, hn-b:1
+  local l = comments.list()
+  T.eq({ l[1].id, l[2].id, l[3].id }, { i3, i2, i1 })
+  T.ok(comments.delete(i2))
+  T.eq(#comments.list(), 2)
+  T.eq(comments.get(i2), nil)
+end)
+
+T.test("comments: list drops wiped buffers", function()
+  comments.clear()
+  local b = scratch({ "x" })
+  comments.add(b, 1, 1, "gone")
+  vim.api.nvim_buf_delete(b, { force = true })
+  T.eq(comments.list(), {})
+end)
