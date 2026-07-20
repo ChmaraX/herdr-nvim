@@ -38,11 +38,11 @@ pub trait Herdr {
         dir: Dir,
         target: Option<&str>,
         ratio: Option<f64>,
+        focus: bool,
     ) -> Result<()>;
-    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64) -> Result<String>;
+    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64, focus: bool) -> Result<String>;
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
-    fn focus_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
     fn list_workspaces(&mut self) -> Result<Vec<String>>;
 }
@@ -121,6 +121,7 @@ impl Herdr for CliHerdr {
         dir: Dir,
         target: Option<&str>,
         ratio: Option<f64>,
+        focus: bool,
     ) -> Result<()> {
         let mut command = args(&[
             "pane",
@@ -137,12 +138,12 @@ impl Herdr for CliHerdr {
         if let Some(ratio) = ratio {
             command.extend(args(&["--ratio", &ratio.to_string()]));
         }
-        command.push("--no-focus".to_owned());
+        command.push(if focus { "--focus" } else { "--no-focus" }.to_owned());
         Self::run(&command)?;
         Ok(())
     }
 
-    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64) -> Result<String> {
+    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64, focus: bool) -> Result<String> {
         let value = Self::run(&args(&[
             "pane",
             "split",
@@ -151,7 +152,7 @@ impl Herdr for CliHerdr {
             dir.as_cli_arg(),
             "--ratio",
             &ratio.to_string(),
-            "--no-focus",
+            if focus { "--focus" } else { "--no-focus" },
         ]))?;
         Ok(string_at(&value, "/result/pane/pane_id")?.to_owned())
     }
@@ -163,11 +164,6 @@ impl Herdr for CliHerdr {
 
     fn close_pane(&mut self, pane: &str) -> Result<()> {
         Self::run(&args(&["pane", "close", pane]))?;
-        Ok(())
-    }
-
-    fn focus_pane(&mut self, pane: &str) -> Result<()> {
-        Self::run(&args(&["plugin", "pane", "focus", pane]))?;
         Ok(())
     }
 
@@ -293,18 +289,20 @@ impl Herdr for MockHerdr {
         dir: Dir,
         target: Option<&str>,
         ratio: Option<f64>,
+        focus: bool,
     ) -> Result<()> {
         self.ops.push(format!(
-            "move {pane} -> tab:{tab} dir:{dir:?} target:{} ratio:{}",
+            "move {pane} -> tab:{tab} dir:{dir:?} target:{} ratio:{} focus:{focus}",
             target.unwrap_or("-"),
             ratio.map_or_else(|| "-".to_owned(), |ratio| ratio.to_string())
         ));
         Ok(())
     }
 
-    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64) -> Result<String> {
-        self.ops
-            .push(format!("split {pane} dir:{dir:?} ratio:{ratio}"));
+    fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64, focus: bool) -> Result<String> {
+        self.ops.push(format!(
+            "split {pane} dir:{dir:?} ratio:{ratio} focus:{focus}"
+        ));
         Self::next(&mut self.split_pane_results, "split_pane")
     }
 
@@ -315,11 +313,6 @@ impl Herdr for MockHerdr {
 
     fn close_pane(&mut self, pane: &str) -> Result<()> {
         self.ops.push(format!("close {pane}"));
-        Ok(())
-    }
-
-    fn focus_pane(&mut self, pane: &str) -> Result<()> {
-        self.ops.push(format!("focus {pane}"));
         Ok(())
     }
 
@@ -373,12 +366,12 @@ mod tests {
     fn mock_records_canonical_move_operation() {
         let mut herdr = MockHerdr::default();
         herdr
-            .move_pane("p2", "t9", Dir::Right, Some("p1"), Some(0.4))
+            .move_pane("p2", "t9", Dir::Right, Some("p1"), Some(0.4), false)
             .unwrap();
 
         assert_eq!(
             herdr.ops,
-            ["move p2 -> tab:t9 dir:Right target:p1 ratio:0.4"]
+            ["move p2 -> tab:t9 dir:Right target:p1 ratio:0.4 focus:false"]
         );
     }
 }
