@@ -26,6 +26,15 @@ T.test("agents: parses list and normalizes fields", function()
   T.eq(by_pane["wB:p2"].title, "claude") -- falls back to kind
 end)
 
+T.test("agents: no current workspace sorts by title", function()
+  vim.env.HERDR_WORKSPACE_ID = nil
+  local list = agents.list(fake_exec(fixture))
+  T.eq(list[1].pane_id, "wB:p2")
+  T.eq(list[1].title, "claude")
+  T.eq(list[2].pane_id, "wA:p1")
+  T.eq(list[2].title, "π - proj-a")
+end)
+
 T.test("agents: current workspace sorts first", function()
   vim.env.HERDR_WORKSPACE_ID = "wB"
   local list = agents.list(fake_exec(fixture))
@@ -37,6 +46,12 @@ T.test("agents: CLI failure returns err", function()
   local list, err = agents.list(fake_exec("", 1))
   T.eq(list, nil)
   T.ok(err and err:match("herdr"))
+end)
+
+T.test("agents: unparseable JSON returns err", function()
+  local list, err = agents.list(fake_exec("not json"))
+  T.eq(list, nil)
+  T.ok(err and err:match("unparseable"))
 end)
 
 T.test("agents: display row", function()
