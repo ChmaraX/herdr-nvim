@@ -72,8 +72,18 @@ pub fn ensure_daemon(workspace: &str, plugin_root: &Path) -> Result<PathBuf> {
 }
 
 fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
-    let vim_enter = "lua vim.api.nvim_create_autocmd('VimEnter',{callback=function() \
-         pcall(function() require('herdr-nvim').setup() end) end})";
+    // The pre-init `set rtp+=` below is not enough on its own: LazyVim (and any
+    // lazy.nvim config with the default `performance.rtp.reset = true`) rebuilds
+    // runtimepath from scratch during startup, dropping our appended path before
+    // VimEnter fires. So the VimEnter callback re-appends the plugin root to rtp
+    // *after* the user's config has loaded, then requires the plugin. The whole
+    // thing stays wrapped in `pcall` so a missing/broken plugin never crashes
+    // the daemon.
+    let vim_enter = format!(
+        "lua vim.api.nvim_create_autocmd('VimEnter',{{callback=function() \
+         pcall(function() vim.opt.rtp:append({root:?}); require('herdr-nvim').setup() end) end}})",
+        root = plugin_root.display().to_string()
+    );
     let child = Command::new("nvim")
         .arg("--headless")
         .arg("--listen")
@@ -81,7 +91,7 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
         .arg("--cmd")
         .arg(format!("set rtp+={}", plugin_root.display()))
         .arg("--cmd")
-        .arg(vim_enter)
+        .arg(&vim_enter)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
