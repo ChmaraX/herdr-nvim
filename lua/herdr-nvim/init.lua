@@ -54,7 +54,11 @@ function M.list_comments()
         vim.api.nvim_win_set_cursor(0, { c.start_line, 0 })
       elseif action == "edit" then
         vim.ui.input({ prompt = "Comment: ", default = c.text }, function(t)
-          if t and t ~= "" then comments.edit(c.id, t) end
+          if t and t ~= "" then
+            ui.undecorate(c.id)
+            comments.edit(c.id, t)
+            ui.decorate(c.id)
+          end
         end)
       elseif action == "delete" then
         ui.undecorate(c.id)

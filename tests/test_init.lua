@@ -26,6 +26,31 @@ T.test("init: comment_line adds a decorated comment via stubbed input", function
   T.eq({ l[1].start_line, l[1].text }, { 2, "stub comment" })
 end)
 
+T.test("init: editing a comment refreshes its decoration", function()
+  comments.clear()
+  local ui = require("herdr-nvim.ui")
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "alpha" })
+  local id = comments.add(b, 1, 1, "old text")
+  ui.decorate(id)
+  local c = comments.get(id)
+
+  local original_pick, original_select, original_input = ui.pick_comment, vim.ui.select, vim.ui.input
+  ui.pick_comment = function(cb) cb(c) end
+  vim.ui.select = function(_, _, cb) cb("edit") end
+  vim.ui.input = function(_, cb) cb("new text") end
+  hn.list_comments()
+  ui.pick_comment, vim.ui.select, vim.ui.input = original_pick, original_select, original_input
+
+  T.eq(comments.get(id).text, "new text")
+  local marks = vim.api.nvim_buf_get_extmarks(b, comments.ns, 0, -1, { details = true })
+  local labels = {}
+  for _, mark in ipairs(marks) do
+    if mark[4].virt_text then table.insert(labels, mark[4].virt_text[1][1]) end
+  end
+  T.eq(labels, { "● new text" })
+end)
+
 T.test("init: send_all formats, dispatches, clears", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
