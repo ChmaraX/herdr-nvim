@@ -1,0 +1,6 @@
+T.test("harness: eq passes on deep-equal tables", function()
+  T.eq({ a = 1, b = { 2 } }, { a = 1, b = { 2 } })
+end)
+T.test("harness: ok passes on truthy", function()
+  T.ok(1 == 1)
+end)
