@@ -46,12 +46,21 @@ fn tab_id(context: &Value) -> Option<&str> {
 
 pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     if let Some(existing) = state::load(&ctx.workspace)? {
-        if let Some(sidebar) = existing.sidebar_pane.as_deref() {
-            if h.pane_alive(sidebar)? {
-                h.close_pane(sidebar)?;
-                state::remove(&ctx.workspace)?;
-                if existing.tab == ctx.tab {
-                    return Ok(());
+        // Only a fully-Open sidebar is eligible for the fast close-and-return
+        // path. A sidebar_pane recorded while phase is still Evacuating is a
+        // mid-open checkpoint (see `open()`): closing it here and removing
+        // state directly would strand any still-parked panes and destroy the
+        // recovery info recover() needs to put them back. Evacuating state
+        // always falls through to recover() below instead, which already
+        // knows how to close an orphaned sidebar AND replay parked moves.
+        if matches!(existing.phase, Phase::Open) {
+            if let Some(sidebar) = existing.sidebar_pane.as_deref() {
+                if h.pane_alive(sidebar)? {
+                    h.close_pane(sidebar)?;
+                    state::remove(&ctx.workspace)?;
+                    if existing.tab == ctx.tab {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -388,6 +397,52 @@ mod tests {
             toggle(&mut h, &ctx(), "exec sidebar").unwrap();
             assert_eq!(h.ops, vec!["alive wT:p99", "close wT:p99"]);
             assert!(state::load("wT").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn toggle_falls_through_to_recover_for_evacuating_checkpoint_with_alive_sidebar() {
+        // Regression test: a mid-open crash can leave phase=Evacuating with
+        // sidebar_pane already recorded (checkpointed right after split_pane).
+        // toggle() must NOT take the fast Open-only close-and-return path here
+        // -- it must fall through to recover(), which closes the orphaned
+        // sidebar, replays the still-parked moves, and only then lets the
+        // normal open() path create one fresh sidebar. Losing this gate would
+        // strand p2/p3 on the parking tab and destroy the recovery state.
+        with_state_dir(|| {
+            let mut checkpoint = evacuating_state();
+            checkpoint.sidebar_pane = Some("wT:p99".into());
+            state::save(&checkpoint).unwrap();
+
+            let mut h = mock_3pane();
+            h.pane_alive_results.push_back(Ok(true));
+
+            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+
+            assert_eq!(h.ops[0], "alive wT:p99");
+            assert_eq!(h.ops[1], "close wT:p99");
+            assert!(
+                h.ops[2..].iter().any(|op| op
+                    == "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false"),
+                "parked pane p2 must be replayed back by recover(), not stranded: {:?}",
+                h.ops
+            );
+            assert!(
+                h.ops[2..].iter().any(|op| op
+                    == "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false"),
+                "parked pane p3 must be replayed back by recover(), not stranded: {:?}",
+                h.ops
+            );
+            assert!(
+                h.ops.iter().any(|op| op == "create_tab wT"),
+                "toggle must fall through to a fresh open() after recovery: {:?}",
+                h.ops
+            );
+
+            let state = state::load("wT").unwrap().unwrap();
+            assert!(matches!(state.phase, Phase::Open));
+            assert!(state.parked.is_empty());
+            assert_eq!(state.sidebar_pane.as_deref(), Some("wT:p99"));
         });
     }
 
