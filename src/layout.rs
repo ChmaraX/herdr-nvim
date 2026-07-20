@@ -24,7 +24,19 @@ fn bounds(rects: &[PaneRect]) -> (u32, u32, u32, u32) {
     (x0, y0, x1, y1)
 }
 
-/// Finds a vertical cut position that separates rects into non-empty groups.
+/// A cut at `edge` is only valid if the two groups it produces do not
+/// geometrically overlap: the rightmost extent of the "before" group must not
+/// exceed the leftmost/topmost extent of the "after" group. A small tolerance
+/// (GAP) allows genuine layouts near the cut to be selected as *candidates*,
+/// but the overlap check itself is zero-tolerance -- two rects that overlap
+/// by even one cell must never be classified onto opposite sides of the same
+/// cut, or the reconstructed plan would silently drop the overlap.
+fn is_clean_cut(before_max_end: u32, after_min_start: u32) -> bool {
+    after_min_start >= before_max_end
+}
+
+/// Finds a vertical cut position that separates rects into non-empty,
+/// non-overlapping groups.
 fn vertical_cut(rects: &[PaneRect], x0: u32, x1: u32) -> Option<u32> {
     let mut edges: Vec<u32> = rects
         .iter()
@@ -34,13 +46,27 @@ fn vertical_cut(rects: &[PaneRect], x0: u32, x1: u32) -> Option<u32> {
     edges.sort_unstable();
     edges.dedup();
     edges.into_iter().find(|&cut| {
-        rects
+        let before_max_end = rects
             .iter()
-            .all(|rect| rect.x + rect.w <= cut + GAP || rect.x + GAP >= cut)
+            .filter(|rect| rect.x + rect.w <= cut)
+            .map(|rect| rect.x + rect.w)
+            .max();
+        let after_min_start = rects
+            .iter()
+            .filter(|rect| rect.x + rect.w > cut)
+            .map(|rect| rect.x)
+            .min();
+        match (before_max_end, after_min_start) {
+            (Some(before_max_end), Some(after_min_start)) => {
+                is_clean_cut(before_max_end, after_min_start)
+            }
+            _ => false,
+        }
     })
 }
 
-/// Finds a horizontal cut position that separates rects into non-empty groups.
+/// Finds a horizontal cut position that separates rects into non-empty,
+/// non-overlapping groups.
 fn horizontal_cut(rects: &[PaneRect], y0: u32, y1: u32) -> Option<u32> {
     let mut edges: Vec<u32> = rects
         .iter()
@@ -50,9 +76,22 @@ fn horizontal_cut(rects: &[PaneRect], y0: u32, y1: u32) -> Option<u32> {
     edges.sort_unstable();
     edges.dedup();
     edges.into_iter().find(|&cut| {
-        rects
+        let before_max_end = rects
             .iter()
-            .all(|rect| rect.y + rect.h <= cut + GAP || rect.y + GAP >= cut)
+            .filter(|rect| rect.y + rect.h <= cut)
+            .map(|rect| rect.y + rect.h)
+            .max();
+        let after_min_start = rects
+            .iter()
+            .filter(|rect| rect.y + rect.h > cut)
+            .map(|rect| rect.y)
+            .min();
+        match (before_max_end, after_min_start) {
+            (Some(before_max_end), Some(after_min_start)) => {
+                is_clean_cut(before_max_end, after_min_start)
+            }
+            _ => false,
+        }
     })
 }
 
@@ -67,7 +106,7 @@ fn partition(rects: &[PaneRect]) -> Result<(String, Vec<MoveStep>)> {
         let (left, right): (Vec<_>, Vec<_>) = rects
             .iter()
             .cloned()
-            .partition(|rect| rect.x + rect.w <= cut + GAP);
+            .partition(|rect| rect.x + rect.w <= cut);
         let ratio = (cut - x0) as f64 / (x1 - x0) as f64;
         return combine(left, right, Dir::Right, ratio);
     }
@@ -76,7 +115,7 @@ fn partition(rects: &[PaneRect]) -> Result<(String, Vec<MoveStep>)> {
         let (top, bottom): (Vec<_>, Vec<_>) = rects
             .iter()
             .cloned()
-            .partition(|rect| rect.y + rect.h <= cut + GAP);
+            .partition(|rect| rect.y + rect.h <= cut);
         let ratio = (cut - y0) as f64 / (y1 - y0) as f64;
         return combine(top, bottom, Dir::Down, ratio);
     }
@@ -186,6 +225,18 @@ mod tests {
     fn non_partitionable_rects_error() {
         // overlapping rects — must not panic, must Err
         assert!(plan_rebuild(&[r("a", 0, 0, 60, 50), r("b", 30, 0, 70, 50)]).is_err());
+    }
+
+    #[test]
+    fn one_cell_overlap_is_rejected() {
+        // a covers x in [0,50); b covers x in [49,100) -- overlap of 1 cell.
+        // Must be rejected, not silently split into two non-overlapping groups.
+        assert!(plan_rebuild(&[r("a", 0, 0, 50, 50), r("b", 49, 0, 51, 50)]).is_err());
+    }
+
+    #[test]
+    fn two_cell_overlap_is_rejected() {
+        assert!(plan_rebuild(&[r("a", 0, 0, 50, 50), r("b", 48, 0, 52, 50)]).is_err());
     }
 
     #[test]
