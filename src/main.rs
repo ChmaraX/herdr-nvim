@@ -6,6 +6,7 @@ mod extract;
 mod herdr;
 mod layout;
 mod maneuver;
+mod openlink;
 mod picker;
 mod state;
 

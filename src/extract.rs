@@ -81,7 +81,7 @@ fn trim_edges(s: &str) -> &str {
 ///
 /// Returns `(path, line)` on success. Applies an extension-or-slash heuristic so
 /// prose like `and/or` is ignored while `src/main.rs` is kept.
-fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
+pub(crate) fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
     let mut parts = tok.split(':');
     let path = parts.next()?;
 
@@ -111,7 +111,7 @@ fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
 }
 
 /// Resolve a path token to an absolute, lexically-normalized [`PathBuf`].
-fn resolve(path: &str, cwd: &Path) -> PathBuf {
+pub(crate) fn resolve(path: &str, cwd: &Path) -> PathBuf {
     let expanded = if let Some(rest) = path.strip_prefix('~') {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(format!("{home}{rest}"))
