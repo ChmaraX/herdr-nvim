@@ -107,7 +107,8 @@ filter — and on Enter opens the chosen file in the tab's nvim sidebar (opening
 the sidebar first if needed), at the right line, focused.
 
 **What it shows:** file paths found in the last `picker.scan_lines` (default 300)
-lines of the focused agent pane's output — anything the agent *mentioned, read,
+lines of the focused agent pane's output (or, if the focused pane isn't an agent,
+the workspace's agent pane) — anything the agent *mentioned, read,
 diffed, edited, or printed* — newest first, filtered to paths that exist on disk.
 It is a text-scrape of recent terminal output, **not** a semantic list of files
 the agent changed this turn, and it is not turn-scoped. (A real "files the agent

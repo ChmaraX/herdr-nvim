@@ -4,10 +4,10 @@
 //!
 //! * **Phase 1 (action)** — `herdr-nvim pick-file`. Resolves the target agent
 //!   pane, reads its recent output, extracts file-path [`Candidate`]s, and (if
-//!   any) writes a [`Handoff`] to a temp file and opens the picker overlay.
+//!   any) writes a [`Handoff`] to a temp file and opens the picker popup.
 //! * **Phase 2 (finisher)** — `herdr-nvim pick-file --finish <handoff>`. Spawned
-//!   detached by the overlay once the user picks. Ensures the sidebar is open in
-//!   the invoking tab, opens the chosen file in the workspace nvim daemon, focuses
+//!   detached by the picker once the user picks. Ensures the sidebar is open in
+//!   the invoking tab, opens the chosen file in that tab's nvim daemon, focuses
 //!   the sidebar, and deletes the handoff file.
 //!
 //! Only the pure selection rule [`target_agent_pane`] is unit tested; the two
