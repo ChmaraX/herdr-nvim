@@ -6,8 +6,10 @@ local agents = require("herdr-nvim.agents")
 -- callout below it (like an editor scope line, but marking your comment). Uses
 -- the diagnostic "warn" color every colorscheme defines; never touches the code
 -- text itself, so it stays fully readable.
+-- Bar, corner and callout text all share ONE highlight so the whole annotation
+-- is a single consistent shade (no brighter-bar / dimmer-text mismatch).
 vim.api.nvim_set_hl(0, "HerdrNvimCommentSign", { default = true, link = "DiagnosticWarn" })
-vim.api.nvim_set_hl(0, "HerdrNvimCommentText", { default = true, link = "DiagnosticVirtualTextWarn" })
+vim.api.nvim_set_hl(0, "HerdrNvimCommentText", { default = true, link = "HerdrNvimCommentSign" })
 
 local decorations = {} -- comment id -> { hl, callout, bufnr }
 
