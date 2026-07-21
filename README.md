@@ -19,7 +19,7 @@ Annotate code in nvim, send the annotations to any AI agent running in
 |---|---|
 | `<leader>ac` (visual) | comment the selection |
 | `<leader>ac` (normal) | comment the current line |
-| `<leader>al` | list comments — jump / edit / delete |
+| `<leader>al` | comment list (float): hover to jump, `⏎` edit, `d` delete, `q` close |
 | `<leader>as` | paste all comments into a chosen agent's input (you press Enter) |
 | `<leader>aS` | send all comments to a chosen agent (auto-submits) |
 
@@ -61,10 +61,12 @@ herdr plugin link /path/to/herdr-nvim   # local checkout (dev)
 
 Toggling **on** squeezes the tab's existing panes into the left half and opens
 nvim full-height in the right half, focused. Toggling **off** closes the sidebar
-and restores the original layout exactly. The sidebar follows you across tabs
-(closes where it was, opens where you are), and each workspace gets its own
-persistent headless nvim daemon — so buffers, cursor and in-flight comments
-survive a toggle off/on.
+and restores the original layout exactly. **Each tab gets its own independent
+nvim** — its own buffers, cursor and in-flight comments — backed by a persistent
+per-tab headless daemon that survives a toggle off/on. So you can have two tabs
+open with two different files in two separate sidebars at the same time; they
+don't share state and don't follow you between tabs. (Stale per-tab daemons from
+closed tabs are reaped opportunistically on the next toggle.)
 
 ```
 before toggle                     after toggle
@@ -100,11 +102,17 @@ description = "nvim sidebar"
 ## Open a file from agent output
 
 When an agent mentions or edits files, the file bridge lets you jump straight to
-one in the sidebar. It scans the focused (or workspace's) agent pane's recent
-output for real file paths (with optional `:line` suffixes), pops an overlay
-picker — newest paths first, type to filter — and on Enter opens the chosen file
-in the workspace nvim sidebar (opening the sidebar first if needed), at the right
-line, focused.
+one in the sidebar. It pops a floating picker — newest paths first, type to
+filter — and on Enter opens the chosen file in the tab's nvim sidebar (opening
+the sidebar first if needed), at the right line, focused.
+
+**What it shows:** file paths found in the last `picker.scan_lines` (default 300)
+lines of the focused agent pane's output (or, if the focused pane isn't an agent,
+the workspace's agent pane) — anything the agent *mentioned, read,
+diffed, edited, or printed* — newest first, filtered to paths that exist on disk.
+It is a text-scrape of recent terminal output, **not** a semantic list of files
+the agent changed this turn, and it is not turn-scoped. (A real "files the agent
+actually edited" source via agent hooks is planned — see the M5 design note.)
 
 Trigger it directly on the focused agent pane:
 
@@ -135,7 +143,7 @@ a bad config file never breaks the plugin.
 
 ```toml
 [sidebar]
-nvim_bin = "nvim"     # binary used to spawn/attach the per-workspace daemon
+nvim_bin = "nvim"     # binary used to spawn the per-tab nvim daemon
 
 [picker]
 scan_lines = 300      # trailing pane lines scanned for file paths by pick-file

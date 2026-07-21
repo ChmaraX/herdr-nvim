@@ -20,7 +20,17 @@ use crate::{
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Directory that holds one `<workspace>.sock` per running daemon.
+#[cfg(test)]
+pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Sanitize a key (workspace or tab id) for use as a filename. Tab ids contain
+/// a colon (e.g. `wG:t1`); replace it with `_` so the id is a valid, single
+/// path component (`wG_t1`).
+fn sanitize_key(key: &str) -> String {
+    key.replace(':', "_")
+}
+
+/// Directory that holds one `<tab>.sock` per running daemon, one per tab.
 ///
 /// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
 /// XDG runtime dir, falling back to the platform temp dir.
@@ -33,15 +43,15 @@ fn socket_dir() -> PathBuf {
         .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"))
 }
 
-pub fn socket_path(workspace: &str) -> PathBuf {
-    socket_dir().join(format!("{workspace}.sock"))
+pub fn socket_path(tab: &str) -> PathBuf {
+    socket_dir().join(format!("{}.sock", sanitize_key(tab)))
 }
 
-/// Ensure a per-workspace headless nvim daemon is listening on its socket,
+/// Ensure a per-tab headless nvim daemon is listening on its socket,
 /// returning the socket path. If a healthy daemon already exists this is a
 /// no-op; otherwise a detached daemon is spawned and polled until healthy.
-pub fn ensure_daemon(workspace: &str, plugin_root: &Path, config: &Config) -> Result<PathBuf> {
-    let socket = socket_path(workspace);
+pub fn ensure_daemon(tab: &str, plugin_root: &Path, config: &Config) -> Result<PathBuf> {
+    let socket = socket_path(tab);
     if daemon_healthy(&socket) {
         return Ok(socket);
     }
@@ -64,7 +74,7 @@ pub fn ensure_daemon(workspace: &str, plugin_root: &Path, config: &Config) -> Re
         }
         if Instant::now() >= deadline {
             bail!(
-                "nvim daemon for workspace {workspace} did not become healthy within {}s",
+                "nvim daemon for tab {tab} did not become healthy within {}s",
                 HEALTH_POLL_TIMEOUT.as_secs()
             );
         }
@@ -159,8 +169,10 @@ fn remote_expr(socket: &Path, expr: &str) -> Option<String> {
 }
 
 /// Shell command a sidebar pane runs to become the nvim UI: it re-executes this
-/// binary in `sidebar` mode (see `sidebar_cmd`).
-pub fn sidebar_shell_cmd(_workspace: &str) -> String {
+/// binary in `sidebar` mode (see `sidebar_cmd`), passing the tab id as a
+/// positional arg so the sidebar pane knows which daemon to attach to (it
+/// can't rely on env, since herdr may not export a tab id into the pane).
+pub fn sidebar_shell_cmd(tab: &str) -> String {
     let path = std::env::current_exe()
         .ok()
         .and_then(|path| path.into_os_string().into_string().ok())
@@ -170,18 +182,24 @@ pub fn sidebar_shell_cmd(_workspace: &str) -> String {
     } else {
         path
     };
-    format!("exec {path} sidebar")
+    format!("exec {path} sidebar {tab}")
 }
 
-/// Runs inside the sidebar pane: ensure the workspace daemon is up, then replace
+/// Runs inside the sidebar pane: ensure the tab's daemon is up, then replace
 /// this process with `nvim --remote-ui` attached to it.
 pub fn sidebar_cmd() -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    let workspace = env::var("HERDR_WORKSPACE_ID").context("HERDR_WORKSPACE_ID is not set")?;
+    // Prefer the positional tab id arg (`sidebar <tab>`, see
+    // `sidebar_shell_cmd`); fall back to `HERDR_WORKSPACE_ID` for backward
+    // compat if the arg is missing.
+    let tab = env::args()
+        .nth(2)
+        .or_else(|| env::var("HERDR_WORKSPACE_ID").ok())
+        .context("herdr-nvim sidebar requires a tab id argument or HERDR_WORKSPACE_ID")?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
-    let socket = ensure_daemon(&workspace, &plugin_root, &config)?;
+    let socket = ensure_daemon(&tab, &plugin_root, &config)?;
 
     let error = Command::new("nvim")
         .arg("--server")
@@ -209,14 +227,16 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
     bail!("could not locate plugin root (set HERDR_NVIM_PLUGIN_ROOT)")
 }
 
-/// Garbage-collect daemons whose workspace no longer exists: quit the daemon and
+/// Garbage-collect daemons whose tab no longer exists: quit the daemon and
 /// remove its socket and state file.
 pub fn gc_cmd() -> Result<()> {
     let mut herdr = CliHerdr;
     gc(&mut herdr)
 }
 
-fn gc(h: &mut dyn Herdr) -> Result<()> {
+/// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
+/// on every toggle to reap stale per-tab daemons from closed tabs.
+pub(crate) fn gc(h: &mut dyn Herdr) -> Result<()> {
     let dir = socket_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -227,7 +247,8 @@ fn gc(h: &mut dyn Herdr) -> Result<()> {
         }
     };
 
-    let workspaces = h.list_workspaces()?;
+    let tabs = h.list_tabs()?;
+    let known: Vec<String> = tabs.iter().map(|tab| sanitize_key(tab)).collect();
     for entry in entries {
         let path = entry
             .with_context(|| format!("failed to read entry in {}", dir.display()))?
@@ -235,17 +256,17 @@ fn gc(h: &mut dyn Herdr) -> Result<()> {
         if path.extension().and_then(OsStr::to_str) != Some("sock") {
             continue;
         }
-        let Some(workspace) = path.file_stem().and_then(OsStr::to_str) else {
+        let Some(tab_stem) = path.file_stem().and_then(OsStr::to_str) else {
             continue;
         };
-        if workspaces.iter().any(|known| known == workspace) {
+        if known.iter().any(|known_tab| known_tab == tab_stem) {
             continue;
         }
 
         // Orphaned: ask the daemon (if any) to quit, then unlink socket + state.
         let _ = send_quit(&path);
         remove_socket(&path)?;
-        state::remove(workspace)?;
+        state::remove(tab_stem)?;
     }
     Ok(())
 }
@@ -283,14 +304,13 @@ mod tests {
         ffi::OsString,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Mutex, MutexGuard,
+            MutexGuard,
         },
     };
 
     use super::*;
     use crate::herdr::MockHerdr;
 
-    static RUNTIME_DIR_LOCK: Mutex<()> = Mutex::new(());
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     /// Redirects the socket dir (and an isolated, empty nvim config) into a
@@ -372,6 +392,12 @@ mod tests {
     }
 
     #[test]
+    fn socket_path_sanitizes_colon_in_tab_id() {
+        let guard = RuntimeEnvGuard::new();
+        assert_eq!(socket_path("wX:t1"), guard.dir.join("wX_t1.sock"));
+    }
+
+    #[test]
     fn ensure_daemon_spawns_then_is_idempotent_against_real_nvim() {
         if !nvim_available() {
             eprintln!("skipping: nvim not found on PATH");
@@ -402,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn gc_removes_orphan_sockets_and_keeps_known_workspaces() {
+    fn gc_removes_orphan_sockets_and_keeps_known_tabs() {
         let guard = RuntimeEnvGuard::new();
 
         // Isolate the state dir too, since gc removes orphan state files.
@@ -412,20 +438,21 @@ mod tests {
         let old_state = env::var_os("HERDR_NVIM_STATE_DIR");
         env::set_var("HERDR_NVIM_STATE_DIR", guard.dir.join("state"));
 
-        // Two dead socket files; only "wsKeep" is still a live workspace.
-        fs::write(socket_path("wsKeep"), b"").unwrap();
-        fs::write(socket_path("wsOrphan"), b"").unwrap();
+        // Two dead socket files (sanitized tab ids); only "wsKeep:t1" is still a
+        // live tab.
+        fs::write(socket_path("wsKeep:t1"), b"").unwrap();
+        fs::write(socket_path("wsOrphan:t1"), b"").unwrap();
 
         let mut herdr = MockHerdr {
-            list_workspaces_results: VecDeque::from([Ok(vec!["wsKeep".to_owned()])]),
+            list_tabs_results: VecDeque::from([Ok(vec!["wsKeep:t1".to_owned()])]),
             ..Default::default()
         };
         gc(&mut herdr).unwrap();
 
-        assert!(socket_path("wsKeep").exists(), "known workspace kept");
+        assert!(socket_path("wsKeep:t1").exists(), "known tab kept");
         assert!(
-            !socket_path("wsOrphan").exists(),
-            "orphan workspace socket removed"
+            !socket_path("wsOrphan:t1").exists(),
+            "orphan tab socket removed"
         );
 
         match &old_state {

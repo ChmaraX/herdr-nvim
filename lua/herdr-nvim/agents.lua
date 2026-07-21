@@ -34,7 +34,10 @@ end
 
 function M.display(agent)
   local tail = vim.fn.fnamemodify(agent.cwd, ":t")
-  return string.format("%s · %s · %s", agent.title, agent.status, tail)
+  -- Lead with the agent kind (pi/claude/codex…) — the actual agent identity —
+  -- then its state and where it's running. (The terminal title tended to just
+  -- repeat the workspace/repo name shown by the cwd tail.)
+  return string.format("%s · %s · %s", agent.kind, agent.status, tail)
 end
 
 return M

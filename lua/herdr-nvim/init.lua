@@ -46,26 +46,37 @@ function M.comment_line()
   add_comment(l, l)
 end
 
-function M.list_comments()
-  ui.pick_comment(function(c)
-    vim.ui.select({ "jump", "edit", "delete" }, { prompt = ui.comment_row(c) }, function(action)
-      if action == "jump" then
-        vim.api.nvim_set_current_buf(c.bufnr)
-        vim.api.nvim_win_set_cursor(0, { c.start_line, 0 })
-      elseif action == "edit" then
-        vim.ui.input({ prompt = "Comment: ", default = c.text }, function(t)
-          if t and t ~= "" then
-            ui.undecorate(c.id)
-            comments.edit(c.id, t)
-            ui.decorate(c.id)
-          end
-        end)
-      elseif action == "delete" then
-        ui.undecorate(c.id)
-        comments.delete(c.id)
-      end
-    end)
+-- Edit a comment's text in place (undecorate → edit → re-decorate so the callout
+-- reflects the new text). `on_done` (optional) fires after the input closes.
+function M.edit_comment(c, on_done)
+  vim.ui.input({ prompt = "Edit comment: ", default = c.text }, function(t)
+    if t and t ~= "" and t ~= c.text then
+      ui.undecorate(c.id)
+      comments.edit(c.id, t)
+      ui.decorate(c.id)
+    end
+    if on_done then
+      on_done()
+    end
   end)
+end
+
+function M.delete_comment(c)
+  ui.undecorate(c.id)
+  comments.delete(c.id)
+end
+
+-- Interactive list: hover auto-jumps to each comment, <CR> edits, `d` deletes,
+-- `q`/<Esc> closes. No secondary jump/edit/delete menu.
+function M.list_comments()
+  ui.comment_list({
+    edit = function(c, refresh)
+      M.edit_comment(c, refresh)
+    end,
+    delete = function(c)
+      M.delete_comment(c)
+    end,
+  })
 end
 
 function M._git_context()

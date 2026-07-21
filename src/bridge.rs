@@ -4,10 +4,10 @@
 //!
 //! * **Phase 1 (action)** — `herdr-nvim pick-file`. Resolves the target agent
 //!   pane, reads its recent output, extracts file-path [`Candidate`]s, and (if
-//!   any) writes a [`Handoff`] to a temp file and opens the picker overlay.
+//!   any) writes a [`Handoff`] to a temp file and opens the picker popup.
 //! * **Phase 2 (finisher)** — `herdr-nvim pick-file --finish <handoff>`. Spawned
-//!   detached by the overlay once the user picks. Ensures the sidebar is open in
-//!   the invoking tab, opens the chosen file in the workspace nvim daemon, focuses
+//!   detached by the picker once the user picks. Ensures the sidebar is open in
+//!   the invoking tab, opens the chosen file in that tab's nvim daemon, focuses
 //!   the sidebar, and deletes the handoff file.
 //!
 //! Only the pure selection rule [`target_agent_pane`] is unit tested; the two
@@ -97,7 +97,7 @@ fn start_pick() -> Result<()> {
         focused_pane: ctx.focused_pane.clone(),
     };
     let handoff_path = write_handoff(&handoff)?;
-    open_overlay(&handoff_path)?;
+    open_picker(&handoff_path)?;
     Ok(())
 }
 
@@ -125,15 +125,15 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     };
     let mut herdr = CliHerdr;
 
-    // Bring the workspace daemon up *before* opening the sidebar. The sidebar
-    // pane runs its own `ensure_daemon`; doing ours first (to completion) means
-    // the sidebar reuses the already-healthy daemon rather than racing to
+    // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
+    // runs its own `ensure_daemon`; doing ours first (to completion) means the
+    // sidebar reuses the already-healthy daemon rather than racing to
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
     let config = config::load();
-    let socket = daemon::ensure_daemon(&ctx.workspace, &plugin_root, &config)?;
+    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config)?;
 
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.workspace);
+    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab);
     let sidebar = ensure_sidebar_open(&mut herdr, &ctx, &sidebar_cmd)?;
 
     open_in_nvim(&socket, &candidate.path, candidate.line)?;
@@ -145,16 +145,16 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
 
 /// Idempotently ensure a sidebar is open in `ctx.tab`, returning its pane id.
 ///
-/// If state already records a live sidebar in this same tab, it is already open
-/// where we want it — return it untouched (calling `maneuver::toggle` here would
-/// *close* it). Otherwise (no state, a dead sidebar, a mid-open checkpoint, or a
-/// sidebar open in a different tab) delegate to `maneuver::toggle`, which follows
-/// its own open/recover semantics and leaves a fresh sidebar in `ctx.tab`.
+/// If state already records a live sidebar for this tab, it is already open —
+/// return it untouched (calling `maneuver::toggle` here would *close* it).
+/// Otherwise (no state, a dead sidebar, or a mid-open checkpoint) delegate to
+/// `maneuver::toggle`, which follows its own open/recover semantics and leaves
+/// a fresh sidebar in `ctx.tab`.
 fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<String> {
-    if let Some(existing) = state::load(&ctx.workspace)? {
+    if let Some(existing) = state::load(&ctx.tab)? {
         if matches!(existing.phase, Phase::Open) {
             if let Some(sidebar) = existing.sidebar_pane.clone() {
-                if existing.tab == ctx.tab && h.pane_alive(&sidebar)? {
+                if h.pane_alive(&sidebar)? {
                     return Ok(sidebar);
                 }
             }
@@ -162,7 +162,7 @@ fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Resul
     }
 
     maneuver::toggle(h, ctx, sidebar_cmd)?;
-    let opened = state::load(&ctx.workspace)?
+    let opened = state::load(&ctx.tab)?
         .context("sidebar state missing after opening")?
         .sidebar_pane
         .context("sidebar pane id missing after opening")?;
@@ -218,8 +218,9 @@ fn focus_pane(pane: &str) {
     }
 }
 
-/// Open the picker overlay pane, passing the handoff path via the environment.
-fn open_overlay(handoff_path: &str) -> Result<()> {
+/// Open the picker as a floating popup pane, passing the handoff path via the
+/// environment.
+fn open_picker(handoff_path: &str) -> Result<()> {
     let status = Command::new("herdr")
         .args([
             "plugin",
@@ -230,7 +231,11 @@ fn open_overlay(handoff_path: &str) -> Result<()> {
             "--entrypoint",
             "picker",
             "--placement",
-            "overlay",
+            "popup",
+            "--width",
+            "80",
+            "--height",
+            "20",
             "--env",
             &format!("HERDR_NVIM_HANDOFF={handoff_path}"),
         ])

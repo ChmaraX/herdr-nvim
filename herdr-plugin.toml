@@ -17,7 +17,7 @@ command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 [[panes]]
 id = "picker"
 title = "open file"
-placement = "overlay"
+placement = "popup"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
 
 [[actions]]
