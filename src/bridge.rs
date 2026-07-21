@@ -24,7 +24,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    daemon,
+    config, daemon,
     extract::extract,
     herdr::{CliHerdr, Herdr},
     maneuver::{self, Ctx},
@@ -33,8 +33,6 @@ use crate::{
 };
 
 const PLUGIN_ID: &str = "adamchmara.herdr-nvim";
-/// Number of trailing pane lines to scan for file paths.
-const READ_LINES: u32 = 300;
 
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.
@@ -76,10 +74,11 @@ pub fn target_agent_pane(h: &mut dyn Herdr, workspace: &str, focused: &str) -> R
 /// Phase 1: read the target agent pane, extract candidates, and open the picker.
 fn start_pick() -> Result<()> {
     let ctx = maneuver::read_ctx()?;
+    let config = config::load();
     let mut herdr = CliHerdr;
 
     let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.focused_pane)?;
-    let text = herdr.read_pane(&target, READ_LINES)?;
+    let text = herdr.read_pane(&target, config.picker.scan_lines)?;
     let cwd = herdr.pane_cwd(&target)?;
     // `extract` expects an existence check that accepts only real files (its own
     // docs), so filter out directories that happen to be path-shaped.
@@ -131,7 +130,8 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     // the sidebar reuses the already-healthy daemon rather than racing to
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
-    let socket = daemon::ensure_daemon(&ctx.workspace, &plugin_root)?;
+    let config = config::load();
+    let socket = daemon::ensure_daemon(&ctx.workspace, &plugin_root, &config)?;
 
     let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.workspace);
     let sidebar = ensure_sidebar_open(&mut herdr, &ctx, &sidebar_cmd)?;

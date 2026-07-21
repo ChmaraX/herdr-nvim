@@ -36,6 +36,19 @@ require("herdr-nvim").setup({
 Comments live in memory only (extmark-tracked, so they follow your edits) and
 are cleared after a successful send.
 
+### Statusline
+
+`require("herdr-nvim").statusline()` returns `""` with no pending comments, or
+`"● 3"` with 3 pending — drop it straight into lualine:
+
+```lua
+require("lualine").setup({
+  sections = {
+    lualine_x = { require("herdr-nvim").statusline },
+  },
+})
+```
+
 ## Sidebar (herdr plugin)
 
 herdr-nvim also ships as a [herdr](https://herdr.dev) plugin that toggles a
@@ -52,6 +65,20 @@ and restores the original layout exactly. The sidebar follows you across tabs
 (closes where it was, opens where you are), and each workspace gets its own
 persistent headless nvim daemon — so buffers, cursor and in-flight comments
 survive a toggle off/on.
+
+```
+before toggle                     after toggle
++-----------------+               +--------+--------+
+|                 |               |        |        |
+|   your panes    |   prefix+e    | your   |  nvim  |
+|  (agent, shell,  -------------->| panes  | sidebar|
+|   etc.)         |               | (left  | (right,|
+|                 |               |  half) | full-  |
+|                 |               |        | height,|
+|                 |               |        | focused|
+|                 |               |        | )      |
++-----------------+               +--------+--------+
+```
 
 The sidebar is driven by a single plugin action. Trigger it directly:
 
@@ -98,7 +125,48 @@ description = "open file from agent output"
 
 Esc (or `q`) in the picker dismisses it without touching the sidebar.
 
-Run `herdr-nvim doctor` to self-test the live herdr + nvim integration.
+## herdr-nvim config (Rust side)
+
+The sidebar/picker binary reads its own optional TOML config, separate from
+the Lua `setup{}` above — `~/.config/herdr-nvim/config.toml` (override the
+path with `HERDR_NVIM_CONFIG`). A missing file uses the defaults below; a
+malformed file also falls back to defaults (with one warning on stderr) —
+a bad config file never breaks the plugin.
+
+```toml
+[sidebar]
+nvim_bin = "nvim"     # binary used to spawn/attach the per-workspace daemon
+
+[picker]
+scan_lines = 300      # trailing pane lines scanned for file paths by pick-file
+```
+
+## Doctor / troubleshooting
+
+```sh
+herdr-nvim doctor                     # core checks: splits, toggle, daemon, remote-ui attach
+herdr-nvim doctor --with-agent claude # also verifies a live agent registers with herdr
+```
+
+`doctor` creates its own scratch workspace (`herdr-nvim-doctor`), runs a set of
+labelled live checks against it (`OK`/`FAIL` per check), and always cleans up
+after itself — closing the workspace and killing any daemon/nvim it spawned —
+even on failure or panic. If it reports a failure:
+
+- **`daemon-healthy` FAIL** — `herdr-nvim`'s spawned nvim daemon didn't come up;
+  check that `sidebar.nvim_bin` in your config (if set) points at a working
+  `nvim` ≥ 0.10 on `PATH`.
+- **`remote-ui-attach` FAIL** — `nvim --remote-ui` couldn't reach the daemon
+  socket; check for stale sockets under the runtime dir, or that no other
+  process is holding the socket.
+- **`toggle-roundtrip-restores-rects` FAIL** — pane layout wasn't restored
+  exactly after a toggle on/off; run again outside of any other herdr
+  automation that might be racing pane state.
+- **workspace cleanup FAIL** ("still present: true") — the scratch workspace
+  didn't close; check `herdr workspace list` and close it manually with
+  `herdr workspace close <id>`.
+
+If everything is fine, doctor ends with `all doctor checks OK` and exit code 0.
 
 ## Tests
 

@@ -1,4 +1,5 @@
 mod bridge;
+mod config;
 mod daemon;
 mod doctor;
 mod extract;
