@@ -11,5 +11,20 @@ title = "nvim sidebar: toggle"
 contexts = ["pane", "workspace"]
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 
+# Overlay pane that renders the file picker. Opened programmatically by the
+# `pick-file` action (via `herdr plugin pane open --entrypoint picker`), which
+# passes the handoff path in `HERDR_NVIM_HANDOFF`.
+[[panes]]
+id = "picker"
+title = "open file"
+placement = "overlay"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
+
+[[actions]]
+id = "pick-file"
+title = "nvim sidebar: open file from agent output"
+contexts = ["pane"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" pick-file"]
+
 [[build]]
 command = ["bash", "herdr/install.sh"]

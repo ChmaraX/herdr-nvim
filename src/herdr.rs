@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -10,6 +11,13 @@ pub struct PaneRect {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+}
+
+/// An agent pane discovered via `herdr agent list`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub pane_id: String,
+    pub focused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +53,14 @@ pub trait Herdr {
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
     fn list_workspaces(&mut self) -> Result<Vec<String>>;
+    /// Read the pane's recent (unwrapped) output as plain text, newest lines
+    /// last. `lines` bounds how many trailing lines are returned.
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String>;
+    /// The pane's foreground working directory (used to resolve relative paths).
+    fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf>;
+    /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
+    /// `agent` label and belong to `workspace`).
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
 }
 
 pub struct CliHerdr;
@@ -82,6 +98,22 @@ impl CliHerdr {
             bail!("{command} failed: {}", stderr.trim());
         }
         Ok(())
+    }
+
+    /// Runs a `herdr` subcommand whose stdout is plain text rather than JSON
+    /// (e.g. `pane read --format text`) and returns that stdout verbatim.
+    fn run_text(args: &[String]) -> Result<String> {
+        let command = format!("herdr {}", args.join(" "));
+        let output = Command::new("herdr")
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to run {command}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("{command} failed: {}", stderr.trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn panes() -> Result<Vec<(String, String)>> {
@@ -203,6 +235,54 @@ impl Herdr for CliHerdr {
             .map(|workspace| Ok(string_at(workspace, "/workspace_id")?.to_owned()))
             .collect()
     }
+
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
+        Self::run_text(&args(&[
+            "pane",
+            "read",
+            pane,
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            &lines.to_string(),
+            "--format",
+            "text",
+        ]))
+    }
+
+    fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
+        let value = Self::run(&args(&["pane", "get", pane]))?;
+        Ok(PathBuf::from(string_at(
+            &value,
+            "/result/pane/foreground_cwd",
+        )?))
+    }
+
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
+        let value = Self::run(&args(&["agent", "list"]))?;
+        let agents = value
+            .pointer("/result/agents")
+            .and_then(Value::as_array)
+            .context("herdr agent list response missing result.agents array")?;
+        agents
+            .iter()
+            // Only entries that actually carry an `agent` label are agents;
+            // herdr also reports bare/undetected panes here (no `agent` field).
+            .filter(|agent| agent.get("agent").and_then(Value::as_str).is_some())
+            .filter(|agent| {
+                agent.pointer("/workspace_id").and_then(Value::as_str) == Some(workspace)
+            })
+            .map(|agent| {
+                Ok(AgentInfo {
+                    pane_id: string_at(agent, "/pane_id")?.to_owned(),
+                    focused: agent
+                        .get("focused")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect()
+    }
 }
 
 pub fn parse_pane_rects(json: &str) -> Result<Vec<PaneRect>> {
@@ -273,6 +353,9 @@ pub struct MockHerdr {
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
     pub list_workspaces_results: VecDeque<Result<Vec<String>>>,
+    pub read_pane_results: VecDeque<Result<String>>,
+    pub pane_cwd_results: VecDeque<Result<PathBuf>>,
+    pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
 }
 
 #[cfg(test)]
@@ -343,6 +426,21 @@ impl Herdr for MockHerdr {
     fn list_workspaces(&mut self) -> Result<Vec<String>> {
         self.ops.push("list_workspaces".to_owned());
         Self::next(&mut self.list_workspaces_results, "list_workspaces")
+    }
+
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
+        self.ops.push(format!("read_pane {pane} {lines}"));
+        Self::next(&mut self.read_pane_results, "read_pane")
+    }
+
+    fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
+        self.ops.push(format!("pane_cwd {pane}"));
+        Self::next(&mut self.pane_cwd_results, "pane_cwd")
+    }
+
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
+        self.ops.push(format!("agents {workspace}"));
+        Self::next(&mut self.agents_results, "agents")
     }
 }
 

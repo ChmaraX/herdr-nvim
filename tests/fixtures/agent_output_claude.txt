@@ -1,0 +1,63 @@
+
+╭─── Claude Code v2.1.215 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                                              │
+│                 Welcome back Adam!                 │ Run /init to create a CLAUDE.md file with instructions for Claude                     │
+│                                                    │ ───────────────────────────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                                            │
+│                      ▝▜█████▛▘                     │ Claude no longer runs the `/verify` and `/code-review` skills on its own; invoke the… │
+│                        ▘▘ ▝▝                       │ Fixed single-segment `dir/**` allow rules like `Edit(src/**)` auto-approving writes … │
+│     Fable 5 with medium effort · Claude Max ·      │ Fixed a permission-check bypass affecting commands run in Windows PowerShell 5.1 ses… │
+│     adam.chmara1@gmail.com's Organization          │ /release-notes for more                                                               │
+│                 ~/.pi/agent/skills                 │                                                                                       │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ▎ Fable 5 is now a standard part of your Max plan
+ ▎ You can use up to 50% of your weekly usage limit on Fable 5. If you hit your limit, you can continue on Fable 5 with usage credits. Fable 5
+ ▎ draws down usage faster than Opus 4.8. Run /model and select Fable to use it. Learn more:
+ ▎ https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
