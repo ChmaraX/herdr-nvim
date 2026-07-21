@@ -12,6 +12,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
+    config::Config,
     herdr::{CliHerdr, Herdr},
     state,
 };
@@ -39,7 +40,7 @@ pub fn socket_path(workspace: &str) -> PathBuf {
 /// Ensure a per-workspace headless nvim daemon is listening on its socket,
 /// returning the socket path. If a healthy daemon already exists this is a
 /// no-op; otherwise a detached daemon is spawned and polled until healthy.
-pub fn ensure_daemon(workspace: &str, plugin_root: &Path) -> Result<PathBuf> {
+pub fn ensure_daemon(workspace: &str, plugin_root: &Path, config: &Config) -> Result<PathBuf> {
     let socket = socket_path(workspace);
     if daemon_healthy(&socket) {
         return Ok(socket);
@@ -54,7 +55,7 @@ pub fn ensure_daemon(workspace: &str, plugin_root: &Path) -> Result<PathBuf> {
     // only get here after the health check failed, so any file present is dead.
     remove_socket(&socket)?;
 
-    spawn_daemon(&socket, plugin_root)?;
+    spawn_daemon(&socket, plugin_root, &config.sidebar.nvim_bin)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
@@ -71,7 +72,7 @@ pub fn ensure_daemon(workspace: &str, plugin_root: &Path) -> Result<PathBuf> {
     }
 }
 
-fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
+fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str) -> Result<()> {
     // The pre-init `set rtp+=` below is not enough on its own: LazyVim (and any
     // lazy.nvim config with the default `performance.rtp.reset = true`) rebuilds
     // runtimepath from scratch during startup, dropping our appended path before
@@ -96,7 +97,7 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path) -> Result<()> {
     // teardown can no longer reach it.
     use std::os::unix::process::CommandExt;
 
-    let mut command = Command::new("nvim");
+    let mut command = Command::new(nvim_bin);
     command
         .arg("--headless")
         .arg("--listen")
@@ -179,7 +180,8 @@ pub fn sidebar_cmd() -> Result<()> {
 
     let workspace = env::var("HERDR_WORKSPACE_ID").context("HERDR_WORKSPACE_ID is not set")?;
     let plugin_root = plugin_root()?;
-    let socket = ensure_daemon(&workspace, &plugin_root)?;
+    let config = crate::config::load();
+    let socket = ensure_daemon(&workspace, &plugin_root, &config)?;
 
     let error = Command::new("nvim")
         .arg("--server")
@@ -378,14 +380,16 @@ mod tests {
 
         let _guard = RuntimeEnvGuard::new();
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
 
-        let socket = ensure_daemon("wD", &plugin_root).expect("first ensure_daemon");
+        let socket = ensure_daemon("wD", &plugin_root, &config).expect("first ensure_daemon");
         assert!(socket.exists(), "socket file should exist after spawn");
 
         let pid1 = remote_expr(&socket, "getpid()").expect("daemon should report a pid");
         assert!(!pid1.is_empty());
 
-        let socket_again = ensure_daemon("wD", &plugin_root).expect("second ensure_daemon");
+        let socket_again =
+            ensure_daemon("wD", &plugin_root, &config).expect("second ensure_daemon");
         assert_eq!(socket, socket_again);
 
         let pid2 = remote_expr(&socket, "getpid()").expect("daemon should still report a pid");

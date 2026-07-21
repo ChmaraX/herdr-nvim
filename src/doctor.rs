@@ -101,7 +101,8 @@ fn run_checks(h: &mut CliHerdr, ws: &str, with_agent: Option<&str>, fails: &mut 
         check_f7(h, ws),
     );
 
-    match plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root)) {
+    let config = crate::config::load();
+    match plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root, &config)) {
         Ok(socket) => {
             report(
                 fails,
