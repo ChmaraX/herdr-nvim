@@ -19,7 +19,7 @@ Annotate code in nvim, send the annotations to any AI agent running in
 |---|---|
 | `<leader>ac` (visual) | comment the selection |
 | `<leader>ac` (normal) | comment the current line |
-| `<leader>al` | list comments — jump / edit / delete |
+| `<leader>al` | comment list (float): hover to jump, `⏎` edit, `d` delete, `q` close |
 | `<leader>as` | paste all comments into a chosen agent's input (you press Enter) |
 | `<leader>aS` | send all comments to a chosen agent (auto-submits) |
 

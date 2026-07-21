@@ -155,7 +155,12 @@ function M.comment_list(handlers)
     if not c or not vim.api.nvim_win_is_valid(code_win) or not vim.api.nvim_buf_is_valid(c.bufnr) then
       return
     end
-    vim.api.nvim_win_set_buf(code_win, c.bufnr)
+    -- Guarded: switching the code window to another buffer can fail (E37) when
+    -- its current buffer is modified and 'hidden' is off. Skip the preview
+    -- rather than throw; the list stays usable.
+    if not pcall(vim.api.nvim_win_set_buf, code_win, c.bufnr) then
+      return
+    end
     local line = math.min(c.start_line, math.max(1, vim.api.nvim_buf_line_count(c.bufnr)))
     vim.api.nvim_win_set_cursor(code_win, { line, 0 })
     vim.api.nvim_win_call(code_win, function()
@@ -200,7 +205,6 @@ function M.comment_list(handlers)
     end
   end
   map("d", del)
-  map("dd", del)
 end
 
 function M.pick_agent(agent_list, on_choice)
