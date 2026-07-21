@@ -70,6 +70,34 @@ command = "adamchmara.herdr-nvim.toggle"
 description = "nvim sidebar"
 ```
 
+## Open a file from agent output
+
+When an agent mentions or edits files, the file bridge lets you jump straight to
+one in the sidebar. It scans the focused (or workspace's) agent pane's recent
+output for real file paths (with optional `:line` suffixes), pops an overlay
+picker — newest paths first, type to filter — and on Enter opens the chosen file
+in the workspace nvim sidebar (opening the sidebar first if needed), at the right
+line, focused.
+
+Trigger it directly on the focused agent pane:
+
+```sh
+herdr plugin action invoke pick-file --plugin adamchmara.herdr-nvim
+```
+
+No key is bound by default. To trigger with a keypress, add a binding to your
+`~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+o"                            # any key you like
+type = "plugin_action"
+command = "adamchmara.herdr-nvim.pick-file"
+description = "open file from agent output"
+```
+
+Esc (or `q`) in the picker dismisses it without touching the sidebar.
+
 Run `herdr-nvim doctor` to self-test the live herdr + nvim integration.
 
 ## Tests
