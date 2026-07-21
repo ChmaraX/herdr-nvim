@@ -97,7 +97,7 @@ fn start_pick() -> Result<()> {
         focused_pane: ctx.focused_pane.clone(),
     };
     let handoff_path = write_handoff(&handoff)?;
-    open_overlay(&handoff_path)?;
+    open_picker(&handoff_path)?;
     Ok(())
 }
 
@@ -218,8 +218,9 @@ fn focus_pane(pane: &str) {
     }
 }
 
-/// Open the picker overlay pane, passing the handoff path via the environment.
-fn open_overlay(handoff_path: &str) -> Result<()> {
+/// Open the picker as a floating popup pane, passing the handoff path via the
+/// environment.
+fn open_picker(handoff_path: &str) -> Result<()> {
     let status = Command::new("herdr")
         .args([
             "plugin",
@@ -230,7 +231,11 @@ fn open_overlay(handoff_path: &str) -> Result<()> {
             "--entrypoint",
             "picker",
             "--placement",
-            "overlay",
+            "popup",
+            "--width",
+            "80",
+            "--height",
+            "20",
             "--env",
             &format!("HERDR_NVIM_HANDOFF={handoff_path}"),
         ])
