@@ -69,13 +69,14 @@ function M.comment_row(c)
   return string.format("%s:%d-%d  %s", vim.fn.fnamemodify(c.file, ":t"), c.start_line, c.end_line, c.text)
 end
 
--- Interactive comment list: a bottom split with one row per comment. Moving the
--- cursor auto-previews (jumps the code window to that comment); <CR> edits, `d`
--- deletes, `q`/<Esc> closes. `handlers.edit(c, refresh)` and
--- `handlers.delete(c)` do the actual work.
+-- Interactive comment list: a rounded floating box (with a shortcut-hint footer)
+-- listing one row per comment. Moving the cursor auto-previews (jumps the code
+-- window to that comment); <CR> edits, `d` deletes, `q`/<Esc> closes.
+-- `handlers.edit(c, refresh)` and `handlers.delete(c)` do the actual work.
 function M.comment_list(handlers)
   local code_win = vim.api.nvim_get_current_win()
-  if #comments.list() == 0 then
+  local rows = comments.list()
+  if #rows == 0 then
     vim.notify("herdr-nvim: no comments", vim.log.levels.INFO)
     return
   end
@@ -84,16 +85,31 @@ function M.comment_list(handlers)
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].filetype = "herdr-nvim-comments"
 
-  vim.cmd("botright split")
-  local win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(win, buf)
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  vim.wo[win].signcolumn = "no"
-  vim.wo[win].cursorline = true
-  vim.wo[win].winfixheight = true
+  local function win_config()
+    local width = 46
+    for _, c in ipairs(rows) do
+      width = math.max(width, vim.fn.strdisplaywidth(M.comment_row(c)) + 2)
+    end
+    width = math.min(width, math.max(46, vim.o.columns - 6))
+    local height = math.max(1, math.min(#rows, 12))
+    return {
+      relative = "editor",
+      width = width,
+      height = height,
+      row = math.max(0, vim.o.lines - height - 4),
+      col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+      style = "minimal",
+      border = "rounded",
+      title = { { " 💬 Comments ", "HerdrNvimCommentText" } },
+      title_pos = "center",
+      footer = { { " ↑↓ jump  ·  ⏎ edit  ·  d delete  ·  q close ", "Comment" } },
+      footer_pos = "center",
+    }
+  end
 
-  local rows = {}
+  local win = vim.api.nvim_open_win(buf, true, win_config())
+  vim.wo[win].cursorline = true
+  vim.wo[win].wrap = false
 
   local function render()
     rows = comments.list()
@@ -110,7 +126,9 @@ function M.comment_list(handlers)
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
-    vim.api.nvim_win_set_height(win, math.max(3, math.min(12, #rows)))
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_set_config(win, win_config())
+    end
     return true
   end
 
