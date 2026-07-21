@@ -113,4 +113,9 @@ function M.send_all(opts)
   end)
 end
 
+function M.statusline()
+  local n = #comments.list()
+  return n == 0 and "" or ("● " .. n)
+end
+
 return M
