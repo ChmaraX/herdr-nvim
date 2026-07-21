@@ -40,29 +40,34 @@ function M.decorate(id)
     return
   end
   local ns = comments.ns
-  -- 1. A vertical bar in the sign column on every line of the block: the top
-  --    line rounds in (╭), the rest continue (│); the callout below closes it.
-  local signs = {}
+  -- 1. A vertical bar prepended inline at column 0 of every line in the block.
+  --    Rendering it as inline virt_text (not a sign) puts it at the same screen
+  --    column as the callout's corner below, so the block reads as one bracket:
+  --      │ def foo():
+  --      │   …
+  --      ╰─ 💬 your note
+  --    (The block shifts right ~2 cells, like a quote; it never covers code.)
+  local bars = {}
   for line = c.start_line, c.end_line do
-    local glyph = (line == c.start_line) and "╭" or "│"
-    signs[#signs + 1] = vim.api.nvim_buf_set_extmark(c.bufnr, ns, line - 1, 0, {
-      sign_text = glyph,
-      sign_hl_group = "HerdrNvimCommentSign",
+    bars[#bars + 1] = vim.api.nvim_buf_set_extmark(c.bufnr, ns, line - 1, 0, {
+      virt_text = { { "│ ", "HerdrNvimCommentSign" } },
+      virt_text_pos = "inline",
+      right_gravity = false,
     })
   end
-  -- 2. Callout line beneath the block.
+  -- 2. Callout line beneath the block, aligned to the same column 0.
   local callout = vim.api.nvim_buf_set_extmark(c.bufnr, ns, c.end_line - 1, 0, {
     virt_lines = M._callout(c.text),
     virt_lines_above = false,
   })
-  decorations[id] = { signs = signs, callout = callout, bufnr = c.bufnr }
+  decorations[id] = { bars = bars, callout = callout, bufnr = c.bufnr }
 end
 
 function M.undecorate(id)
   local marks = decorations[id]
   if marks and vim.api.nvim_buf_is_valid(marks.bufnr) then
-    for _, sign in ipairs(marks.signs) do
-      vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, sign)
+    for _, bar in ipairs(marks.bars) do
+      vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, bar)
     end
     vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, marks.callout)
   end
