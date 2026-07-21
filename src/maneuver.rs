@@ -45,7 +45,11 @@ fn tab_id(context: &Value) -> Option<&str> {
 }
 
 pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
-    if let Some(existing) = state::load(&ctx.workspace)? {
+    // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
+    // closed tabs. Non-fatal -- a gc failure must never block a toggle.
+    let _ = daemon::gc(h);
+
+    if let Some(existing) = state::load(&ctx.tab)? {
         // Only a fully-Open sidebar is eligible for the fast close-and-return
         // path. A sidebar_pane recorded while phase is still Evacuating is a
         // mid-open checkpoint (see `open()`): closing it here and removing
@@ -57,16 +61,14 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
             if let Some(sidebar) = existing.sidebar_pane.as_deref() {
                 if h.pane_alive(sidebar)? {
                     h.close_pane(sidebar)?;
-                    state::remove(&ctx.workspace)?;
-                    if existing.tab == ctx.tab {
-                        return Ok(());
-                    }
+                    state::remove(&ctx.tab)?;
+                    return Ok(());
                 }
             }
         }
     }
 
-    recover(h, &ctx.workspace)?;
+    recover(h, &ctx.tab)?;
     open(h, ctx, sidebar_cmd)
 }
 
@@ -129,8 +131,8 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     state::save(&state_file)
 }
 
-pub fn recover(h: &mut dyn Herdr, workspace: &str) -> Result<()> {
-    let Some(mut state_file) = state::load(workspace)? else {
+pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
+    let Some(mut state_file) = state::load(tab)? else {
         return Ok(());
     };
     if !matches!(state_file.phase, Phase::Evacuating) {
@@ -162,7 +164,7 @@ pub fn recover(h: &mut dyn Herdr, workspace: &str) -> Result<()> {
     if let Some(pane) = state_file.parked.first() {
         bail!("recovery state contains parked pane {pane} without a rebuild step");
     }
-    state::remove(workspace)
+    state::remove(tab)
 }
 
 fn plan_steps(plan: &RebuildPlan) -> Vec<PlanStep> {
@@ -194,7 +196,7 @@ fn parse_dir(dir: &str) -> Result<Dir> {
 
 pub fn toggle_cmd() -> Result<()> {
     let ctx = read_ctx()?;
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.workspace);
+    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab);
     let mut herdr = CliHerdr;
     toggle(&mut herdr, &ctx, &sidebar_cmd)
 }
@@ -245,11 +247,17 @@ mod tests {
         ]
     }
 
+    // The opportunistic gc(h) at the start of toggle() calls h.list_tabs() only
+    // if the (isolated, per-test) runtime dir happens to exist; StateDirGuard
+    // points HERDR_NVIM_RUNTIME_DIR at a directory that is never created, so gc
+    // is normally a no-op. Scripting a response here anyway is defensive: it
+    // keeps these tests correct even if that gc short-circuit ever changes.
     fn mock_3pane() -> MockHerdr {
         MockHerdr {
             pane_rects_results: VecDeque::from([Ok(three_pane_rects())]),
             create_tab_results: VecDeque::from([Ok(("wT:t9".into(), "wT:p90".into()))]),
             split_pane_results: VecDeque::from([Ok("wT:p99".into())]),
+            list_tabs_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -258,6 +266,7 @@ mod tests {
         MockHerdr {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 100, 100)])]),
             split_pane_results: VecDeque::from([Ok("wT:p99".into())]),
+            list_tabs_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -265,6 +274,7 @@ mod tests {
     fn mock_with_alive_sidebar() -> MockHerdr {
         MockHerdr {
             pane_alive_results: VecDeque::from([Ok(true)]),
+            list_tabs_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -309,22 +319,35 @@ mod tests {
     }
 
     struct StateDirGuard {
-        _lock: MutexGuard<'static, ()>,
-        old: Option<std::ffi::OsString>,
+        _state_lock: MutexGuard<'static, ()>,
+        _runtime_lock: MutexGuard<'static, ()>,
+        old_state: Option<std::ffi::OsString>,
+        old_runtime: Option<std::ffi::OsString>,
         dir: PathBuf,
     }
 
     impl StateDirGuard {
         fn new(dir: PathBuf) -> Self {
-            let lock = state::STATE_DIR_LOCK
+            let state_lock = state::STATE_DIR_LOCK
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let old = env::var_os("HERDR_NVIM_STATE_DIR");
+            // Also isolate the daemon socket dir: toggle()'s opportunistic gc
+            // scans it, and without this override it would fall back to the
+            // real XDG runtime dir / system temp dir and could reap live
+            // daemons unrelated to this test.
+            let runtime_lock = daemon::RUNTIME_DIR_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let old_state = env::var_os("HERDR_NVIM_STATE_DIR");
+            let old_runtime = env::var_os("HERDR_NVIM_RUNTIME_DIR");
             let _ = fs::remove_dir_all(&dir);
             env::set_var("HERDR_NVIM_STATE_DIR", &dir);
+            env::set_var("HERDR_NVIM_RUNTIME_DIR", dir.join("runtime"));
             Self {
-                _lock: lock,
-                old,
+                _state_lock: state_lock,
+                _runtime_lock: runtime_lock,
+                old_state,
+                old_runtime,
                 dir,
             }
         }
@@ -333,9 +356,13 @@ mod tests {
     impl Drop for StateDirGuard {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.dir);
-            match &self.old {
+            match &self.old_state {
                 Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
                 None => env::remove_var("HERDR_NVIM_STATE_DIR"),
+            }
+            match &self.old_runtime {
+                Some(value) => env::set_var("HERDR_NVIM_RUNTIME_DIR", value),
+                None => env::remove_var("HERDR_NVIM_RUNTIME_DIR"),
             }
         }
     }
@@ -369,7 +396,7 @@ mod tests {
                     "close wT:p90",
                 ]
             );
-            let state = state::load("wT").unwrap().unwrap();
+            let state = state::load("wT:t1").unwrap().unwrap();
             assert!(matches!(state.phase, Phase::Open));
             assert!(state.parked.is_empty());
             assert_eq!(state.sidebar_pane.as_deref(), Some("wT:p99"));
@@ -396,7 +423,7 @@ mod tests {
             let mut h = mock_with_alive_sidebar();
             toggle(&mut h, &ctx(), "exec sidebar").unwrap();
             assert_eq!(h.ops, vec!["alive wT:p99", "close wT:p99"]);
-            assert!(state::load("wT").unwrap().is_none());
+            assert!(state::load("wT:t1").unwrap().is_none());
         });
     }
 
@@ -439,7 +466,7 @@ mod tests {
                 h.ops
             );
 
-            let state = state::load("wT").unwrap().unwrap();
+            let state = state::load("wT:t1").unwrap().unwrap();
             assert!(matches!(state.phase, Phase::Open));
             assert!(state.parked.is_empty());
             assert_eq!(state.sidebar_pane.as_deref(), Some("wT:p99"));
@@ -455,7 +482,7 @@ mod tests {
             toggle(&mut h, &ctx(), "exec sidebar").unwrap();
             assert_eq!(h.ops[0], "alive wT:p99");
             assert!(h.ops.iter().any(|op| op == "create_tab wT"));
-            let state = state::load("wT").unwrap().unwrap();
+            let state = state::load("wT:t1").unwrap().unwrap();
             assert!(matches!(state.phase, Phase::Open));
             assert_eq!(state.sidebar_pane.as_deref(), Some("wT:p99"));
         });
@@ -466,7 +493,7 @@ mod tests {
         with_state_dir(|| {
             state::save(&evacuating_state()).unwrap();
             let mut h = MockHerdr::default();
-            recover(&mut h, "wT").unwrap();
+            recover(&mut h, "wT:t1").unwrap();
             assert_eq!(
                 h.ops,
                 vec![
@@ -474,7 +501,7 @@ mod tests {
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                 ]
             );
-            assert!(state::load("wT").unwrap().is_none());
+            assert!(state::load("wT:t1").unwrap().is_none());
         });
     }
 
@@ -489,7 +516,7 @@ mod tests {
                 ..Default::default()
             };
 
-            recover(&mut h, "wT").unwrap();
+            recover(&mut h, "wT:t1").unwrap();
 
             assert_eq!(
                 h.ops,
@@ -500,7 +527,7 @@ mod tests {
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                 ]
             );
-            assert!(state::load("wT").unwrap().is_none());
+            assert!(state::load("wT:t1").unwrap().is_none());
         });
     }
 
@@ -515,7 +542,7 @@ mod tests {
                 ..Default::default()
             };
 
-            recover(&mut h, "wT").unwrap();
+            recover(&mut h, "wT:t1").unwrap();
 
             assert_eq!(
                 h.ops,
@@ -525,7 +552,7 @@ mod tests {
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                 ]
             );
-            assert!(state::load("wT").unwrap().is_none());
+            assert!(state::load("wT:t1").unwrap().is_none());
         });
     }
 }

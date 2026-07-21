@@ -52,7 +52,9 @@ pub trait Herdr {
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
-    fn list_workspaces(&mut self) -> Result<Vec<String>>;
+    /// All tab ids across all workspaces (raw, unsanitized). Used by
+    /// `daemon::gc` to determine which per-tab daemons are still live.
+    fn list_tabs(&mut self) -> Result<Vec<String>>;
     /// Read the pane's recent (unwrapped) output as plain text, newest lines
     /// last. `lines` bounds how many trailing lines are returned.
     fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String>;
@@ -224,15 +226,14 @@ impl Herdr for CliHerdr {
             .any(|(pane_id, _tab_id)| pane_id == pane))
     }
 
-    fn list_workspaces(&mut self) -> Result<Vec<String>> {
-        let value = Self::run(&args(&["workspace", "list"]))?;
-        let workspaces = value
-            .pointer("/result/workspaces")
+    fn list_tabs(&mut self) -> Result<Vec<String>> {
+        let value = Self::run(&args(&["api", "snapshot"]))?;
+        let tabs = value
+            .pointer("/result/snapshot/tabs")
             .and_then(Value::as_array)
-            .context("herdr workspace list response missing result.workspaces array")?;
-        workspaces
-            .iter()
-            .map(|workspace| Ok(string_at(workspace, "/workspace_id")?.to_owned()))
+            .context("herdr api snapshot response missing result.snapshot.tabs array")?;
+        tabs.iter()
+            .map(|tab| Ok(string_at(tab, "/tab_id")?.to_owned()))
             .collect()
     }
 
@@ -352,7 +353,7 @@ pub struct MockHerdr {
     pub create_tab_results: VecDeque<Result<(String, String)>>,
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
-    pub list_workspaces_results: VecDeque<Result<Vec<String>>>,
+    pub list_tabs_results: VecDeque<Result<Vec<String>>>,
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
@@ -423,9 +424,9 @@ impl Herdr for MockHerdr {
         Self::next(&mut self.pane_alive_results, "pane_alive")
     }
 
-    fn list_workspaces(&mut self) -> Result<Vec<String>> {
-        self.ops.push("list_workspaces".to_owned());
-        Self::next(&mut self.list_workspaces_results, "list_workspaces")
+    fn list_tabs(&mut self) -> Result<Vec<String>> {
+        self.ops.push("list_tabs".to_owned());
+        Self::next(&mut self.list_tabs_results, "list_tabs")
     }
 
     fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {

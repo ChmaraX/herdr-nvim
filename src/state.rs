@@ -32,7 +32,15 @@ pub struct PlanStep {
     pub ratio: f64,
 }
 
-pub fn state_path(workspace: &str) -> PathBuf {
+/// Sanitize a key (tab id) for use as a filename. Tab ids contain a colon
+/// (e.g. `wG:t1`); replace it with `_` so the id is a valid, single path
+/// component (`wG_t1`). Kept in sync with `daemon::sanitize_key` so the
+/// orchestrator and the sidebar pane compute the same path.
+fn sanitize_key(key: &str) -> String {
+    key.replace(':', "_")
+}
+
+pub fn state_path(tab: &str) -> PathBuf {
     let base = env::var_os("HERDR_NVIM_STATE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
@@ -42,11 +50,11 @@ pub fn state_path(workspace: &str) -> PathBuf {
             env::var_os("HOME").map(|path| PathBuf::from(path).join(".local/state/herdr-nvim"))
         })
         .unwrap_or_else(|| PathBuf::from(".herdr-nvim-state"));
-    base.join(format!("{workspace}.json"))
+    base.join(format!("{}.json", sanitize_key(tab)))
 }
 
-pub fn load(workspace: &str) -> Result<Option<StateFile>> {
-    let path = state_path(workspace);
+pub fn load(tab: &str) -> Result<Option<StateFile>> {
+    let path = state_path(tab);
     match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse state file {}", path.display()))
@@ -59,7 +67,7 @@ pub fn load(workspace: &str) -> Result<Option<StateFile>> {
 }
 
 pub fn save(s: &StateFile) -> Result<()> {
-    let path = state_path(&s.workspace);
+    let path = state_path(&s.tab);
     let parent = path
         .parent()
         .with_context(|| format!("state file path has no parent: {}", path.display()))?;
@@ -80,8 +88,8 @@ pub fn save(s: &StateFile) -> Result<()> {
     Ok(())
 }
 
-pub fn remove(workspace: &str) -> Result<()> {
-    let path = state_path(workspace);
+pub fn remove(tab: &str) -> Result<()> {
+    let path = state_path(tab);
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -153,11 +161,19 @@ mod tests {
                 sidebar_pane: Some("wT:p9".into()),
             };
             save(&s).unwrap();
-            let loaded = load("wT").unwrap().unwrap();
+            let loaded = load("wT:t1").unwrap().unwrap();
             assert_eq!(loaded.tab, "wT:t1");
             assert_eq!(loaded.plan_steps.len(), 1);
-            remove("wT").unwrap();
-            assert!(load("wT").unwrap().is_none());
+            remove("wT:t1").unwrap();
+            assert!(load("wT:t1").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn state_path_sanitizes_colon_in_tab_id() {
+        with_state_dir(|| {
+            let path = state_path("wX:t1");
+            assert_eq!(path.file_name().unwrap(), "wX_t1.json");
         });
     }
 }
