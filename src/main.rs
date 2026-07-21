@@ -1,5 +1,6 @@
 mod daemon;
 mod doctor;
+mod extract;
 mod herdr;
 mod layout;
 mod maneuver;
