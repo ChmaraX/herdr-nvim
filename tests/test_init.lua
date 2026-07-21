@@ -26,7 +26,7 @@ T.test("init: comment_line adds a decorated comment via stubbed input", function
   T.eq({ l[1].start_line, l[1].text }, { 2, "stub comment" })
 end)
 
-T.test("init: editing a comment refreshes its decoration", function()
+T.test("init: edit_comment updates text and refreshes its callout", function()
   comments.clear()
   local ui = require("herdr-nvim.ui")
   local b = vim.api.nvim_create_buf(false, true)
@@ -35,20 +35,18 @@ T.test("init: editing a comment refreshes its decoration", function()
   ui.decorate(id)
   local c = comments.get(id)
 
-  local original_pick, original_select, original_input = ui.pick_comment, vim.ui.select, vim.ui.input
-  ui.pick_comment = function(cb) cb(c) end
-  vim.ui.select = function(_, _, cb) cb("edit") end
+  local original_input = vim.ui.input
   vim.ui.input = function(_, cb) cb("new text") end
-  hn.list_comments()
-  ui.pick_comment, vim.ui.select, vim.ui.input = original_pick, original_select, original_input
+  hn.edit_comment(c)
+  vim.ui.input = original_input
 
   T.eq(comments.get(id).text, "new text")
   local marks = vim.api.nvim_buf_get_extmarks(b, comments.ns, 0, -1, { details = true })
-  local labels = {}
+  local callout_text
   for _, mark in ipairs(marks) do
-    if mark[4].virt_text then table.insert(labels, mark[4].virt_text[1][1]) end
+    if mark[4].virt_lines then callout_text = mark[4].virt_lines[1][2][1] end
   end
-  T.eq(labels, { "● new text" })
+  T.ok(callout_text and callout_text:find("new text", 1, true), "callout shows edited text")
 end)
 
 T.test("init: git context returns nil when git cannot spawn", function()
