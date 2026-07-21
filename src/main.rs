@@ -1,3 +1,4 @@
+mod bridge;
 mod daemon;
 mod doctor;
 mod extract;
@@ -14,8 +15,10 @@ fn main() {
         "sidebar" => run(daemon::sidebar_cmd),
         "daemon-gc" => run(daemon::gc_cmd),
         "doctor" => run(doctor::doctor_cmd),
+        "pick-file" => run(bridge::pick_file_cmd),
+        "picker" => run(picker::picker_cmd),
         _ => {
-            eprintln!("usage: herdr-nvim <toggle|sidebar|daemon-gc|doctor>");
+            eprintln!("usage: herdr-nvim <toggle|sidebar|daemon-gc|doctor|pick-file|picker>");
             2
         }
     };

@@ -37,6 +37,11 @@ pub struct Handoff {
     /// Index into `candidates`; written back by the picker on Enter.
     pub chosen: Option<usize>,
     pub workspace: String,
+    /// Tab the pick-file action was invoked from; the finisher opens/reuses the
+    /// sidebar in this tab (phase 2 threads this into a `maneuver::Ctx`).
+    pub tab: String,
+    /// Pane focused when the action was invoked (used as the `Ctx` focused pane).
+    pub focused_pane: String,
 }
 
 /// Return the indices of `cands` whose path tail (final `/`-separated segment)

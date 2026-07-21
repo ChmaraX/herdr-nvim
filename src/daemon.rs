@@ -192,7 +192,7 @@ pub fn sidebar_cmd() -> Result<()> {
 /// Locate the plugin root (the directory containing `lua/herdr-nvim`) so the
 /// daemon can `require('herdr-nvim')`. `HERDR_NVIM_PLUGIN_ROOT` overrides;
 /// otherwise walk up from this executable.
-fn plugin_root() -> Result<PathBuf> {
+pub(crate) fn plugin_root() -> Result<PathBuf> {
     if let Some(root) = env::var_os("HERDR_NVIM_PLUGIN_ROOT") {
         return Ok(PathBuf::from(root));
     }
