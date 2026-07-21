@@ -2,10 +2,10 @@ local M = {}
 local comments = require("herdr-nvim.comments")
 local agents = require("herdr-nvim.agents")
 
--- Underline the annotated range (theme-aware undercurl, no background fill, so
--- the code text underneath stays fully readable). Callout marker/text reuse the
--- diagnostic "warn" styling every colorscheme defines.
-vim.api.nvim_set_hl(0, "HerdrNvimComment", { default = true, link = "DiagnosticUnderlineWarn" })
+-- A vertical bar in the sign column spans the annotated block and bends into the
+-- callout below it (like an editor scope line, but marking your comment). Uses
+-- the diagnostic "warn" color every colorscheme defines; never touches the code
+-- text itself, so it stays fully readable.
 vim.api.nvim_set_hl(0, "HerdrNvimCommentSign", { default = true, link = "DiagnosticWarn" })
 vim.api.nvim_set_hl(0, "HerdrNvimCommentText", { default = true, link = "DiagnosticVirtualTextWarn" })
 
@@ -28,9 +28,8 @@ function M.input_comment(on_done)
   end)
 end
 
--- The virtual lines rendered beneath an annotated block: a callout showing the
--- full comment text on its own line (much more visible than end-of-line text,
--- and it never covers the code).
+-- The virtual lines rendered beneath an annotated block: the bar bends (╰─) into
+-- a callout showing the full comment text on its own line (never covers code).
 function M._callout(text)
   return { { { "╰─ ", "HerdrNvimCommentSign" }, { "💬 " .. text, "HerdrNvimCommentText" } } }
 end
@@ -41,25 +40,30 @@ function M.decorate(id)
     return
   end
   local ns = comments.ns
-  -- 1. Undercurl over the annotated range (end_row/end_col exclusive → cover
-  --    through the final selected line).
-  local hl = vim.api.nvim_buf_set_extmark(c.bufnr, ns, c.start_line - 1, 0, {
-    end_row = c.end_line,
-    end_col = 0,
-    hl_group = "HerdrNvimComment",
-  })
-  -- 2. Callout line(s) beneath the block.
+  -- 1. A vertical bar in the sign column on every line of the block: the top
+  --    line rounds in (╭), the rest continue (│); the callout below closes it.
+  local signs = {}
+  for line = c.start_line, c.end_line do
+    local glyph = (line == c.start_line) and "╭" or "│"
+    signs[#signs + 1] = vim.api.nvim_buf_set_extmark(c.bufnr, ns, line - 1, 0, {
+      sign_text = glyph,
+      sign_hl_group = "HerdrNvimCommentSign",
+    })
+  end
+  -- 2. Callout line beneath the block.
   local callout = vim.api.nvim_buf_set_extmark(c.bufnr, ns, c.end_line - 1, 0, {
     virt_lines = M._callout(c.text),
     virt_lines_above = false,
   })
-  decorations[id] = { hl = hl, callout = callout, bufnr = c.bufnr }
+  decorations[id] = { signs = signs, callout = callout, bufnr = c.bufnr }
 end
 
 function M.undecorate(id)
   local marks = decorations[id]
   if marks and vim.api.nvim_buf_is_valid(marks.bufnr) then
-    vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, marks.hl)
+    for _, sign in ipairs(marks.signs) do
+      vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, sign)
+    end
     vim.api.nvim_buf_del_extmark(marks.bufnr, comments.ns, marks.callout)
   end
   decorations[id] = nil

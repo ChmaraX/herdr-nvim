@@ -11,42 +11,40 @@ T.test("ui: visual_range normalizes reversed marks", function()
   T.eq({ s, e }, { 1, 3 })
 end)
 
-T.test("ui: decorate underlines the range + adds a callout below, undecorate removes both", function()
+T.test("ui: decorate marks each line of the block with a sign bar + a callout, undecorate removes both", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "x", "y" })
-  local id = comments.add(b, 1, 2, "needs work here truly")
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "x", "y", "z" })
+  local id = comments.add(b, 1, 2, "needs work here truly") -- 2-line block
   ui.decorate(id)
   local marks = vim.api.nvim_buf_get_extmarks(b, comments.ns, 0, -1, { details = true })
-  local hl, callout
+  local signs, callout = 0, nil
   for _, m in ipairs(marks) do
-    if m[4].hl_group == "HerdrNvimComment" then hl = m end
+    if m[4].sign_text then signs = signs + 1 end
     if m[4].virt_lines then callout = m end
   end
-  T.ok(hl, "expected an underline hl extmark over the range")
-  T.eq({ hl[4].end_row, hl[4].end_col }, { 2, 0 }, "underline should cover through the final selected line")
+  T.eq(signs, 2, "one sign per annotated line")
   T.ok(callout, "expected a callout virt_lines extmark")
   ui.undecorate(id)
   marks = vim.api.nvim_buf_get_extmarks(b, comments.ns, 0, -1, { details = true })
   for _, m in ipairs(marks) do
+    T.ok(not m[4].sign_text, "signs removed")
     T.ok(not m[4].virt_lines, "callout removed")
-    T.ok(m[4].hl_group ~= "HerdrNvimComment", "underline removed")
   end
 end)
 
-T.test("ui: one-line decoration underline covers that line", function()
+T.test("ui: one-line decoration marks a single line", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(b, 0, -1, false, { "x", "y" })
   local id = comments.add(b, 1, 1, "single")
   ui.decorate(id)
   local marks = vim.api.nvim_buf_get_extmarks(b, comments.ns, 0, -1, { details = true })
-  local hl
+  local signs = 0
   for _, m in ipairs(marks) do
-    if m[4].hl_group == "HerdrNvimComment" then hl = m end
+    if m[4].sign_text then signs = signs + 1 end
   end
-  T.ok(hl, "expected underline extmark")
-  T.eq({ hl[2], hl[3], hl[4].end_row, hl[4].end_col }, { 0, 0, 1, 0 })
+  T.eq(signs, 1)
 end)
 
 T.test("ui: comment row format", function()
