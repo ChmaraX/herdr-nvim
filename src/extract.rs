@@ -10,8 +10,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// A file path discovered in agent output, with an optional 1-based line number.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub path: String,
     pub line: Option<u32>,

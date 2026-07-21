@@ -4,6 +4,7 @@ mod extract;
 mod herdr;
 mod layout;
 mod maneuver;
+mod picker;
 mod state;
 
 fn main() {
