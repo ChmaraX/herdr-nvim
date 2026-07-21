@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use std::io::{self, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -80,6 +80,10 @@ pub fn picker_cmd() -> Result<()> {
         std::fs::write(&handoff_path, encoded)
             .with_context(|| format!("writing handoff {handoff_path}"))?;
         spawn_finish(&handoff_path)?;
+    } else {
+        // Dismissed (Esc/q, or nothing to pick): no finisher will run to delete
+        // the handoff, so remove it here to avoid leaking the temp file.
+        let _ = std::fs::remove_file(&handoff_path);
     }
     Ok(())
 }
@@ -174,14 +178,39 @@ fn render(cands: &[Candidate], matches: &[usize], cursor: usize, query: &str) ->
 }
 
 /// Spawn the detached finisher that acts on the written selection.
+///
+/// The overlay pane closes the instant this picker process exits, and herdr
+/// tears down the pane's whole *session* on close. A plain child would share
+/// that session and be killed mid-flight (before it can open the sidebar and
+/// load the file). So put the finisher in its own session via setsid(2) — the
+/// same rule the nvim daemon relies on to outlive the sidebar pane (see
+/// `daemon.rs`) — and detach its stdio from the pane's terminal.
 fn spawn_finish(handoff_path: &str) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
     let exe = std::env::current_exe().context("resolving current executable")?;
-    Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("pick-file")
         .arg("--finish")
         .arg(handoff_path)
-        .spawn()
-        .context("spawning finisher")?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the pre_exec closure runs post-fork/pre-exec in the child. It only
+    // calls setsid(2), which is async-signal-safe and touches no shared memory.
+    // A fresh fork is never a process-group leader, so setsid succeeds; we ignore
+    // its result either way so a failure can't abort the (valid) exec.
+    unsafe {
+        command.pre_exec(|| {
+            extern "C" {
+                fn setsid() -> i32;
+            }
+            setsid();
+            Ok(())
+        });
+    }
+    command.spawn().context("spawning finisher")?;
     Ok(())
 }
 

@@ -170,18 +170,37 @@ fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Resul
 }
 
 /// Open `path` (optionally at `line`) in the headless nvim daemon on `socket`.
+///
+/// Line jumping is done with `--remote-expr cursor(...)` rather than the tempting
+/// `--remote +<line> <path>`: nvim treats `--remote +5` as a *filename* (it opens
+/// a buffer literally named `+5` and leaves the cursor on line 1), so `+<line>`
+/// only works when *launching* nvim, not against a running server. `--remote-expr`
+/// is also mode-independent (works even mid-insert) and needs no path escaping.
 fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>) -> Result<()> {
-    let mut command = Command::new("nvim");
-    command.arg("--server").arg(socket).arg("--remote");
-    if let Some(line) = line {
-        command.arg(format!("+{line}"));
-    }
-    command.arg(path);
-    let status = command
+    // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
+    // path with spaces needs no escaping.
+    let status = Command::new("nvim")
+        .arg("--server")
+        .arg(socket)
+        .arg("--remote")
+        .arg(path)
         .status()
         .context("failed to run nvim --server --remote")?;
     if !status.success() {
         bail!("nvim --remote failed to open {path}");
+    }
+    // Jump to the line, if known.
+    if let Some(line) = line {
+        let status = Command::new("nvim")
+            .arg("--server")
+            .arg(socket)
+            .arg("--remote-expr")
+            .arg(format!("cursor({line}, 1)"))
+            .status()
+            .context("failed to run nvim --server --remote-expr")?;
+        if !status.success() {
+            bail!("nvim --remote-expr failed to jump to line {line} in {path}");
+        }
     }
     Ok(())
 }
