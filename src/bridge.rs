@@ -125,6 +125,22 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     };
     let mut herdr = CliHerdr;
 
+    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)?;
+
+    cleanup_handoff(handoff_path);
+    Ok(())
+}
+
+/// Ensure the sidebar is open in `ctx.tab`, open `path` (optionally at
+/// `line`) in that tab's nvim daemon, and focus the sidebar. Shared by the
+/// pick-file finisher above and (from a later task) `open-link`'s Ctrl+click
+/// handler — one behavior, two entry points.
+pub(crate) fn open_in_sidebar(
+    h: &mut dyn Herdr,
+    ctx: &Ctx,
+    path: &str,
+    line: Option<u32>,
+) -> Result<()> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
@@ -134,12 +150,10 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config)?;
 
     let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab);
-    let sidebar = ensure_sidebar_open(&mut herdr, &ctx, &sidebar_cmd)?;
+    let sidebar = ensure_sidebar_open(h, ctx, &sidebar_cmd)?;
 
-    open_in_nvim(&socket, &candidate.path, candidate.line)?;
+    open_in_nvim(&socket, path, line)?;
     focus_pane(&sidebar);
-
-    cleanup_handoff(handoff_path);
     Ok(())
 }
 
