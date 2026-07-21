@@ -14,7 +14,12 @@
 //! picker uses (Task 4). Any failure to parse or resolve is a silent no-op
 //! (exit 0) — never a popup/notification for a misclick.
 
-use crate::extract::parse_token;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use crate::extract::{parse_token, resolve};
 
 /// Strip trailing sentence punctuation (`.`, `,`) agents' prose often leaves
 /// stuck to a path the link regex swept up.
@@ -70,8 +75,55 @@ pub(crate) fn parse_clicked(text: &str) -> Option<(String, Option<u32>)> {
     Some((path.to_owned(), line))
 }
 
+/// Resolve a parsed clicked `path` to a real file on disk: try it directly
+/// against `cwd` first (this also covers absolute and `~`-expanded input,
+/// since `extract::resolve` only joins `cwd` for genuinely relative paths),
+/// then — for relative input only — against `cwd`'s git toplevel (agents
+/// often print repo-root-relative paths from inside a subdirectory). Pure
+/// aside from the two injected closures; returns `None` if nothing exists.
+pub(crate) fn resolve_click(
+    path: &str,
+    cwd: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+    git_toplevel: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let direct = resolve(path, cwd);
+    if exists(&direct) {
+        return Some(direct);
+    }
+    if path.starts_with('/') || path.starts_with('~') {
+        // extract::resolve ignores cwd for absolute/~ input, so retrying
+        // against the toplevel would resolve to this exact same (already
+        // failed) path — skip the wasted git shell-out.
+        return None;
+    }
+    let toplevel = git_toplevel(cwd)?;
+    let via_toplevel = resolve(path, &toplevel);
+    exists(&via_toplevel).then_some(via_toplevel)
+}
+
+/// Shell out to `git -C <cwd> rev-parse --show-toplevel`. `None` if `git`
+/// fails or isn't on PATH (e.g. `cwd` isn't inside a repo).
+fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use super::*;
 
     #[test]
@@ -140,6 +192,54 @@ mod tests {
         assert_eq!(
             parse_clicked("file:///Users/adam/my%20project/main.rs"),
             Some(("/Users/adam/my project/main.rs".to_owned(), None))
+        );
+    }
+
+    #[test]
+    fn resolves_directly_against_cwd_when_it_exists() {
+        let exists = |p: &Path| p == Path::new("/repo/src/main.rs");
+        let toplevel = |_: &Path| panic!("git_toplevel should not be called when cwd resolves");
+        let resolved = resolve_click("src/main.rs", Path::new("/repo"), &exists, &toplevel);
+        assert_eq!(resolved, Some(PathBuf::from("/repo/src/main.rs")));
+    }
+
+    #[test]
+    fn falls_back_to_git_toplevel_for_relative_path() {
+        let exists = |p: &Path| p == Path::new("/repo/src/main.rs");
+        let toplevel = |_: &Path| Some(PathBuf::from("/repo"));
+        let resolved =
+            resolve_click("src/main.rs", Path::new("/repo/sub/dir"), &exists, &toplevel);
+        assert_eq!(resolved, Some(PathBuf::from("/repo/src/main.rs")));
+    }
+
+    #[test]
+    fn returns_none_when_neither_cwd_nor_toplevel_has_it() {
+        let exists = |_: &Path| false;
+        let toplevel = |_: &Path| Some(PathBuf::from("/repo"));
+        assert_eq!(
+            resolve_click("src/ghost.rs", Path::new("/repo/sub"), &exists, &toplevel),
+            None
+        );
+    }
+
+    #[test]
+    fn absolute_path_never_tries_git_toplevel() {
+        let exists = |_: &Path| false;
+        let toplevel = |_: &Path| panic!("git_toplevel should not be called for absolute paths");
+        assert_eq!(
+            resolve_click("/tmp/ghost.rs", Path::new("/repo"), &exists, &toplevel),
+            None
+        );
+    }
+
+    #[test]
+    fn tilde_path_expands_via_home_before_exists_check() {
+        env::set_var("HOME", "/home/u");
+        let exists = |p: &Path| p == Path::new("/home/u/notes.md");
+        let toplevel = |_: &Path| panic!("git_toplevel should not be called for ~ paths");
+        assert_eq!(
+            resolve_click("~/notes.md", Path::new("/repo"), &exists, &toplevel),
+            Some(PathBuf::from("/home/u/notes.md"))
         );
     }
 }
