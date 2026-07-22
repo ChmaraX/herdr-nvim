@@ -25,7 +25,7 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::extract::Candidate;
+use crate::extract::ScrapedPath;
 
 /// Environment variable holding the path to the handoff JSON file.
 const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
@@ -33,7 +33,7 @@ const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
 /// Handoff document exchanged between the bridge and the picker overlay.
 #[derive(Serialize, Deserialize)]
 pub struct Handoff {
-    pub candidates: Vec<Candidate>,
+    pub candidates: Vec<ScrapedPath>,
     /// Index into `candidates`; written back by the picker on Enter.
     pub chosen: Option<usize>,
     pub workspace: String,
@@ -47,7 +47,7 @@ pub struct Handoff {
 /// Return the indices of `cands` whose path tail (final `/`-separated segment)
 /// contains `query` as a case-insensitive substring. An empty query matches
 /// every candidate. Pure: no I/O, deterministic, unit tested.
-pub fn filter(cands: &[Candidate], query: &str) -> Vec<usize> {
+pub fn filter(cands: &[ScrapedPath], query: &str) -> Vec<usize> {
     let needle = query.to_lowercase();
     cands
         .iter()
@@ -109,7 +109,7 @@ impl Drop for TerminalGuard {
 
 /// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
 /// or `None` if the user dismissed it (Esc/q) or there is nothing to pick.
-fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
+fn run_overlay(cands: &[ScrapedPath]) -> Result<Option<usize>> {
     if cands.is_empty() {
         return Ok(None);
     }
@@ -154,7 +154,7 @@ fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
 }
 
 /// Draw the match list (with a `> ` cursor row) and a `filter: <query>` footer.
-fn render(cands: &[Candidate], matches: &[usize], cursor: usize, query: &str) -> Result<()> {
+fn render(cands: &[ScrapedPath], matches: &[usize], cursor: usize, query: &str) -> Result<()> {
     let mut out = io::stdout();
     queue!(out, Clear(ClearType::All), MoveTo(0, 0)).context("clearing screen")?;
     for (row, &index) in matches.iter().enumerate() {
@@ -218,8 +218,8 @@ fn spawn_finish(handoff_path: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn cand(path: &str) -> Candidate {
-        Candidate {
+    fn cand(path: &str) -> ScrapedPath {
+        ScrapedPath {
             path: path.into(),
             line: None,
         }

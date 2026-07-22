@@ -1,7 +1,7 @@
 //! Pure path extraction from agent-pane output.
 //!
 //! Reads a raw terminal pane capture (newest lines last), strips TUI chrome,
-//! and returns the file paths mentioned in it as [`Candidate`]s ordered
+//! and returns the file paths mentioned in it as [`ScrapedPath`]s ordered
 //! newest-first. This module performs no I/O of its own: existence is checked
 //! through an injected closure so it stays deterministic and testable.
 
@@ -12,9 +12,11 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// A file path discovered in agent output, with an optional 1-based line number.
+/// A file path discovered in agent output, with an optional 1-based line
+/// number. Used only for the scrape fallback layer (see
+/// candidates::build_candidates).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Candidate {
+pub struct ScrapedPath {
     pub path: String,
     pub line: Option<u32>,
 }
@@ -28,13 +30,13 @@ pub struct Candidate {
 ///
 /// Returns candidates deduped by resolved path (keeping the newest occurrence's
 /// line number), ordered newest-first (reverse document order).
-pub fn extract(text: &str, cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Vec<Candidate> {
+pub fn extract(text: &str, cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Vec<ScrapedPath> {
     // TUI chrome characters that never belong to a path.
     const CHROME: [char; 13] = [
         '│', '┃', '╭', '╮', '╰', '╯', '─', '━', '═', '├', '┤', '●', '∴',
     ];
 
-    let mut all: Vec<Candidate> = Vec::new();
+    let mut all: Vec<ScrapedPath> = Vec::new();
     for line in text.lines() {
         let cleaned = line.replace(CHROME, " ");
         for raw in cleaned.split_whitespace() {
@@ -45,7 +47,7 @@ pub fn extract(text: &str, cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Vec<Ca
             if let Some((path, lineno)) = parse_token(tok) {
                 let resolved = resolve(path, cwd);
                 if exists(&resolved) {
-                    all.push(Candidate {
+                    all.push(ScrapedPath {
                         path: resolved.to_string_lossy().into_owned(),
                         line: lineno,
                     });
@@ -156,7 +158,7 @@ mod tests {
         );
         assert_eq!(
             c,
-            vec![Candidate {
+            vec![ScrapedPath {
                 path: "/tmp/a/b.rs".into(),
                 line: Some(42)
             }]
@@ -181,7 +183,7 @@ mod tests {
         let c = extract(text, Path::new("/"), &always);
         assert_eq!(
             c[0],
-            Candidate {
+            ScrapedPath {
                 path: "/tmp/old.rs".into(),
                 line: Some(9)
             }
