@@ -46,19 +46,36 @@ pub struct Handoff {
     pub cwd: String,
 }
 
-/// Return the indices of `cands` whose path tail (final `/`-separated segment)
-/// contains `query` as a case-insensitive substring. An empty query matches
-/// every candidate. Pure: no I/O, deterministic, unit tested.
-pub fn filter(cands: &[Candidate], query: &str) -> Vec<usize> {
+pub struct FilterMatch {
+    pub index: usize,
+    pub highlight: Option<(usize, usize)>,
+}
+
+/// Return the candidates whose full `path` contains `query` as a
+/// case-insensitive substring (whole-path match, not just the filename
+/// tail -- v2 behavior per the brief). An empty query matches everything
+/// with no highlight. Pure: no I/O, deterministic, unit tested.
+pub fn filter(cands: &[Candidate], query: &str) -> Vec<FilterMatch> {
+    if query.is_empty() {
+        return (0..cands.len())
+            .map(|index| FilterMatch {
+                index,
+                highlight: None,
+            })
+            .collect();
+    }
     let needle = query.to_lowercase();
     cands
         .iter()
         .enumerate()
-        .filter(|(_, cand)| {
-            let tail = cand.path.rsplit('/').next().unwrap_or(cand.path.as_str());
-            tail.to_lowercase().contains(&needle)
+        .filter_map(|(index, cand)| {
+            let lower = cand.path.to_lowercase();
+            let start = lower.find(&needle)?;
+            Some(FilterMatch {
+                index,
+                highlight: Some((start, needle.len())),
+            })
         })
-        .map(|(index, _)| index)
         .collect()
 }
 
@@ -135,7 +152,7 @@ fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
-            KeyCode::Enter => return Ok(matches.get(cursor).copied()),
+            KeyCode::Enter => return Ok(matches.get(cursor).map(|m| m.index)),
             KeyCode::Up | KeyCode::Char('k') => cursor = cursor.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 if cursor + 1 < matches.len() {
@@ -156,15 +173,15 @@ fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
 }
 
 /// Draw the match list (with a `> ` cursor row) and a `filter: <query>` footer.
-fn render(cands: &[Candidate], matches: &[usize], cursor: usize, query: &str) -> Result<()> {
+fn render(cands: &[Candidate], matches: &[FilterMatch], cursor: usize, query: &str) -> Result<()> {
     let mut out = io::stdout();
     queue!(out, Clear(ClearType::All), MoveTo(0, 0)).context("clearing screen")?;
-    for (row, &index) in matches.iter().enumerate() {
+    for (row, m) in matches.iter().enumerate() {
         let marker = if row == cursor { "> " } else { "  " };
         queue!(
             out,
             MoveTo(0, row as u16),
-            Print(format!("{marker}{}", cands[index].path)),
+            Print(format!("{marker}{}", cands[m.index].path)),
         )
         .context("drawing candidate row")?;
     }
@@ -231,11 +248,37 @@ mod tests {
     }
 
     #[test]
-    fn filter_matches_tail_case_insensitive() {
-        let c = vec![cand("/a/Main.rs"), cand("/a/lib.rs")];
-        assert_eq!(filter(&c, "main"), vec![0]);
-        assert_eq!(filter(&c, ""), vec![0, 1]);
-        assert_eq!(filter(&c, ".rs"), vec![0, 1]);
-        assert_eq!(filter(&c, "zzz"), Vec::<usize>::new());
+    fn filter_matches_whole_path_not_just_tail() {
+        let c = vec![cand("/repo/src/main.rs"), cand("/repo/lib/util.rs")];
+        let m = filter(&c, "src");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].index, 0);
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let c = vec![cand("/repo/Main.rs")];
+        assert_eq!(filter(&c, "MAIN").len(), 1);
+    }
+
+    #[test]
+    fn empty_query_matches_everything_with_no_highlight() {
+        let c = vec![cand("/repo/a.rs"), cand("/repo/b.rs")];
+        let m = filter(&c, "");
+        assert_eq!(m.len(), 2);
+        assert!(m[0].highlight.is_none());
+    }
+
+    #[test]
+    fn highlight_span_points_at_the_match() {
+        let c = vec![cand("/repo/src/main.rs")];
+        let m = filter(&c, "main");
+        assert_eq!(m[0].highlight, Some((10, 4))); // "main" starts at byte 10 in "/repo/src/main.rs"
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let c = vec![cand("/repo/a.rs")];
+        assert!(filter(&c, "zzz").is_empty());
     }
 }
