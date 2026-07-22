@@ -70,6 +70,48 @@ pub(crate) fn parse_pi_session(text: &str) -> Vec<RawEvent> {
     out
 }
 
+/// Parse a claude-code session JSONL file into file-path tool-use events.
+/// Same defensive contract as `parse_pi_session`: any unparseable line or
+/// unrecognized tool name is skipped, never an error.
+pub(crate) fn parse_claude_session(text: &str) -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(unix_ts) = value.get("timestamp").and_then(Value::as_str) else {
+            continue;
+        };
+        let unix_ts = parse_iso8601_unix(unix_ts);
+        let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in content {
+            if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let Some(name) = item.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let op = match name {
+                "Write" => RawOp::Write,
+                "MultiEdit" | "NotebookEdit" | "Edit" => RawOp::Edit,
+                "Read" => RawOp::Read,
+                _ => continue,
+            };
+            let Some(path) = item.pointer("/input/file_path").and_then(Value::as_str) else {
+                continue;
+            };
+            out.push(RawEvent {
+                path: path.to_owned(),
+                op,
+                unix_ts,
+            });
+        }
+    }
+    out
+}
+
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff]Z` (UTC only) into unix seconds. `None`
 /// for any other shape — a malformed timestamp must never panic or bubble
 /// an error into the picker; callers simply treat it as "no timestamp".
@@ -181,5 +223,20 @@ mod tests {
         let events = parse_pi_session(text);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].path, "/repo/a.rs");
+    }
+
+    #[test]
+    fn claude_basic_fixture_yields_read_write_edit_multiedit_ignoring_bash() {
+        let text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
+        let events = parse_claude_session(text);
+        assert_eq!(events.len(), 4, "Bash tool_use must be ignored: {events:?}");
+        assert_eq!(events[0].path, "/repo/src/lib.rs");
+        assert!(matches!(events[0].op, RawOp::Read));
+        assert_eq!(events[1].path, "/repo/src/new_mod.rs");
+        assert!(matches!(events[1].op, RawOp::Write));
+        assert_eq!(events[2].path, "/repo/src/lib.rs");
+        assert!(matches!(events[2].op, RawOp::Edit));
+        assert_eq!(events[3].path, "/repo/src/lib.rs");
+        assert!(matches!(events[3].op, RawOp::Edit)); // MultiEdit folds into Edit
     }
 }
