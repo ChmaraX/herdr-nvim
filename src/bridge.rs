@@ -25,7 +25,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    candidates::{self, BuildInput, Candidate, GitOnlyEdit},
+    candidates::{self, BuildInput, Candidate, GitOnlyEdit, Section},
     config, daemon, extract, gitscan,
     herdr::{CliHerdr, Herdr},
     maneuver::{self, Ctx},
@@ -161,7 +161,7 @@ fn gather_candidates(
 
     let scraped = extract::extract(scrape_text, cwd, exists);
 
-    candidates::build_candidates(BuildInput {
+    let mut candidates = candidates::build_candidates(BuildInput {
         mined_edits: &mined.edits,
         mined_reads: &mined.reads,
         session_start_unix: mined.session_start_unix,
@@ -171,7 +171,30 @@ fn gather_candidates(
         git_only_dirty_not_mined: &git_only,
         scraped_mentioned: &scraped,
         exists: &exists_str,
-    })
+    });
+
+    if let Some(top) = &toplevel {
+        for candidate in &mut candidates {
+            // Only EDITED, git-tracked, currently-dirty, non-newly-created
+            // entries get a diff stat (brief-equivalent scope for this
+            // follow-up): newly-created files already show the `new` badge;
+            // an EDITED entry kept only because it was committed during the
+            // session is now clean (no diff to show); non-git files were
+            // never dirty-tracked at all.
+            if candidate.section == Section::Edited
+                && !candidate.newly_created
+                && git_dirty.contains(&candidate.path)
+            {
+                if let Ok((added, removed)) = gitscan::diff_numstat(top, &candidate.path) {
+                    if added > 0 || removed > 0 {
+                        candidate.diff_stat = Some((added, removed));
+                    }
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 /// Phase 2: act on the user's selection from the handoff file.

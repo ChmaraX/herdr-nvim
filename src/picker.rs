@@ -133,19 +133,6 @@ pub fn smart_path(path: &str, cwd: &str, home: Option<&str>, max_width: usize) -
     }
 }
 
-/// Relative age from `last_edit_unix` to `now_unix` as a short label:
-/// minutes under an hour, hours under a day, else days.
-pub fn format_age(now_unix: u64, last_edit_unix: u64) -> String {
-    let delta = now_unix.saturating_sub(last_edit_unix);
-    if delta < 3600 {
-        format!("{}m", delta / 60)
-    } else if delta < 86_400 {
-        format!("{}h", delta / 3600)
-    } else {
-        format!("{}d", delta / 86_400)
-    }
-}
-
 /// Compute the visible window `[first, first+count)` of a `total`-length
 /// list given the terminal `viewport_rows` and the current `cursor` index,
 /// keeping `cursor` always in view (classic "scroll to keep selection
@@ -233,10 +220,6 @@ fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Opt
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
     let mut cursor = initial_cursor(&filter(cands, ""), cands);
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
 
     loop {
         let matches = filter(cands, &query);
@@ -244,9 +227,7 @@ fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Opt
             cursor = matches.len().saturating_sub(1);
         }
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 20));
-        render(
-            cands, &matches, cursor, &query, cwd, home, now_unix, cols, rows,
-        )?;
+        render(cands, &matches, cursor, &query, cwd, home, cols, rows)?;
 
         let Event::Key(key) = event::read().context("reading terminal event")? else {
             continue;
@@ -276,17 +257,18 @@ fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Opt
     }
 }
 
-/// Draw the sectioned, scrollable, badged match list.
+/// Draw the title bar, sectioned/scrollable/badged match list.
 ///
-/// Layout: row 0 is the filter input (`> {query}`); the last row is a
-/// footer (`⏎ open · esc close` ... `matched/total`, right-aligned); the
-/// rows between are an ` EDITED`/` MENTIONED` header (only before the
-/// first row of a section that actually has visible rows -- an empty
-/// section is simply never headered, matching the brief's "empty sections
-/// collapse away") followed by that section's candidate rows. `matches` is
-/// already EDITED-then-MENTIONED ordered (candidates::build_candidates'
-/// invariant, preserved by `filter`), so a single forward scan detects
-/// every section boundary.
+/// Layout: row 0 is a title (`touched this session`, centered/bold/dim);
+/// row 1 is the filter input (`> {query}`); the last row is a footer
+/// (`⏎ open · esc close` ... `matched/total`, right-aligned); the rows
+/// between are an ` EDITED`/` MENTIONED` header (only before the first row
+/// of a section that actually has visible rows -- an empty section is
+/// simply never headered, matching the brief's "empty sections collapse
+/// away") followed by that section's candidate rows. `matches` is already
+/// EDITED-then-MENTIONED ordered (candidates::build_candidates' invariant,
+/// preserved by `filter`), so a single forward scan detects every section
+/// boundary.
 ///
 /// Not unit tested: crossterm terminal interaction: exercised live (Task 18).
 #[allow(clippy::too_many_arguments)]
@@ -297,20 +279,31 @@ fn render(
     query: &str,
     cwd: &str,
     home: Option<&str>,
-    now_unix: u64,
     cols: u16,
     rows: u16,
 ) -> Result<()> {
     let mut out = io::stdout();
     queue!(out, Clear(ClearType::All), MoveTo(0, 0)).context("clearing screen")?;
 
-    queue!(out, MoveTo(0, 0), Print(format!("> {query}"))).context("drawing filter input")?;
+    const TITLE: &str = "touched this session";
+    let title_pad = (cols as usize).saturating_sub(TITLE.len()) / 2;
+    queue!(
+        out,
+        MoveTo(0, 0),
+        SetAttribute(Attribute::Bold),
+        SetAttribute(Attribute::Dim),
+        Print(format!("{}{TITLE}", " ".repeat(title_pad))),
+        SetAttribute(Attribute::Reset)
+    )
+    .context("drawing title")?;
 
-    let viewport_rows = (rows as usize).saturating_sub(4).max(1);
+    queue!(out, MoveTo(0, 1), Print(format!("> {query}"))).context("drawing filter input")?;
+
+    let viewport_rows = (rows as usize).saturating_sub(5).max(1);
     let (first, count) = scroll_window(cursor, matches.len(), viewport_rows);
     let visible = &matches[first..(first + count).min(matches.len())];
 
-    let mut screen_row: u16 = 1;
+    let mut screen_row: u16 = 2;
     let mut last_section: Option<candidates::Section> = None;
     let path_width = (cols as usize).saturating_sub(12).max(4);
 
@@ -383,12 +376,11 @@ fn render(
         if cand.newly_created {
             suffix.push_str("  new");
         }
-        if let Some(last_edit_unix) = cand.last_edit_unix {
-            suffix.push_str("  ");
-            suffix.push_str(&format_age(now_unix, last_edit_unix));
+        if let Some((added, removed)) = cand.diff_stat {
+            suffix.push_str(&format!("  +{added} -{removed}"));
         }
         if !suffix.is_empty() {
-            queue!(out, Print(suffix)).context("drawing badge/age suffix")?;
+            queue!(out, Print(suffix)).context("drawing badge/diff-stat suffix")?;
         }
 
         screen_row += 1;
@@ -461,6 +453,7 @@ mod tests {
             section: crate::candidates::Section::Edited,
             newly_created: false,
             last_edit_unix: None,
+            diff_stat: None,
         }
     }
 
@@ -471,6 +464,7 @@ mod tests {
             section,
             newly_created: false,
             last_edit_unix: None,
+            diff_stat: None,
         }
     }
 
@@ -560,14 +554,6 @@ mod tests {
             sp.bold_name == "file.rs",
             "filename tail must never be the part elided"
         );
-    }
-
-    #[test]
-    fn format_age_buckets() {
-        assert_eq!(format_age(1000, 1000), "0m");
-        assert_eq!(format_age(1000 + 90, 1000), "1m");
-        assert_eq!(format_age(1000 + 3600, 1000), "1h");
-        assert_eq!(format_age(1000 + 2 * 86400, 1000), "2d");
     }
 
     #[test]

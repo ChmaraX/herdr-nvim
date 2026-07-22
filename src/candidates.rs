@@ -24,6 +24,14 @@ pub struct Candidate {
     pub section: Section,
     pub newly_created: bool,
     pub last_edit_unix: Option<u64>,
+    /// Combined (added, removed) line counts from `git diff --numstat` for
+    /// EDITED entries that are git-tracked and currently dirty. `None` for
+    /// newly-created files (the `new` badge covers those), files kept in
+    /// EDITED only because they were committed during the session (now
+    /// clean -- no diff to show), non-git files, and all MENTIONED entries.
+    /// Populated by `bridge::gather_candidates` (I/O), never by this pure
+    /// module.
+    pub diff_stat: Option<(u32, u32)>,
 }
 
 pub struct GitOnlyEdit {
@@ -58,6 +66,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
                 section: Section::Edited,
                 newly_created: edit.newly_created,
                 last_edit_unix: edit.last_edit_unix,
+                diff_stat: None,
             });
         } else {
             demoted_paths.insert(edit.path.clone());
@@ -71,6 +80,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
             section: Section::Edited,
             newly_created: false,
             last_edit_unix: git_only.mtime_unix,
+            diff_stat: None,
         });
     }
 
@@ -92,6 +102,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
                 section: Section::Mentioned,
                 newly_created: false,
                 last_edit_unix: None,
+                diff_stat: None,
             });
         }
     } else {
@@ -105,6 +116,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
                 section: Section::Mentioned,
                 newly_created: false,
                 last_edit_unix: None,
+                diff_stat: None,
             });
         }
         for path in input.mined_reads {
@@ -117,6 +129,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
                 section: Section::Mentioned,
                 newly_created: false,
                 last_edit_unix: None,
+                diff_stat: None,
             });
         }
     }

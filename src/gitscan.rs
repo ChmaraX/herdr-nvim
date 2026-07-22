@@ -116,6 +116,44 @@ pub(crate) fn should_keep_edited(
     dirty || committed_in_session
 }
 
+/// Combined (added, removed) line counts for `path`, summing its unstaged
+/// diff (`git diff --numstat`) and staged diff (`git diff --cached
+/// --numstat`) -- a dirty file can have both staged and unstaged hunks, so
+/// neither alone is the full picture.
+pub(crate) fn diff_numstat(toplevel: &Path, path: &str) -> Result<(u32, u32)> {
+    let unstaged = run_diff_numstat(toplevel, path, false)?;
+    let staged = run_diff_numstat(toplevel, path, true)?;
+    Ok((unstaged.0 + staged.0, unstaged.1 + staged.1))
+}
+
+fn run_diff_numstat(toplevel: &Path, path: &str, cached: bool) -> Result<(u32, u32)> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(toplevel).arg("diff");
+    if cached {
+        command.arg("--cached");
+    }
+    command.arg("--numstat").arg("--").arg(path);
+    let output = command
+        .output()
+        .context("failed to run git diff --numstat")?;
+    if !output.status.success() {
+        anyhow::bail!("git diff --numstat failed");
+    }
+    Ok(parse_diff_numstat(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Pure: parses `git diff --numstat` stdout into summed (added, removed)
+/// line counts. Each line is `<added>\t<removed>\t<path>`; binary files use
+/// `-` for both counts, which contribute 0 (not an error).
+pub(crate) fn parse_diff_numstat(output: &str) -> (u32, u32) {
+    output.lines().fold((0u32, 0u32), |(add, rem), line| {
+        let mut parts = line.splitn(3, '\t');
+        let added: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let removed: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        (add + added, rem + removed)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +232,16 @@ src/c.rs
     #[test]
     fn non_git_path_always_kept() {
         assert!(should_keep_edited(false, false, false));
+    }
+
+    #[test]
+    fn parses_and_sums_numstat_lines_including_binary() {
+        let output = "3\t1\tsrc/a.rs\n0\t5\tsrc/b.rs\n-\t-\tassets/image.png\n";
+        assert_eq!(parse_diff_numstat(output), (3, 6));
+    }
+
+    #[test]
+    fn empty_output_sums_to_zero() {
+        assert_eq!(parse_diff_numstat(""), (0, 0));
     }
 }
