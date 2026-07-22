@@ -17,7 +17,7 @@ use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind},
     execute, queue,
-    style::Print,
+    style::{Attribute, Print, SetAttribute},
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -25,7 +25,7 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::candidates::Candidate;
+use crate::candidates::{self, Candidate};
 
 /// Environment variable holding the path to the handoff JSON file.
 const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
@@ -178,7 +178,8 @@ pub fn picker_cmd() -> Result<()> {
     let mut handoff: Handoff =
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
-    if let Some(chosen) = run_overlay(&handoff.candidates)? {
+    let home = std::env::var("HOME").ok();
+    if let Some(chosen) = run_overlay(&handoff.candidates, &handoff.cwd, home.as_deref())? {
         handoff.chosen = Some(chosen);
         let encoded = serde_json::to_string(&handoff)?;
         std::fs::write(&handoff_path, encoded)
@@ -190,6 +191,17 @@ pub fn picker_cmd() -> Result<()> {
         let _ = std::fs::remove_file(&handoff_path);
     }
     Ok(())
+}
+
+/// Row (within `matches`) to start the cursor on: the first EDITED entry, so
+/// Enter with no typing opens the file the agent just worked on. Falls back
+/// to row 0 (which may be a MENTIONED entry, or nothing) if there is no
+/// EDITED entry in the current match set.
+pub fn initial_cursor(matches: &[FilterMatch], cands: &[Candidate]) -> usize {
+    matches
+        .iter()
+        .position(|m| cands[m.index].section == candidates::Section::Edited)
+        .unwrap_or(0)
 }
 
 /// Restores the terminal (leave alternate screen, show cursor, disable raw
@@ -213,21 +225,28 @@ impl Drop for TerminalGuard {
 
 /// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
 /// or `None` if the user dismissed it (Esc/q) or there is nothing to pick.
-fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
+fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Option<usize>> {
     if cands.is_empty() {
         return Ok(None);
     }
 
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
-    let mut cursor = 0usize; // row within the current match list
+    let mut cursor = initial_cursor(&filter(cands, ""), cands);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     loop {
         let matches = filter(cands, &query);
         if cursor >= matches.len() {
             cursor = matches.len().saturating_sub(1);
         }
-        render(cands, &matches, cursor, &query)?;
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 20));
+        render(
+            cands, &matches, cursor, &query, cwd, home, now_unix, cols, rows,
+        )?;
 
         let Event::Key(key) = event::read().context("reading terminal event")? else {
             continue;
@@ -257,26 +276,139 @@ fn run_overlay(cands: &[Candidate]) -> Result<Option<usize>> {
     }
 }
 
-/// Draw the match list (with a `> ` cursor row) and a `filter: <query>` footer.
-fn render(cands: &[Candidate], matches: &[FilterMatch], cursor: usize, query: &str) -> Result<()> {
+/// Draw the sectioned, scrollable, badged match list.
+///
+/// Layout: row 0 is the filter input (`> {query}`); the last row is a
+/// footer (`⏎ open · esc close` ... `matched/total`, right-aligned); the
+/// rows between are an ` EDITED`/` MENTIONED` header (only before the
+/// first row of a section that actually has visible rows -- an empty
+/// section is simply never headered, matching the brief's "empty sections
+/// collapse away") followed by that section's candidate rows. `matches` is
+/// already EDITED-then-MENTIONED ordered (candidates::build_candidates'
+/// invariant, preserved by `filter`), so a single forward scan detects
+/// every section boundary.
+///
+/// Not unit tested: crossterm terminal interaction: exercised live (Task 18).
+#[allow(clippy::too_many_arguments)]
+fn render(
+    cands: &[Candidate],
+    matches: &[FilterMatch],
+    cursor: usize,
+    query: &str,
+    cwd: &str,
+    home: Option<&str>,
+    now_unix: u64,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
     let mut out = io::stdout();
     queue!(out, Clear(ClearType::All), MoveTo(0, 0)).context("clearing screen")?;
-    for (row, m) in matches.iter().enumerate() {
+
+    queue!(out, MoveTo(0, 0), Print(format!("> {query}"))).context("drawing filter input")?;
+
+    let viewport_rows = (rows as usize).saturating_sub(4).max(1);
+    let (first, count) = scroll_window(cursor, matches.len(), viewport_rows);
+    let visible = &matches[first..(first + count).min(matches.len())];
+
+    let mut screen_row: u16 = 1;
+    let mut last_section: Option<candidates::Section> = None;
+    let path_width = (cols as usize).saturating_sub(12).max(4);
+
+    for (offset, m) in visible.iter().enumerate() {
+        let row = first + offset;
+        let cand = &cands[m.index];
+        if last_section != Some(cand.section) {
+            let header = match cand.section {
+                candidates::Section::Edited => " EDITED",
+                candidates::Section::Mentioned => " MENTIONED",
+            };
+            queue!(out, MoveTo(0, screen_row), Print(header)).context("drawing section header")?;
+            screen_row += 1;
+            last_section = Some(cand.section);
+        }
+
         let marker = if row == cursor { "> " } else { "  " };
+        let sp = smart_path(&cand.path, cwd, home, path_width);
+
+        queue!(out, MoveTo(0, screen_row), Print(marker)).context("drawing row marker")?;
+
+        // The highlight span is a byte range into the raw full path; only
+        // apply it when it falls entirely within the displayed filename tail
+        // (the common case) -- a match inside the dim/ellipsized prefix is a
+        // documented, accepted simplification (see plan Risks): still counts
+        // toward matched/total, just renders with no visible highlight.
+        let name_start_in_path = cand.path.len().saturating_sub(sp.bold_name.len());
+        let name_highlight = m.highlight.and_then(|(start, len)| {
+            (start >= name_start_in_path && start + len <= cand.path.len())
+                .then(|| (start - name_start_in_path, len))
+        });
+
         queue!(
             out,
-            MoveTo(0, row as u16),
-            Print(format!("{marker}{}", cands[m.index].path)),
+            SetAttribute(Attribute::Dim),
+            Print(&sp.dim_prefix),
+            SetAttribute(Attribute::Reset)
         )
-        .context("drawing candidate row")?;
+        .context("drawing dim prefix")?;
+
+        match name_highlight {
+            Some((hstart, hlen)) if hstart + hlen <= sp.bold_name.len() => {
+                let (before, rest) = sp.bold_name.split_at(hstart);
+                let (mid, after) = rest.split_at(hlen);
+                queue!(
+                    out,
+                    SetAttribute(Attribute::Bold),
+                    Print(before),
+                    SetAttribute(Attribute::Reverse),
+                    Print(mid),
+                    SetAttribute(Attribute::Reset),
+                    SetAttribute(Attribute::Bold),
+                    Print(after),
+                    SetAttribute(Attribute::Reset),
+                )
+                .context("drawing highlighted filename")?;
+            }
+            _ => {
+                queue!(
+                    out,
+                    SetAttribute(Attribute::Bold),
+                    Print(&sp.bold_name),
+                    SetAttribute(Attribute::Reset),
+                )
+                .context("drawing filename")?;
+            }
+        }
+
+        let mut suffix = String::new();
+        if cand.newly_created {
+            suffix.push_str("  new");
+        }
+        if let Some(last_edit_unix) = cand.last_edit_unix {
+            suffix.push_str("  ");
+            suffix.push_str(&format_age(now_unix, last_edit_unix));
+        }
+        if !suffix.is_empty() {
+            queue!(out, Print(suffix)).context("drawing badge/age suffix")?;
+        }
+
+        screen_row += 1;
     }
-    let footer_row = matches.len() as u16 + 1;
+
+    let footer_row = rows.saturating_sub(1);
+    let matched = matches.len();
+    let total = cands.len();
+    let left = "⏎ open · esc close";
+    let right = format!("{matched}/{total}");
+    let pad = (cols as usize)
+        .saturating_sub(left.len() + right.len())
+        .max(1);
     queue!(
         out,
         MoveTo(0, footer_row),
-        Print(format!("filter: {query}"))
+        Print(format!("{left}{}{right}", " ".repeat(pad)))
     )
     .context("drawing footer")?;
+
     out.flush().context("flushing overlay")?;
     Ok(())
 }
@@ -330,6 +462,36 @@ mod tests {
             newly_created: false,
             last_edit_unix: None,
         }
+    }
+
+    fn cand_with_section(path: &str, section: crate::candidates::Section) -> Candidate {
+        Candidate {
+            path: path.into(),
+            line: None,
+            section,
+            newly_created: false,
+            last_edit_unix: None,
+        }
+    }
+
+    #[test]
+    fn initial_cursor_lands_on_first_edited_entry() {
+        let cands = vec![
+            cand_with_section("/repo/edited.rs", candidates::Section::Edited),
+            cand_with_section("/repo/mentioned.rs", candidates::Section::Mentioned),
+        ];
+        let matches = filter(&cands, "");
+        assert_eq!(initial_cursor(&matches, &cands), 0);
+    }
+
+    #[test]
+    fn initial_cursor_falls_back_to_zero_when_no_edited_entries() {
+        let cands = vec![cand_with_section(
+            "/repo/mentioned.rs",
+            candidates::Section::Mentioned,
+        )];
+        let matches = filter(&cands, "");
+        assert_eq!(initial_cursor(&matches, &cands), 0);
     }
 
     #[test]
