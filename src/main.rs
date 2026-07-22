@@ -9,6 +9,7 @@ mod layout;
 mod maneuver;
 mod openlink;
 mod picker;
+mod sessions;
 mod state;
 
 fn main() {
