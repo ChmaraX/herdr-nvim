@@ -79,6 +79,91 @@ pub fn filter(cands: &[Candidate], query: &str) -> Vec<FilterMatch> {
         .collect()
 }
 
+pub struct SmartPath {
+    pub dim_prefix: String,
+    pub bold_name: String,
+}
+
+/// Shorten `path` for display: relative to `cwd` if inside it, `~`-shortened
+/// if inside `home`, else left absolute. Splits into a dim directory prefix
+/// and a bold filename tail; if the combined length exceeds `max_width`, the
+/// *middle* of the prefix is ellipsized (`…`) -- the filename tail is never
+/// truncated, since it's the part users scan for.
+pub fn smart_path(path: &str, cwd: &str, home: Option<&str>, max_width: usize) -> SmartPath {
+    let display_full = if let Some(rest) = path.strip_prefix(&format!("{cwd}/")) {
+        rest.to_owned()
+    } else if let Some(home) = home {
+        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
+            format!("~/{rest}")
+        } else {
+            path.to_owned()
+        }
+    } else {
+        path.to_owned()
+    };
+
+    let (prefix, name) = match display_full.rsplit_once('/') {
+        Some((dir, name)) => (format!("{dir}/"), name.to_owned()),
+        None => (String::new(), display_full),
+    };
+
+    let budget = max_width.saturating_sub(name.chars().count());
+    let prefix = if prefix.chars().count() > budget && budget > 1 {
+        // Reserve 3 units for the ellipsis: `…` is a single *character* but a
+        // 3-byte UTF-8 sequence, and callers (and this fn's own tests) bound
+        // the *byte* length of the rendered result, not its char count.
+        let keep = budget.saturating_sub(3).max(1);
+        let head = keep / 2;
+        let tail = keep - head;
+        let chars: Vec<char> = prefix.chars().collect();
+        if chars.len() > head + tail {
+            let head_s: String = chars[..head].iter().collect();
+            let tail_s: String = chars[chars.len() - tail..].iter().collect();
+            format!("{head_s}…{tail_s}")
+        } else {
+            prefix
+        }
+    } else {
+        prefix
+    };
+
+    SmartPath {
+        dim_prefix: prefix,
+        bold_name: name,
+    }
+}
+
+/// Relative age from `last_edit_unix` to `now_unix` as a short label:
+/// minutes under an hour, hours under a day, else days.
+pub fn format_age(now_unix: u64, last_edit_unix: u64) -> String {
+    let delta = now_unix.saturating_sub(last_edit_unix);
+    if delta < 3600 {
+        format!("{}m", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h", delta / 3600)
+    } else {
+        format!("{}d", delta / 86_400)
+    }
+}
+
+/// Compute the visible window `[first, first+count)` of a `total`-length
+/// list given the terminal `viewport_rows` and the current `cursor` index,
+/// keeping `cursor` always in view (classic "scroll to keep selection
+/// visible" math). Pure function of cursor/height/len -- unit tested.
+pub fn scroll_window(cursor: usize, total: usize, viewport_rows: usize) -> (usize, usize) {
+    if total <= viewport_rows {
+        return (0, total);
+    }
+    let max_first = total - viewport_rows;
+    let first = if cursor < viewport_rows {
+        0
+    } else {
+        cursor + 1 - viewport_rows
+    };
+    let first = first.min(max_first);
+    (first, viewport_rows)
+}
+
 /// Entry point for the picker overlay subcommand.
 ///
 /// Reads the handoff at `$HERDR_NVIM_HANDOFF`, renders the overlay, and on a
@@ -280,5 +365,66 @@ mod tests {
     fn no_match_returns_empty() {
         let c = vec![cand("/repo/a.rs")];
         assert!(filter(&c, "zzz").is_empty());
+    }
+
+    #[test]
+    fn smart_path_relative_to_cwd() {
+        let sp = smart_path("/repo/src/main.rs", "/repo", None, 80);
+        assert_eq!(sp.dim_prefix, "src/");
+        assert_eq!(sp.bold_name, "main.rs");
+    }
+
+    #[test]
+    fn smart_path_outside_cwd_uses_tilde() {
+        let sp = smart_path("/home/u/.config/foo.toml", "/repo", Some("/home/u"), 80);
+        assert_eq!(sp.dim_prefix, "~/.config/");
+        assert_eq!(sp.bold_name, "foo.toml");
+    }
+
+    #[test]
+    fn smart_path_outside_cwd_and_home_stays_absolute() {
+        let sp = smart_path("/var/log/x.log", "/repo", Some("/home/u"), 80);
+        assert_eq!(sp.dim_prefix, "/var/log/");
+        assert_eq!(sp.bold_name, "x.log");
+    }
+
+    #[test]
+    fn smart_path_ellipsizes_long_middle_to_fit_width() {
+        let sp = smart_path("/repo/a/b/c/d/e/f/deep/file.rs", "/repo", None, 20);
+        let full = format!("{}{}", sp.dim_prefix, sp.bold_name);
+        assert!(full.len() <= 20, "got {full:?} ({} bytes)", full.len());
+        assert!(full.contains('…'));
+        assert!(
+            sp.bold_name == "file.rs",
+            "filename tail must never be the part elided"
+        );
+    }
+
+    #[test]
+    fn format_age_buckets() {
+        assert_eq!(format_age(1000, 1000), "0m");
+        assert_eq!(format_age(1000 + 90, 1000), "1m");
+        assert_eq!(format_age(1000 + 3600, 1000), "1h");
+        assert_eq!(format_age(1000 + 2 * 86400, 1000), "2d");
+    }
+
+    #[test]
+    fn scroll_window_fits_when_total_within_viewport() {
+        assert_eq!(scroll_window(0, 5, 10), (0, 5));
+    }
+
+    #[test]
+    fn scroll_window_keeps_cursor_visible_scrolling_down() {
+        // 20 items, 5-row viewport, cursor at 10 -> window must include index 10.
+        let (first, count) = scroll_window(10, 20, 5);
+        assert!(first <= 10 && 10 < first + count);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn scroll_window_never_scrolls_past_the_end() {
+        let (first, count) = scroll_window(19, 20, 5);
+        assert_eq!(first, 15);
+        assert_eq!(count, 5);
     }
 }
