@@ -15,11 +15,19 @@
 //! (exit 0) — never a popup/notification for a misclick.
 
 use std::{
+    env,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use crate::extract::{parse_token, resolve};
+use anyhow::Result;
+
+use crate::{
+    bridge,
+    extract::{parse_token, resolve},
+    herdr::{CliHerdr, Herdr},
+    maneuver::Ctx,
+};
 
 /// Strip trailing sentence punctuation (`.`, `,`) agents' prose often leaves
 /// stuck to a path the link regex swept up.
@@ -118,6 +126,50 @@ fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
     let text = String::from_utf8_lossy(&output.stdout);
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+struct ClickEnv {
+    clicked_url: String,
+    pane: String,
+    workspace: String,
+    tab: String,
+}
+
+/// Read herdr's link-click environment. Any missing var is "bad env" per the
+/// module doc — a silent no-op, not an error (a misclick, or a herdr version
+/// that doesn't populate one of these, must never surface a popup).
+fn read_click_env() -> Option<ClickEnv> {
+    Some(ClickEnv {
+        clicked_url: env::var("HERDR_PLUGIN_CLICKED_URL").ok()?,
+        pane: env::var("HERDR_PANE_ID").ok()?,
+        workspace: env::var("HERDR_WORKSPACE_ID").ok()?,
+        tab: env::var("HERDR_TAB_ID").ok()?,
+    })
+}
+
+/// Entry point for the `open-link` subcommand — invoked by herdr on a
+/// Ctrl+click of a `file-path`/`file-url` link match (see the
+/// `[[link_handlers]]` entries in `herdr-plugin.toml`).
+pub fn open_link_cmd() -> Result<()> {
+    let Some(click) = read_click_env() else {
+        return Ok(());
+    };
+    let Some((raw_path, line)) = parse_clicked(&click.clicked_url) else {
+        return Ok(());
+    };
+
+    let mut herdr = CliHerdr;
+    let cwd = herdr.pane_cwd(&click.pane)?;
+    let Some(resolved) = resolve_click(&raw_path, &cwd, &|p| p.is_file(), &git_toplevel) else {
+        return Ok(());
+    };
+
+    let ctx = Ctx {
+        workspace: click.workspace,
+        tab: click.tab,
+        focused_pane: click.pane,
+    };
+    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
 }
 
 #[cfg(test)]
@@ -241,5 +293,78 @@ mod tests {
             resolve_click("~/notes.md", Path::new("/repo"), &exists, &toplevel),
             Some(PathBuf::from("/home/u/notes.md"))
         );
+    }
+
+    struct ClickEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    static CLICK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const CLICK_ENV_VARS: [&str; 4] = [
+        "HERDR_PLUGIN_CLICKED_URL",
+        "HERDR_PANE_ID",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_TAB_ID",
+    ];
+
+    impl ClickEnvGuard {
+        fn new() -> Self {
+            let lock = CLICK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let saved = CLICK_ENV_VARS
+                .iter()
+                .map(|&key| (key, env::var_os(key)))
+                .collect();
+            for key in CLICK_ENV_VARS {
+                env::remove_var(key);
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for ClickEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => env::set_var(key, v),
+                    None => env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_click_env_reads_all_four_vars() {
+        let _guard = ClickEnvGuard::new();
+        env::set_var("HERDR_PLUGIN_CLICKED_URL", "src/main.rs");
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+        env::set_var("HERDR_TAB_ID", "wA:t1");
+
+        let click = read_click_env().expect("all vars set");
+        assert_eq!(click.clicked_url, "src/main.rs");
+        assert_eq!(click.pane, "wA:p1");
+        assert_eq!(click.workspace, "wA");
+        assert_eq!(click.tab, "wA:t1");
+    }
+
+    #[test]
+    fn read_click_env_none_when_clicked_url_missing() {
+        let _guard = ClickEnvGuard::new();
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+        env::set_var("HERDR_TAB_ID", "wA:t1");
+
+        assert!(read_click_env().is_none());
+    }
+
+    #[test]
+    fn read_click_env_none_when_tab_missing() {
+        let _guard = ClickEnvGuard::new();
+        env::set_var("HERDR_PLUGIN_CLICKED_URL", "src/main.rs");
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+
+        assert!(read_click_env().is_none());
     }
 }
