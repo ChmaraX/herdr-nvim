@@ -112,6 +112,89 @@ pub(crate) fn parse_claude_session(text: &str) -> Vec<RawEvent> {
     out
 }
 
+pub(crate) struct MinedEdit {
+    pub path: String,
+    pub newly_created: bool,
+    pub last_edit_unix: Option<u64>,
+}
+
+pub(crate) struct Mined {
+    pub edits: Vec<MinedEdit>,
+    pub reads: Vec<String>,
+    pub session_start_unix: Option<u64>,
+}
+
+/// Mine a session JSONL file for file-path events, dispatching on the pane's
+/// reported agent kind. Any kind without a parser (codex today, or a future
+/// unknown agent) yields an empty `Mined` -- never a crash or misparse, so
+/// callers can always fall through to the git/scrape layers (brief).
+///
+/// Reduction rule: scan `RawEvent`s in file order (== chronological, oldest
+/// first, since JSONL is append-only). For each path, remember the *first*
+/// op seen (`newly_created = first_op == RawOp::Write`) and the *latest*
+/// `unix_ts` among its Edit/Write events. A path with only Read events (never
+/// Edit/Write) goes to `reads`; a path with any Edit/Write event goes to
+/// `edits` and is excluded from `reads` even if it was also read.
+///
+/// Note: `by_path.contains_key` is checked *before* calling `.entry(...)`,
+/// not inside `or_insert_with`'s closure -- the closure can't borrow
+/// `by_path` immutably while `.entry()` already holds it mutably borrowed.
+pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
+    let raw: Vec<RawEvent> = match agent_kind {
+        "pi" => parse_pi_session(text),
+        "claude" => parse_claude_session(text),
+        _ => Vec::new(),
+    };
+
+    let session_start_unix = raw.iter().find_map(|e| e.unix_ts);
+
+    struct Acc {
+        first_op: RawOp,
+        last_edit_unix: Option<u64>,
+        ever_edited: bool,
+    }
+    let mut by_path: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    for event in raw {
+        if !by_path.contains_key(&event.path) {
+            order.push(event.path.clone());
+        }
+        let entry = by_path.entry(event.path.clone()).or_insert_with(|| Acc {
+            first_op: event.op.clone(),
+            last_edit_unix: None,
+            ever_edited: false,
+        });
+        if matches!(event.op, RawOp::Edit | RawOp::Write) {
+            entry.ever_edited = true;
+            if event.unix_ts.is_some() {
+                entry.last_edit_unix = event.unix_ts;
+            }
+        }
+    }
+
+    let mut edits = Vec::new();
+    let mut reads = Vec::new();
+    for path in order {
+        let acc = &by_path[&path];
+        if acc.ever_edited {
+            edits.push(MinedEdit {
+                path: path.clone(),
+                newly_created: matches!(acc.first_op, RawOp::Write),
+                last_edit_unix: acc.last_edit_unix,
+            });
+        } else {
+            reads.push(path.clone());
+        }
+    }
+
+    Mined {
+        edits,
+        reads,
+        session_start_unix,
+    }
+}
+
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff]Z` (UTC only) into unix seconds. `None`
 /// for any other shape — a malformed timestamp must never panic or bubble
 /// an error into the picker; callers simply treat it as "no timestamp".
@@ -238,5 +321,62 @@ mod tests {
         assert!(matches!(events[2].op, RawOp::Edit));
         assert_eq!(events[3].path, "/repo/src/lib.rs");
         assert!(matches!(events[3].op, RawOp::Edit)); // MultiEdit folds into Edit
+    }
+
+    #[test]
+    fn dispatches_by_agent_kind() {
+        let pi_text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let mined = mine_session("pi", pi_text);
+        assert!(!mined.edits.is_empty());
+
+        let claude_text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
+        let mined = mine_session("claude", claude_text);
+        assert!(!mined.edits.is_empty());
+
+        let mined = mine_session("codex", pi_text);
+        assert!(
+            mined.edits.is_empty() && mined.reads.is_empty(),
+            "codex has no parser yet -- must degrade to empty, not crash or misparse"
+        );
+
+        let mined = mine_session("unknown-future-agent", pi_text);
+        assert!(mined.edits.is_empty() && mined.reads.is_empty());
+    }
+
+    #[test]
+    fn newly_created_true_only_when_first_op_is_write() {
+        // pi fixture: /repo/src/new_mod.rs first (only) op is "write".
+        // /repo/src/lib.rs first op is "read", later "edit" -> not newly created.
+        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let mined = mine_session("pi", text);
+        let new_mod = mined
+            .edits
+            .iter()
+            .find(|e| e.path == "/repo/src/new_mod.rs")
+            .unwrap();
+        assert!(new_mod.newly_created);
+        let lib = mined
+            .edits
+            .iter()
+            .find(|e| e.path == "/repo/src/lib.rs")
+            .unwrap();
+        assert!(!lib.newly_created);
+    }
+
+    #[test]
+    fn reads_exclude_paths_that_were_also_edited() {
+        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let mined = mine_session("pi", text);
+        // /repo/src/lib.rs was read then edited -> only in edits, not reads.
+        assert!(!mined.reads.contains(&"/repo/src/lib.rs".to_owned()));
+        assert!(mined.edits.iter().any(|e| e.path == "/repo/src/lib.rs"));
+    }
+
+    #[test]
+    fn session_start_is_earliest_event_timestamp() {
+        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let mined = mine_session("pi", text);
+        // first event's ts, 2026-07-22T11:08:00Z, verified via `date -u -r`.
+        assert_eq!(mined.session_start_unix, Some(1784718480));
     }
 }
