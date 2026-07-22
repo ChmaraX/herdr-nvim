@@ -26,8 +26,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::{
     candidates::{self, BuildInput, Candidate, GitOnlyEdit},
-    config, daemon, extract,
-    gitscan,
+    config, daemon, extract, gitscan,
     herdr::{CliHerdr, Herdr},
     maneuver::{self, Ctx},
     picker::Handoff,

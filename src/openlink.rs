@@ -141,7 +141,9 @@ pub fn open_link_cmd() -> Result<()> {
 
     let mut herdr = CliHerdr;
     let cwd = herdr.pane_cwd(&click.pane)?;
-    let Some(resolved) = resolve_click(&raw_path, &cwd, &|p| p.is_file(), &crate::gitscan::toplevel) else {
+    let Some(resolved) =
+        resolve_click(&raw_path, &cwd, &|p| p.is_file(), &crate::gitscan::toplevel)
+    else {
         return Ok(());
     };
 

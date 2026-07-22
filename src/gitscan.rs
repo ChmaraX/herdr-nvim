@@ -105,7 +105,11 @@ pub(crate) fn parse_log_name_only(output: &str, toplevel: &Path) -> HashSet<Stri
 /// - Not in any git worktree at all -> always keep (unverifiable).
 /// - In a worktree: keep iff currently dirty OR committed during the
 ///   session; otherwise it was rolled back -> demote to MENTIONED.
-pub(crate) fn should_keep_edited(in_git_worktree: bool, dirty: bool, committed_in_session: bool) -> bool {
+pub(crate) fn should_keep_edited(
+    in_git_worktree: bool,
+    dirty: bool,
+    committed_in_session: bool,
+) -> bool {
     if !in_git_worktree {
         return true;
     }
