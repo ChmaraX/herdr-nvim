@@ -59,6 +59,47 @@ pub(crate) fn parse_status_porcelain(output: &str, toplevel: &Path) -> HashSet<S
         .collect()
 }
 
+/// Absolute paths touched by any commit in `toplevel` since `since_unix`.
+pub(crate) fn committed_since(toplevel: &Path, since_unix: u64) -> Result<HashSet<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(toplevel)
+        .arg("log")
+        .arg("--name-only")
+        .arg("--pretty=format:commit")
+        .arg(format!("--since=@{since_unix}"))
+        .output()
+        .context("failed to run git log --name-only")?;
+    if !output.status.success() {
+        anyhow::bail!("git log --name-only failed");
+    }
+    Ok(parse_log_name_only(
+        &String::from_utf8_lossy(&output.stdout),
+        toplevel,
+    ))
+}
+
+/// Pure: parses `git log --name-only` stdout into absolute paths. The real
+/// shell-out pins `--pretty=format:commit` (a bare `commit` marker line per
+/// commit, then a blank line, then one filename per line) so filenames can
+/// never collide with commit-message content; this parser also tolerates
+/// the default multi-line `commit <hash>` / `Author:` / `Date:` / indented
+/// message-body header shape defensively, in case the format ever changes.
+pub(crate) fn parse_log_name_only(output: &str, toplevel: &Path) -> HashSet<String> {
+    output
+        .lines()
+        .filter(|line| {
+            !line.is_empty()
+                && *line != "commit"
+                && !line.starts_with("commit ")
+                && !line.starts_with("Author:")
+                && !line.starts_with("Date:")
+                && !line.starts_with("    ")
+        })
+        .map(|line| toplevel.join(line).to_string_lossy().into_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +119,43 @@ mod tests {
                 "/repo/src/new.rs".to_owned(),
                 "/repo/untracked.txt".to_owned(),
                 "/repo/src/renamed.rs".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_name_only_log_across_multiple_commits() {
+        // git log --name-only separates commits with a blank line; each commit
+        // is a header line (starts with "commit ") followed by metadata lines,
+        // a blank line, then one filename per line.
+        // Note: Rust's `\<newline>` line-continuation strips all leading
+        // whitespace on the following line, so a plain concatenated literal
+        // can't preserve the message body's 4-space indent -- use a raw
+        // string instead so the indentation this parser depends on survives.
+        let output = r#"commit abc123
+Author: a
+Date:   d
+
+
+src/a.rs
+src/b.rs
+
+commit def456
+Author: a
+Date:   d
+
+    fix
+
+src/b.rs
+src/c.rs
+"#;
+        let paths = parse_log_name_only(output, Path::new("/repo"));
+        assert_eq!(
+            paths,
+            HashSet::from([
+                "/repo/src/a.rs".to_owned(),
+                "/repo/src/b.rs".to_owned(),
+                "/repo/src/c.rs".to_owned(),
             ])
         );
     }
