@@ -100,6 +100,18 @@ pub(crate) fn parse_log_name_only(output: &str, toplevel: &Path) -> HashSet<Stri
         .collect()
 }
 
+/// The net-change demotion rule (brief, "Net-change demotion"): should a
+/// session-edited path stay in EDITED?
+/// - Not in any git worktree at all -> always keep (unverifiable).
+/// - In a worktree: keep iff currently dirty OR committed during the
+///   session; otherwise it was rolled back -> demote to MENTIONED.
+pub(crate) fn should_keep_edited(in_git_worktree: bool, dirty: bool, committed_in_session: bool) -> bool {
+    if !in_git_worktree {
+        return true;
+    }
+    dirty || committed_in_session
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +170,25 @@ src/c.rs
                 "/repo/src/c.rs".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn dirty_file_is_kept() {
+        assert!(should_keep_edited(true, true, false));
+    }
+
+    #[test]
+    fn committed_in_session_is_kept() {
+        assert!(should_keep_edited(true, false, true));
+    }
+
+    #[test]
+    fn clean_and_not_committed_is_demoted() {
+        assert!(!should_keep_edited(true, false, false));
+    }
+
+    #[test]
+    fn non_git_path_always_kept() {
+        assert!(should_keep_edited(false, false, false));
     }
 }
