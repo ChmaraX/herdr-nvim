@@ -27,7 +27,7 @@ use anyhow::{bail, Context, Result};
 use crate::{
     candidates::{self, BuildInput, Candidate, GitOnlyEdit, Section},
     config, daemon, extract, gitscan,
-    herdr::{CliHerdr, Herdr},
+    herdr::{self, CliHerdr, Herdr},
     maneuver::{self, Ctx},
     picker::Handoff,
     sessions,
@@ -82,10 +82,10 @@ fn start_pick() -> Result<()> {
     let mut herdr = CliHerdr;
 
     let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.focused_pane)?;
-    let cwd = herdr.pane_cwd(&target)?;
+    let (cwd, agent_session) = herdr.pane_snapshot(&target)?;
     let text = herdr.read_pane(&target, config.picker.scan_lines)?;
 
-    let candidates = gather_candidates(&mut herdr, &target, &text, &cwd, &|path| path.is_file());
+    let candidates = gather_candidates(agent_session.as_ref(), &text, &cwd, &|path| path.is_file());
 
     if candidates.is_empty() {
         notify_no_candidates();
@@ -105,21 +105,21 @@ fn start_pick() -> Result<()> {
     Ok(())
 }
 
-/// Gather candidates from all three layers for `pane`. Never fails: any
-/// session-file read error, JSON parse failure, or git command failure
-/// degrades to the remaining layers (brief) -- this function's return type
-/// is `Vec<Candidate>`, not `Result`, on purpose.
+/// Gather candidates from all three layers given the pane's already-fetched
+/// `agent_session` (see `Herdr::pane_snapshot`, which folds the `pane get`
+/// call this used to make itself into the one `start_pick` already made for
+/// the cwd). Never fails: any session-file read error, JSON parse failure,
+/// or git command failure degrades to the remaining layers (brief) -- this
+/// function's return type is `Vec<Candidate>`, not `Result`, on purpose.
 fn gather_candidates(
-    h: &mut dyn Herdr,
-    pane: &str,
+    agent_session: Option<&herdr::AgentSession>,
     scrape_text: &str,
     cwd: &Path,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<Candidate> {
     let exists_str = |p: &str| exists(Path::new(p));
 
-    let agent_session = h.agent_session(pane).ok().flatten();
-    let mined = match &agent_session {
+    let mined = match agent_session {
         Some(session) if session.kind == "path" => match std::fs::read_to_string(&session.value) {
             Ok(text) => sessions::mine_session(&session.agent, &text),
             Err(_) => sessions::mine_session(&session.agent, ""),
@@ -174,6 +174,9 @@ fn gather_candidates(
     });
 
     if let Some(top) = &toplevel {
+        // One bulk `git diff HEAD --numstat` for the whole worktree, not one
+        // `git diff`/`git diff --cached` pair per dirty file.
+        let diff_stats = gitscan::diff_numstat_by_path(top).unwrap_or_default();
         for candidate in &mut candidates {
             // Only EDITED, git-tracked, currently-dirty, non-newly-created
             // entries get a diff stat (brief-equivalent scope for this
@@ -185,7 +188,7 @@ fn gather_candidates(
                 && !candidate.newly_created
                 && git_dirty.contains(&candidate.path)
             {
-                if let Ok((added, removed)) = gitscan::diff_numstat(top, &candidate.path) {
+                if let Some(&(added, removed)) = diff_stats.get(&candidate.path) {
                     if added > 0 || removed > 0 {
                         candidate.diff_stat = Some((added, removed));
                     }
@@ -464,13 +467,9 @@ mod tests {
 
     #[test]
     fn gather_candidates_falls_back_to_scrape_when_no_agent_session() {
-        let mut h = MockHerdr {
-            agent_session_results: VecDeque::from([Ok(None)]),
-            ..Default::default()
-        };
         let text = "see /tmp/does-not-exist-ever.rs";
         let cwd = std::path::Path::new("/tmp");
-        let out = gather_candidates(&mut h, "wA:p1", text, cwd, &|_| false);
+        let out = gather_candidates(None, text, cwd, &|_| false);
         assert!(out.is_empty());
     }
 }

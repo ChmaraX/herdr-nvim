@@ -17,7 +17,7 @@ use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind},
     execute, queue,
-    style::{Attribute, Print, SetAttribute},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -372,15 +372,22 @@ fn render(
             }
         }
 
-        let mut suffix = String::new();
         if cand.newly_created {
-            suffix.push_str("  new");
+            queue!(out, Print("  new")).context("drawing new badge")?;
         }
         if let Some((added, removed)) = cand.diff_stat {
-            suffix.push_str(&format!("  +{added} -{removed}"));
-        }
-        if !suffix.is_empty() {
-            queue!(out, Print(suffix)).context("drawing badge/diff-stat suffix")?;
+            queue!(
+                out,
+                Print("  "),
+                SetForegroundColor(Color::Green),
+                Print(format!("+{added}")),
+                ResetColor,
+                Print(" "),
+                SetForegroundColor(Color::Red),
+                Print(format!("-{removed}")),
+                ResetColor,
+            )
+            .context("drawing diff-stat suffix")?;
         }
 
         screen_row += 1;

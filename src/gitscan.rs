@@ -3,7 +3,7 @@
 //! Every function here only ever shells out to `git status`/`git log`/
 //! `git rev-parse` — never a mutating git command.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -116,42 +116,57 @@ pub(crate) fn should_keep_edited(
     dirty || committed_in_session
 }
 
-/// Combined (added, removed) line counts for `path`, summing its unstaged
-/// diff (`git diff --numstat`) and staged diff (`git diff --cached
-/// --numstat`) -- a dirty file can have both staged and unstaged hunks, so
-/// neither alone is the full picture.
-pub(crate) fn diff_numstat(toplevel: &Path, path: &str) -> Result<(u32, u32)> {
-    let unstaged = run_diff_numstat(toplevel, path, false)?;
-    let staged = run_diff_numstat(toplevel, path, true)?;
-    Ok((unstaged.0 + staged.0, unstaged.1 + staged.1))
-}
-
-fn run_diff_numstat(toplevel: &Path, path: &str, cached: bool) -> Result<(u32, u32)> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(toplevel).arg("diff");
-    if cached {
-        command.arg("--cached");
-    }
-    command.arg("--numstat").arg("--").arg(path);
-    let output = command
+/// Combined (added, removed) line counts for every path with a diff versus
+/// `HEAD` in `toplevel`, keyed by absolute path -- one `git diff HEAD
+/// --numstat` invocation covers both staged and unstaged changes across the
+/// whole worktree, replacing what used to be two `git diff`/`git diff
+/// --cached` subprocess spawns *per dirty file* (profiled as the largest
+/// remaining per-invocation git cost in the picker's action phase).
+///
+/// A brand-new repo with zero commits has no `HEAD`, so `git diff HEAD`
+/// fails in that case -- treated as "no diff stats available" (an empty
+/// map), not an error, so a fresh repo just shows no diff stats rather than
+/// breaking the picker.
+pub(crate) fn diff_numstat_by_path(toplevel: &Path) -> Result<HashMap<String, (u32, u32)>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(toplevel)
+        .arg("diff")
+        .arg("HEAD")
+        .arg("--numstat")
         .output()
-        .context("failed to run git diff --numstat")?;
+        .context("failed to run git diff HEAD --numstat")?;
     if !output.status.success() {
-        anyhow::bail!("git diff --numstat failed");
+        return Ok(HashMap::new());
     }
-    Ok(parse_diff_numstat(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_diff_numstat_map(
+        &String::from_utf8_lossy(&output.stdout),
+        toplevel,
+    ))
 }
 
-/// Pure: parses `git diff --numstat` stdout into summed (added, removed)
-/// line counts. Each line is `<added>\t<removed>\t<path>`; binary files use
-/// `-` for both counts, which contribute 0 (not an error).
-pub(crate) fn parse_diff_numstat(output: &str) -> (u32, u32) {
-    output.lines().fold((0u32, 0u32), |(add, rem), line| {
-        let mut parts = line.splitn(3, '\t');
-        let added: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let removed: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        (add + added, rem + removed)
-    })
+/// Pure: parses `git diff HEAD --numstat` stdout into a map of absolute
+/// path -> (added, removed). Each line is `<added>\t<removed>\t<path>`
+/// (toplevel-relative, joined the same way `parse_status_porcelain` does);
+/// binary files use `-` for both counts, which contribute 0 (not an error).
+/// A malformed line (fewer than 3 tab-separated fields) is skipped, never
+/// fatal.
+pub(crate) fn parse_diff_numstat_map(output: &str, toplevel: &Path) -> HashMap<String, (u32, u32)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let added_str = parts.next()?;
+            let removed_str = parts.next()?;
+            let path = parts.next()?;
+            let added: u32 = added_str.parse().unwrap_or(0);
+            let removed: u32 = removed_str.parse().unwrap_or(0);
+            Some((
+                toplevel.join(path).to_string_lossy().into_owned(),
+                (added, removed),
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -235,13 +250,17 @@ src/c.rs
     }
 
     #[test]
-    fn parses_and_sums_numstat_lines_including_binary() {
+    fn diff_numstat_map_keys_by_absolute_path_and_handles_binary() {
         let output = "3\t1\tsrc/a.rs\n0\t5\tsrc/b.rs\n-\t-\tassets/image.png\n";
-        assert_eq!(parse_diff_numstat(output), (3, 6));
+        let map = parse_diff_numstat_map(output, Path::new("/repo"));
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get("/repo/src/a.rs"), Some(&(3, 1)));
+        assert_eq!(map.get("/repo/src/b.rs"), Some(&(0, 5)));
+        assert_eq!(map.get("/repo/assets/image.png"), Some(&(0, 0)));
     }
 
     #[test]
-    fn empty_output_sums_to_zero() {
-        assert_eq!(parse_diff_numstat(""), (0, 0));
+    fn diff_numstat_map_empty_output_yields_empty_map() {
+        assert!(parse_diff_numstat_map("", Path::new("/repo")).is_empty());
     }
 }

@@ -39,6 +39,17 @@ fn parse_agent_session(value: &Value) -> Option<AgentSession> {
     })
 }
 
+/// Pure: extract both `result.pane.foreground_cwd` (required) and
+/// `result.pane.agent_session` (optional) from a single `pane get`
+/// response. Backs `pane_snapshot`, which folds what used to be two
+/// separate `pane get` subprocess spawns (`pane_cwd` + `agent_session`) --
+/// profiled as a meaningful chunk of the pick-file action phase's latency
+/// -- into one.
+fn parse_pane_snapshot(value: &Value) -> Result<(PathBuf, Option<AgentSession>)> {
+    let cwd = PathBuf::from(string_at(value, "/result/pane/foreground_cwd")?);
+    Ok((cwd, parse_agent_session(value)))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     Right,
@@ -87,6 +98,13 @@ pub trait Herdr {
     /// for panes herdr doesn't track a session for, or an older herdr that
     /// doesn't populate the field at all -- never an error.
     fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>>;
+    /// The pane's cwd and agent session together, from a single `pane get`
+    /// call. Prefer this over calling `pane_cwd` and `agent_session`
+    /// separately when both are needed (as the pick-file action phase
+    /// does) -- each of those is otherwise its own `pane get` subprocess
+    /// spawn against the exact same underlying data. `open-link` only ever
+    /// needs the cwd, so it keeps using `pane_cwd` alone.
+    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)>;
 }
 
 pub struct CliHerdr;
@@ -288,6 +306,11 @@ impl Herdr for CliHerdr {
         Ok(parse_agent_session(&value))
     }
 
+    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {
+        let value = Self::run(&args(&["pane", "get", pane]))?;
+        parse_pane_snapshot(&value)
+    }
+
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
         let value = Self::run(&args(&["agent", "list"]))?;
         let agents = value
@@ -387,6 +410,7 @@ pub struct MockHerdr {
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
     pub agent_session_results: VecDeque<Result<Option<AgentSession>>>,
+    pub pane_snapshot_results: VecDeque<Result<(PathBuf, Option<AgentSession>)>>,
 }
 
 #[cfg(test)]
@@ -478,6 +502,11 @@ impl Herdr for MockHerdr {
         self.ops.push(format!("agent_session {pane}"));
         Self::next(&mut self.agent_session_results, "agent_session")
     }
+
+    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {
+        self.ops.push(format!("pane_snapshot {pane}"));
+        Self::next(&mut self.pane_snapshot_results, "pane_snapshot")
+    }
 }
 
 #[cfg(test)]
@@ -530,6 +559,24 @@ mod tests {
         let json = include_str!("../tests/fixtures/pane_get_without_session.json");
         let value: Value = serde_json::from_str(json).unwrap();
         assert!(parse_agent_session(&value).is_none());
+    }
+
+    #[test]
+    fn parses_pane_snapshot_cwd_and_session_from_one_response() {
+        let json = include_str!("../tests/fixtures/pane_get_with_session.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        let (cwd, session) = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(cwd, PathBuf::from("/repo"));
+        assert_eq!(session.unwrap().agent, "pi");
+    }
+
+    #[test]
+    fn parses_pane_snapshot_cwd_with_no_session() {
+        let json = include_str!("../tests/fixtures/pane_get_without_session.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        let (cwd, session) = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(cwd, PathBuf::from("/repo"));
+        assert!(session.is_none());
     }
 
     #[test]
