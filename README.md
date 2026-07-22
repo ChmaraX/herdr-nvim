@@ -106,13 +106,26 @@ one in the sidebar. It pops a floating picker — newest paths first, type to
 filter — and on Enter opens the chosen file in the tab's nvim sidebar (opening
 the sidebar first if needed), at the right line, focused.
 
-**What it shows:** file paths found in the last `picker.scan_lines` (default 300)
-lines of the focused agent pane's output (or, if the focused pane isn't an agent,
-the workspace's agent pane) — anything the agent *mentioned, read,
-diffed, edited, or printed* — newest first, filtered to paths that exist on disk.
-It is a text-scrape of recent terminal output, **not** a semantic list of files
-the agent changed this turn, and it is not turn-scoped. (A real "files the agent
-actually edited" source via agent hooks is planned — see the M5 design note.)
+**What it shows:** two sections — **EDITED** (files the agent's session
+actually wrote/edited, mined from its session log where herdr tracks one,
+plus anything with uncommitted git changes in the pane's worktree) and
+**MENTIONED** (files the agent read this session, or — for agents herdr
+doesn't track a session for — the same text-scrape of recent pane output
+`pick-file` has always used, over the last `picker.scan_lines` lines,
+default 300). A session-edited file whose worktree is clean and wasn't
+committed during the session (i.e. the edit was rolled back) is demoted
+from EDITED to MENTIONED rather than dropped. Either section is omitted
+entirely when it's empty. Both sections are newest-first, existence-filtered
+to real files on disk, and never show edit counts or git status
+letters/deltas — that detail belongs to git tooling, not this picker.
+
+Each row shows a smart, shortened path (relative to the pane's working
+directory, `~`-shortened outside it, filename in bold), a `new` badge for
+files created this session, and a relative age (`2m`, `1h`, `3d`) from the
+last edit when known. Typing filters by **whole path**, not just the
+filename (case-insensitive substring, matched span highlighted); the footer
+shows `matched/total`. The cursor starts on the newest EDITED entry, so
+pressing Enter with no typing opens the file the agent just worked on.
 
 Trigger it directly on the focused agent pane:
 
