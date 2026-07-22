@@ -1,10 +1,13 @@
 //! Overlay list UI for the file bridge.
 //!
 //! Reads a handoff JSON file (path in `$HERDR_NVIM_HANDOFF`) written by the
-//! bridge, renders a full-screen crossterm overlay of the [`Candidate`]s, lets
-//! the user filter/navigate/pick one, writes the chosen index back into the
-//! handoff, and spawns a detached finisher. The pure `filter` half is unit
-//! tested; the interactive loop is exercised live in a later M3 task.
+//! bridge, renders a full-screen crossterm overlay of a single flat,
+//! recency-ordered [`Candidate`] list, lets the user filter/navigate/pick
+//! one, writes the chosen index back into the handoff, and spawns a
+//! detached finisher. The default (empty-filter) view is capped to
+//! `handoff.max_files` entries; typing a filter query searches the full
+//! underlying list. The pure `filter`/`visible_count` halves are unit
+//! tested; the interactive loop is exercised live.
 
 // Wired into main.rs's subcommand dispatch (and bridge.rs) in a later M3 task.
 #![allow(dead_code)]
@@ -25,7 +28,7 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::candidates::{self, Candidate};
+use crate::candidates::Candidate;
 
 /// Environment variable holding the path to the handoff JSON file.
 const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
@@ -44,6 +47,11 @@ pub struct Handoff {
     pub focused_pane: String,
     /// Pane's foreground cwd, so the picker can render smart/relative paths.
     pub cwd: String,
+    /// Max entries the default (empty-filter) view shows, from
+    /// `config.picker.max_files`. The picker is a separate spawned process
+    /// reading only this handoff JSON, so this is how it learns the cap
+    /// without loading `config.rs` itself.
+    pub max_files: u32,
 }
 
 pub struct FilterMatch {
@@ -133,6 +141,19 @@ pub fn smart_path(path: &str, cwd: &str, home: Option<&str>, max_width: usize) -
     }
 }
 
+/// How many of the current filter matches the picker's default view should
+/// show: capped to `max_files` when `query` is empty, or every match once
+/// the user has typed anything -- a non-empty query still searches the full
+/// underlying candidate list, not just the default-view cap. Pure: no I/O,
+/// deterministic, unit tested.
+pub fn visible_count(total_matches: usize, query: &str, max_files: u32) -> usize {
+    if query.is_empty() {
+        total_matches.min(max_files as usize)
+    } else {
+        total_matches
+    }
+}
+
 /// Compute the visible window `[first, first+count)` of a `total`-length
 /// list given the terminal `viewport_rows` and the current `cursor` index,
 /// keeping `cursor` always in view (classic "scroll to keep selection
@@ -166,7 +187,12 @@ pub fn picker_cmd() -> Result<()> {
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
     let home = std::env::var("HOME").ok();
-    if let Some(chosen) = run_overlay(&handoff.candidates, &handoff.cwd, home.as_deref())? {
+    if let Some(chosen) = run_overlay(
+        &handoff.candidates,
+        &handoff.cwd,
+        home.as_deref(),
+        handoff.max_files,
+    )? {
         handoff.chosen = Some(chosen);
         let encoded = serde_json::to_string(&handoff)?;
         std::fs::write(&handoff_path, encoded)
@@ -178,17 +204,6 @@ pub fn picker_cmd() -> Result<()> {
         let _ = std::fs::remove_file(&handoff_path);
     }
     Ok(())
-}
-
-/// Row (within `matches`) to start the cursor on: the first EDITED entry, so
-/// Enter with no typing opens the file the agent just worked on. Falls back
-/// to row 0 (which may be a MENTIONED entry, or nothing) if there is no
-/// EDITED entry in the current match set.
-pub fn initial_cursor(matches: &[FilterMatch], cands: &[Candidate]) -> usize {
-    matches
-        .iter()
-        .position(|m| cands[m.index].section == candidates::Section::Edited)
-        .unwrap_or(0)
 }
 
 /// Restores the terminal (leave alternate screen, show cursor, disable raw
@@ -212,22 +227,31 @@ impl Drop for TerminalGuard {
 
 /// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
 /// or `None` if the user dismissed it (Esc/q) or there is nothing to pick.
-fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Option<usize>> {
+fn run_overlay(
+    cands: &[Candidate],
+    cwd: &str,
+    home: Option<&str>,
+    max_files: u32,
+) -> Result<Option<usize>> {
     if cands.is_empty() {
         return Ok(None);
     }
 
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
-    let mut cursor = initial_cursor(&filter(cands, ""), cands);
+    // `cands` is already recency-sorted (candidates::build_candidates'
+    // invariant), so row 0 is always the most-recently-touched entry --
+    // no separate "land on the newest edit" logic needed anymore.
+    let mut cursor = 0usize;
 
     loop {
         let matches = filter(cands, &query);
-        if cursor >= matches.len() {
-            cursor = matches.len().saturating_sub(1);
+        let visible = &matches[..visible_count(matches.len(), &query, max_files)];
+        if cursor >= visible.len() {
+            cursor = visible.len().saturating_sub(1);
         }
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 20));
-        render(cands, &matches, cursor, &query, cwd, home, cols, rows)?;
+        render(cands, visible, cursor, &query, cwd, home, cols, rows)?;
 
         let Event::Key(key) = event::read().context("reading terminal event")? else {
             continue;
@@ -237,10 +261,10 @@ fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Opt
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
-            KeyCode::Enter => return Ok(matches.get(cursor).map(|m| m.index)),
+            KeyCode::Enter => return Ok(visible.get(cursor).map(|m| m.index)),
             KeyCode::Up | KeyCode::Char('k') => cursor = cursor.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
-                if cursor + 1 < matches.len() {
+                if cursor + 1 < visible.len() {
                     cursor += 1;
                 }
             }
@@ -257,24 +281,20 @@ fn run_overlay(cands: &[Candidate], cwd: &str, home: Option<&str>) -> Result<Opt
     }
 }
 
-/// Draw the title bar, sectioned/scrollable/badged match list.
+/// Draw the title bar and the flat, scrollable, badged match list.
 ///
 /// Layout: row 0 is a title (`touched this session`, centered/bold/dim);
 /// row 1 is the filter input (`> {query}`); the last row is a footer
 /// (`⏎ open · esc close` ... `matched/total`, right-aligned); the rows
-/// between are an ` EDITED`/` MENTIONED` header (only before the first row
-/// of a section that actually has visible rows -- an empty section is
-/// simply never headered, matching the brief's "empty sections collapse
-/// away") followed by that section's candidate rows. `matches` is already
-/// EDITED-then-MENTIONED ordered (candidates::build_candidates' invariant,
-/// preserved by `filter`), so a single forward scan detects every section
-/// boundary.
+/// between are `visible`'s candidate rows, one per row, in the order given
+/// (already recency-ordered, and already capped to the default-view limit
+/// by the caller when the filter query is empty) -- no section grouping.
 ///
-/// Not unit tested: crossterm terminal interaction: exercised live (Task 18).
+/// Not unit tested: crossterm terminal interaction: exercised live.
 #[allow(clippy::too_many_arguments)]
 fn render(
     cands: &[Candidate],
-    matches: &[FilterMatch],
+    visible: &[FilterMatch],
     cursor: usize,
     query: &str,
     cwd: &str,
@@ -300,25 +320,15 @@ fn render(
     queue!(out, MoveTo(0, 1), Print(format!("> {query}"))).context("drawing filter input")?;
 
     let viewport_rows = (rows as usize).saturating_sub(5).max(1);
-    let (first, count) = scroll_window(cursor, matches.len(), viewport_rows);
-    let visible = &matches[first..(first + count).min(matches.len())];
+    let (first, count) = scroll_window(cursor, visible.len(), viewport_rows);
+    let window = &visible[first..(first + count).min(visible.len())];
 
     let mut screen_row: u16 = 2;
-    let mut last_section: Option<candidates::Section> = None;
     let path_width = (cols as usize).saturating_sub(12).max(4);
 
-    for (offset, m) in visible.iter().enumerate() {
+    for (offset, m) in window.iter().enumerate() {
         let row = first + offset;
         let cand = &cands[m.index];
-        if last_section != Some(cand.section) {
-            let header = match cand.section {
-                candidates::Section::Edited => " EDITED",
-                candidates::Section::Mentioned => " MENTIONED",
-            };
-            queue!(out, MoveTo(0, screen_row), Print(header)).context("drawing section header")?;
-            screen_row += 1;
-            last_section = Some(cand.section);
-        }
 
         let marker = if row == cursor { "> " } else { "  " };
         let sp = smart_path(&cand.path, cwd, home, path_width);
@@ -394,7 +404,7 @@ fn render(
     }
 
     let footer_row = rows.saturating_sub(1);
-    let matched = matches.len();
+    let matched = visible.len();
     let total = cands.len();
     let left = "⏎ open · esc close";
     let right = format!("{matched}/{total}");
@@ -457,42 +467,26 @@ mod tests {
         Candidate {
             path: path.into(),
             line: None,
-            section: crate::candidates::Section::Edited,
+            is_edit: false,
             newly_created: false,
-            last_edit_unix: None,
-            diff_stat: None,
-        }
-    }
-
-    fn cand_with_section(path: &str, section: crate::candidates::Section) -> Candidate {
-        Candidate {
-            path: path.into(),
-            line: None,
-            section,
-            newly_created: false,
-            last_edit_unix: None,
+            touched_unix: None,
             diff_stat: None,
         }
     }
 
     #[test]
-    fn initial_cursor_lands_on_first_edited_entry() {
-        let cands = vec![
-            cand_with_section("/repo/edited.rs", candidates::Section::Edited),
-            cand_with_section("/repo/mentioned.rs", candidates::Section::Mentioned),
-        ];
-        let matches = filter(&cands, "");
-        assert_eq!(initial_cursor(&matches, &cands), 0);
+    fn visible_count_caps_default_view_to_max_files() {
+        assert_eq!(visible_count(50, "", 20), 20);
     }
 
     #[test]
-    fn initial_cursor_falls_back_to_zero_when_no_edited_entries() {
-        let cands = vec![cand_with_section(
-            "/repo/mentioned.rs",
-            candidates::Section::Mentioned,
-        )];
-        let matches = filter(&cands, "");
-        assert_eq!(initial_cursor(&matches, &cands), 0);
+    fn visible_count_uncapped_when_query_is_non_empty() {
+        assert_eq!(visible_count(50, "main", 20), 50);
+    }
+
+    #[test]
+    fn visible_count_never_exceeds_actual_match_count() {
+        assert_eq!(visible_count(5, "", 20), 5);
     }
 
     #[test]

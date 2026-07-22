@@ -1,6 +1,7 @@
 //! Herdr-side TOML config: `~/.config/herdr-nvim/config.toml` (or
 //! `HERDR_NVIM_CONFIG` override). Controls the nvim binary used to spawn/attach
-//! the daemon and how many trailing pane lines the file-picker scans.
+//! the daemon, how many trailing pane lines the file-picker scans, and how
+//! many entries the picker's default (unfiltered) view shows.
 //!
 //! Missing file -> defaults, silently. Malformed file -> defaults, with one
 //! warning on stderr (never panics or fails the caller).
@@ -39,18 +40,29 @@ fn default_nvim_bin() -> String {
 pub struct Picker {
     #[serde(default = "default_scan_lines")]
     pub scan_lines: u32,
+    /// Maximum number of entries the picker's default (empty-filter) view
+    /// shows from the recency-ordered "touched this session" list. A
+    /// non-empty filter query still searches the full underlying candidate
+    /// list, not just this capped default view.
+    #[serde(default = "default_max_files")]
+    pub max_files: u32,
 }
 
 impl Default for Picker {
     fn default() -> Self {
         Self {
             scan_lines: default_scan_lines(),
+            max_files: default_max_files(),
         }
     }
 }
 
 fn default_scan_lines() -> u32 {
     300
+}
+
+fn default_max_files() -> u32 {
+    20
 }
 
 /// Path to the config file. `HERDR_NVIM_CONFIG` overrides everything (used by
@@ -145,13 +157,14 @@ mod tests {
         let guard = ConfigEnvGuard::new();
         fs::write(
             &guard.path,
-            "[sidebar]\nnvim_bin = \"nvim-custom\"\n\n[picker]\nscan_lines = 500\n",
+            "[sidebar]\nnvim_bin = \"nvim-custom\"\n\n[picker]\nscan_lines = 500\nmax_files = 50\n",
         )
         .unwrap();
 
         let config = load();
         assert_eq!(config.sidebar.nvim_bin, "nvim-custom");
         assert_eq!(config.picker.scan_lines, 500);
+        assert_eq!(config.picker.max_files, 50);
     }
 
     #[test]
@@ -162,6 +175,17 @@ mod tests {
         let config = load();
         assert_eq!(config.sidebar.nvim_bin, "nvim-custom");
         assert_eq!(config.picker.scan_lines, 300);
+        assert_eq!(config.picker.max_files, 20);
+    }
+
+    #[test]
+    fn partial_picker_table_leaves_max_files_at_default() {
+        let guard = ConfigEnvGuard::new();
+        fs::write(&guard.path, "[picker]\nscan_lines = 500\n").unwrap();
+
+        let config = load();
+        assert_eq!(config.picker.scan_lines, 500);
+        assert_eq!(config.picker.max_files, 20);
     }
 
     #[test]
@@ -173,6 +197,7 @@ mod tests {
         assert_eq!(config, Config::default());
         assert_eq!(config.sidebar.nvim_bin, "nvim");
         assert_eq!(config.picker.scan_lines, 300);
+        assert_eq!(config.picker.max_files, 20);
     }
 
     #[test]

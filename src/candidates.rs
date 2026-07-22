@@ -1,9 +1,15 @@
 //! The merge/dedup/order pipeline that turns three read-only sources
-//! (session mining, git worktree status, terminal scrape) into the final
-//! sectioned candidate list the picker renders. Pure: every I/O-shaped
-//! input (git status/log results, existence checks) is passed in already
-//! computed or as an injected closure, so this module has no I/O of its own
-//! and is fully unit tested.
+//! (session mining, git worktree status, terminal scrape) into the final,
+//! flat, recency-ordered candidate list the picker renders. Pure: every
+//! I/O-shaped input (git status/log results, existence checks) is passed in
+//! already computed or as an injected closure, so this module has no I/O of
+//! its own and is fully unit tested.
+//!
+//! There is no section split here (no EDITED/MENTIONED grouping) -- every
+//! touched-this-session file is one flat list, ordered most-recently-touched
+//! first. `Candidate.is_edit` flags entries that are real, currently-
+//! relevant edits (used by the picker to decide whether to show a diff
+//! stat), but every entry -- edit or not -- lives in the same list.
 
 use std::collections::HashSet;
 
@@ -11,24 +17,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::{extract, gitscan, sessions};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Section {
-    Edited,
-    Mentioned,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub path: String,
     pub line: Option<u32>,
-    pub section: Section,
+    /// True iff this path both has a session edit event (or is a git-only
+    /// dirty file the session miner never saw at all) AND currently passes
+    /// `gitscan::should_keep_edited`'s dirty-or-committed-in-session-or-
+    /// non-git check. A session-edited file that was rolled back (net-change
+    /// demoted) still appears in the list, just with `is_edit: false` and no
+    /// diff stat -- it is never dropped.
+    pub is_edit: bool,
     pub newly_created: bool,
-    pub last_edit_unix: Option<u64>,
+    /// Unix timestamp of the most recent touch (read OR edit) of this path,
+    /// when known. Drives the list's recency ordering. `None` for entries
+    /// with no known timestamp (e.g. scrape-fallback candidates); those sort
+    /// after every timestamped entry.
+    pub touched_unix: Option<u64>,
     /// Combined (added, removed) line counts from `git diff --numstat` for
-    /// EDITED entries that are git-tracked and currently dirty. `None` for
-    /// newly-created files (the `new` badge covers those), files kept in
-    /// EDITED only because they were committed during the session (now
-    /// clean -- no diff to show), non-git files, and all MENTIONED entries.
+    /// `is_edit` entries that are git-tracked and currently dirty. `None`
+    /// for newly-created files (the `new` badge covers those), entries kept
+    /// in the list only because they were committed during the session (now
+    /// clean -- no diff to show), non-git files, and all non-edit entries.
     /// Populated by `bridge::gather_candidates` (I/O), never by this pure
     /// module.
     pub diff_stat: Option<(u32, u32)>,
@@ -40,8 +50,7 @@ pub struct GitOnlyEdit {
 }
 
 pub struct BuildInput<'a> {
-    pub mined_edits: &'a [sessions::MinedEdit],
-    pub mined_reads: &'a [String],
+    pub mined_touches: &'a [sessions::MinedTouch],
     pub session_start_unix: Option<u64>,
     pub git_dirty: &'a HashSet<String>,
     pub git_committed_in_session: &'a HashSet<String>,
@@ -51,101 +60,82 @@ pub struct BuildInput<'a> {
     pub exists: &'a dyn Fn(&str) -> bool,
 }
 
+/// Build the single flat, deduped, recency-ordered candidate list. Not
+/// capped here -- the picker's default view caps to `max_files`, but a
+/// non-empty filter query still searches this full uncapped list, so
+/// capping must not happen at this layer.
 pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
-    let mut edited: Vec<Candidate> = Vec::new();
-    let mut demoted_paths: HashSet<String> = HashSet::new();
+    let mut out: Vec<Candidate> = Vec::new();
 
-    for edit in input.mined_edits {
-        let in_repo = (input.in_git_worktree)(&edit.path);
-        let dirty = input.git_dirty.contains(&edit.path);
-        let committed = input.git_committed_in_session.contains(&edit.path);
-        if gitscan::should_keep_edited(in_repo, dirty, committed) {
-            edited.push(Candidate {
-                path: edit.path.clone(),
-                line: None,
-                section: Section::Edited,
-                newly_created: edit.newly_created,
-                last_edit_unix: edit.last_edit_unix,
-                diff_stat: None,
-            });
-        } else {
-            demoted_paths.insert(edit.path.clone());
-        }
-    }
-
-    for git_only in input.git_only_dirty_not_mined {
-        edited.push(Candidate {
-            path: git_only.path.clone(),
+    for touch in input.mined_touches {
+        let in_repo = (input.in_git_worktree)(&touch.path);
+        let dirty = input.git_dirty.contains(&touch.path);
+        let committed = input.git_committed_in_session.contains(&touch.path);
+        let is_edit = touch.was_edited && gitscan::should_keep_edited(in_repo, dirty, committed);
+        out.push(Candidate {
+            path: touch.path.clone(),
             line: None,
-            section: Section::Edited,
-            newly_created: false,
-            last_edit_unix: git_only.mtime_unix,
+            is_edit,
+            newly_created: touch.newly_created,
+            touched_unix: touch.last_touch_unix,
             diff_stat: None,
         });
     }
 
-    let edited_paths: HashSet<String> = edited.iter().map(|c| c.path.clone()).collect();
+    for git_only in input.git_only_dirty_not_mined {
+        // Git-only entries are, by construction, *already known dirty*
+        // paths the session miner never touched at all (see
+        // bridge::gather_candidates) -- e.g. a bash `sed -i` the agent ran.
+        // `dirty` is therefore always true here (that's what "git-only
+        // *dirty*" means), unlike the mined-touch loop above where dirtiness
+        // still needs to be looked up per path.
+        let in_repo = (input.in_git_worktree)(&git_only.path);
+        let is_edit = gitscan::should_keep_edited(in_repo, true, false);
+        out.push(Candidate {
+            path: git_only.path.clone(),
+            line: None,
+            is_edit,
+            newly_created: false,
+            touched_unix: git_only.mtime_unix,
+            diff_stat: None,
+        });
+    }
 
-    let mut mentioned: Vec<Candidate> = Vec::new();
-    let mut mentioned_seen: HashSet<String> = HashSet::new();
-
-    let use_scrape = input.mined_edits.is_empty() && input.mined_reads.is_empty();
-    if use_scrape {
+    // Scrape fallback: only used when session mining produced nothing at
+    // all (no agent_session tracked, or the tracked agent has no parser) --
+    // otherwise the touches above are strictly better data.
+    if input.mined_touches.is_empty() {
+        let mut seen: HashSet<String> = HashSet::new();
         for scraped in input.scraped_mentioned {
-            if edited_paths.contains(&scraped.path) || !mentioned_seen.insert(scraped.path.clone())
-            {
+            if !seen.insert(scraped.path.clone()) {
                 continue;
             }
-            mentioned.push(Candidate {
+            out.push(Candidate {
                 path: scraped.path.clone(),
                 line: scraped.line,
-                section: Section::Mentioned,
+                is_edit: false,
                 newly_created: false,
-                last_edit_unix: None,
-                diff_stat: None,
-            });
-        }
-    } else {
-        for path in demoted_paths {
-            if edited_paths.contains(&path) || !mentioned_seen.insert(path.clone()) {
-                continue;
-            }
-            mentioned.push(Candidate {
-                path,
-                line: None,
-                section: Section::Mentioned,
-                newly_created: false,
-                last_edit_unix: None,
-                diff_stat: None,
-            });
-        }
-        for path in input.mined_reads {
-            if edited_paths.contains(path) || !mentioned_seen.insert(path.clone()) {
-                continue;
-            }
-            mentioned.push(Candidate {
-                path: path.clone(),
-                line: None,
-                section: Section::Mentioned,
-                newly_created: false,
-                last_edit_unix: None,
+                touched_unix: None,
                 diff_stat: None,
             });
         }
     }
 
-    edited.sort_by(|a, b| b.last_edit_unix.cmp(&a.last_edit_unix));
+    out.retain(|c| (input.exists)(&c.path));
 
-    edited.retain(|c| (input.exists)(&c.path));
-    mentioned.retain(|c| (input.exists)(&c.path));
+    // Descending by touched_unix; `None` sorts after every `Some` (Option's
+    // derived Ord puts `None` first ascending, so `b.cmp(&a)` -- descending
+    // -- puts it last), and the sort is stable so entries that tie (e.g.
+    // multiple `None`s) keep their original relative source order.
+    out.sort_by(|a, b| b.touched_unix.cmp(&a.touched_unix));
 
-    edited.into_iter().chain(mentioned).collect()
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sessions::MinedEdit;
+    use crate::sessions::MinedTouch;
     use std::collections::HashSet;
 
     fn always_true(_: &str) -> bool {
@@ -155,15 +145,23 @@ mod tests {
         false
     }
 
+    fn touch(path: &str, was_edited: bool, last_touch_unix: Option<u64>) -> MinedTouch {
+        MinedTouch {
+            path: path.into(),
+            was_edited,
+            newly_created: false,
+            last_touch_unix,
+        }
+    }
+
     fn base_input<'a>(
-        mined_edits: &'a [MinedEdit],
+        mined_touches: &'a [MinedTouch],
         git_dirty: &'a HashSet<String>,
         git_committed: &'a HashSet<String>,
         in_worktree: &'a dyn Fn(&str) -> bool,
     ) -> BuildInput<'a> {
         BuildInput {
-            mined_edits,
-            mined_reads: &[],
+            mined_touches,
             session_start_unix: Some(1000),
             git_dirty,
             git_committed_in_session: git_committed,
@@ -175,64 +173,61 @@ mod tests {
     }
 
     #[test]
-    fn dirty_session_edit_stays_in_edited() {
-        let edits = [MinedEdit {
-            path: "/repo/a.rs".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
+    fn dirty_edited_touch_is_marked_as_edit() {
+        let touches = [touch("/repo/a.rs", true, Some(5))];
         let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
         let committed = HashSet::new();
-        let out = build_candidates(base_input(&edits, &dirty, &committed, &always_true));
+        let out = build_candidates(base_input(&touches, &dirty, &committed, &always_true));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].section, Section::Edited);
+        assert!(out[0].is_edit);
     }
 
     #[test]
-    fn committed_in_session_edit_stays_in_edited() {
-        let edits = [MinedEdit {
-            path: "/repo/a.rs".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
+    fn committed_in_session_touch_is_marked_as_edit() {
+        let touches = [touch("/repo/a.rs", true, Some(5))];
         let dirty = HashSet::new();
         let committed = HashSet::from(["/repo/a.rs".to_owned()]);
-        let out = build_candidates(base_input(&edits, &dirty, &committed, &always_true));
-        assert_eq!(out[0].section, Section::Edited);
+        let out = build_candidates(base_input(&touches, &dirty, &committed, &always_true));
+        assert!(out[0].is_edit);
     }
 
     #[test]
-    fn clean_and_uncommitted_edit_is_demoted_to_mentioned() {
-        let edits = [MinedEdit {
-            path: "/repo/a.rs".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
+    fn clean_and_uncommitted_edit_is_not_marked_as_edit_but_still_present() {
+        let touches = [touch("/repo/a.rs", true, Some(5))];
         let dirty = HashSet::new();
         let committed = HashSet::new();
-        let out = build_candidates(base_input(&edits, &dirty, &committed, &always_true));
+        let out = build_candidates(base_input(&touches, &dirty, &committed, &always_true));
+        assert_eq!(out.len(), 1, "net-change-demoted entries are never dropped");
+        assert!(!out[0].is_edit);
+    }
+
+    #[test]
+    fn non_git_edit_is_always_marked_as_edit() {
+        let touches = [touch("/home/u/.config/foo.toml", true, Some(5))];
+        let dirty = HashSet::new();
+        let committed = HashSet::new();
+        let out = build_candidates(base_input(&touches, &dirty, &committed, &always_false));
+        assert!(out[0].is_edit);
+    }
+
+    #[test]
+    fn read_only_touch_is_present_but_not_marked_as_edit() {
+        let touches = [touch("/repo/a.rs", false, Some(5))];
+        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
+        let committed = HashSet::new();
+        let out = build_candidates(base_input(&touches, &dirty, &committed, &always_true));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].section, Section::Mentioned);
+        assert!(
+            !out[0].is_edit,
+            "a read-only touch is never an edit, dirty or not"
+        );
+        assert_eq!(out[0].touched_unix, Some(5));
     }
 
     #[test]
-    fn non_git_edit_always_stays_in_edited() {
-        let edits = [MinedEdit {
-            path: "/home/u/.config/foo.toml".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
-        let dirty = HashSet::new();
-        let committed = HashSet::new();
-        let out = build_candidates(base_input(&edits, &dirty, &committed, &always_false));
-        assert_eq!(out[0].section, Section::Edited);
-    }
-
-    #[test]
-    fn git_only_dirty_file_is_added_to_edited_with_mtime() {
+    fn git_only_dirty_file_is_added_as_edit_with_mtime() {
         let input = BuildInput {
-            mined_edits: &[],
-            mined_reads: &[],
+            mined_touches: &[],
             session_start_unix: None,
             git_dirty: &HashSet::new(),
             git_committed_in_session: &HashSet::new(),
@@ -247,31 +242,8 @@ mod tests {
         let out = build_candidates(input);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].path, "/repo/sed_edited.rs");
-        assert_eq!(out[0].section, Section::Edited);
-        assert_eq!(out[0].last_edit_unix, Some(42));
-    }
-
-    #[test]
-    fn mentioned_excludes_anything_already_in_edited() {
-        let edits = [MinedEdit {
-            path: "/repo/a.rs".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
-        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
-        let committed = HashSet::new();
-        let mut input = base_input(&edits, &dirty, &committed, &always_true);
-        let reads = ["/repo/a.rs".to_owned(), "/repo/b.rs".to_owned()];
-        input.mined_reads = &reads;
-        let out = build_candidates(input);
-        assert_eq!(
-            out.iter().filter(|c| c.path == "/repo/a.rs").count(),
-            1,
-            "no duplicate across sections"
-        );
-        assert!(out
-            .iter()
-            .any(|c| c.path == "/repo/b.rs" && c.section == Section::Mentioned));
+        assert!(out[0].is_edit);
+        assert_eq!(out[0].touched_unix, Some(42));
     }
 
     #[test]
@@ -282,8 +254,7 @@ mod tests {
             line: None,
         }];
         let input = BuildInput {
-            mined_edits: &[],
-            mined_reads: &[],
+            mined_touches: &[],
             session_start_unix: None,
             git_dirty: &HashSet::new(),
             git_committed_in_session: &HashSet::new(),
@@ -295,39 +266,62 @@ mod tests {
         let out = build_candidates(input);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].path, "/repo/scraped.rs");
-        assert_eq!(out[0].section, Section::Mentioned);
+        assert!(!out[0].is_edit);
     }
 
     #[test]
-    fn edited_ordered_newest_first_by_last_edit_unix() {
-        let edits = [
-            MinedEdit {
-                path: "/repo/old.rs".into(),
-                newly_created: false,
-                last_edit_unix: Some(1),
-            },
-            MinedEdit {
-                path: "/repo/new.rs".into(),
-                newly_created: false,
-                last_edit_unix: Some(99),
-            },
+    fn scrape_fallback_is_not_used_when_any_touch_exists() {
+        use crate::extract::ScrapedPath;
+        let touches = [touch("/repo/a.rs", true, Some(5))];
+        let scraped = [ScrapedPath {
+            path: "/repo/scraped.rs".into(),
+            line: None,
+        }];
+        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
+        let committed = HashSet::new();
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        input.scraped_mentioned = &scraped;
+        let out = build_candidates(input);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "/repo/a.rs");
+    }
+
+    #[test]
+    fn ordered_newest_first_by_touched_unix() {
+        let touches = [
+            touch("/repo/old.rs", true, Some(1)),
+            touch("/repo/new.rs", true, Some(99)),
         ];
         let dirty = HashSet::from(["/repo/old.rs".to_owned(), "/repo/new.rs".to_owned()]);
-        let out = build_candidates(base_input(&edits, &dirty, &HashSet::new(), &always_true));
+        let out = build_candidates(base_input(&touches, &dirty, &HashSet::new(), &always_true));
         assert_eq!(out[0].path, "/repo/new.rs");
         assert_eq!(out[1].path, "/repo/old.rs");
     }
 
     #[test]
+    fn untimed_entries_sort_last_preserving_relative_order() {
+        let touches = [
+            touch("/repo/no_ts_a.rs", true, None),
+            touch("/repo/timed.rs", true, Some(5)),
+            touch("/repo/no_ts_b.rs", true, None),
+        ];
+        let dirty = HashSet::from([
+            "/repo/no_ts_a.rs".to_owned(),
+            "/repo/timed.rs".to_owned(),
+            "/repo/no_ts_b.rs".to_owned(),
+        ]);
+        let out = build_candidates(base_input(&touches, &dirty, &HashSet::new(), &always_true));
+        assert_eq!(out[0].path, "/repo/timed.rs");
+        assert_eq!(out[1].path, "/repo/no_ts_a.rs");
+        assert_eq!(out[2].path, "/repo/no_ts_b.rs");
+    }
+
+    #[test]
     fn nonexistent_paths_are_filtered_out() {
-        let edits = [MinedEdit {
-            path: "/repo/ghost.rs".into(),
-            newly_created: false,
-            last_edit_unix: Some(5),
-        }];
+        let touches = [touch("/repo/ghost.rs", true, Some(5))];
         let dirty = HashSet::from(["/repo/ghost.rs".to_owned()]);
         let committed = HashSet::new();
-        let mut input = base_input(&edits, &dirty, &committed, &always_true);
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
         input.exists = &always_false;
         let out = build_candidates(input);
         assert!(out.is_empty());

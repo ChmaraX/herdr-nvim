@@ -112,15 +112,23 @@ pub(crate) fn parse_claude_session(text: &str) -> Vec<RawEvent> {
     out
 }
 
-pub(crate) struct MinedEdit {
+/// A single file-path touched during a session (mined from `RawEvent`s),
+/// unified across read and edit/write events -- there is no separate
+/// "reads have no timestamp" list; every touched path carries whatever
+/// timestamp its most recent event had, regardless of which op that was.
+pub(crate) struct MinedTouch {
     pub path: String,
+    /// True iff any Edit/Write event was seen for this path (a Read-only
+    /// path is `false`).
+    pub was_edited: bool,
     pub newly_created: bool,
-    pub last_edit_unix: Option<u64>,
+    /// The latest `unix_ts` seen for this path across *all* its events
+    /// (read or edit/write) -- "last touched", not "last edited".
+    pub last_touch_unix: Option<u64>,
 }
 
 pub(crate) struct Mined {
-    pub edits: Vec<MinedEdit>,
-    pub reads: Vec<String>,
+    pub touches: Vec<MinedTouch>,
     pub session_start_unix: Option<u64>,
 }
 
@@ -131,10 +139,11 @@ pub(crate) struct Mined {
 ///
 /// Reduction rule: scan `RawEvent`s in file order (== chronological, oldest
 /// first, since JSONL is append-only). For each path, remember the *first*
-/// op seen (`newly_created = first_op == RawOp::Write`) and the *latest*
-/// `unix_ts` among its Edit/Write events. A path with only Read events (never
-/// Edit/Write) goes to `reads`; a path with any Edit/Write event goes to
-/// `edits` and is excluded from `reads` even if it was also read.
+/// op seen (`newly_created = first_op == RawOp::Write`), whether *any*
+/// Edit/Write event was seen (`was_edited`), and the *latest* `unix_ts`
+/// among *all* its events, read or edit/write alike (`last_touch_unix`).
+/// Every path that was touched at all -- read, edited, or both -- ends up
+/// exactly once in `touches`.
 ///
 /// Note: `by_path.contains_key` is checked *before* calling `.entry(...)`,
 /// not inside `or_insert_with`'s closure -- the closure can't borrow
@@ -150,7 +159,7 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
 
     struct Acc {
         first_op: RawOp,
-        last_edit_unix: Option<u64>,
+        last_touch_unix: Option<u64>,
         ever_edited: bool,
     }
     let mut by_path: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
@@ -162,35 +171,32 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
         }
         let entry = by_path.entry(event.path.clone()).or_insert_with(|| Acc {
             first_op: event.op.clone(),
-            last_edit_unix: None,
+            last_touch_unix: None,
             ever_edited: false,
         });
         if matches!(event.op, RawOp::Edit | RawOp::Write) {
             entry.ever_edited = true;
-            if event.unix_ts.is_some() {
-                entry.last_edit_unix = event.unix_ts;
-            }
+        }
+        if event.unix_ts.is_some() {
+            entry.last_touch_unix = event.unix_ts;
         }
     }
 
-    let mut edits = Vec::new();
-    let mut reads = Vec::new();
-    for path in order {
-        let acc = &by_path[&path];
-        if acc.ever_edited {
-            edits.push(MinedEdit {
+    let touches = order
+        .into_iter()
+        .map(|path| {
+            let acc = &by_path[&path];
+            MinedTouch {
                 path: path.clone(),
+                was_edited: acc.ever_edited,
                 newly_created: matches!(acc.first_op, RawOp::Write),
-                last_edit_unix: acc.last_edit_unix,
-            });
-        } else {
-            reads.push(path.clone());
-        }
-    }
+                last_touch_unix: acc.last_touch_unix,
+            }
+        })
+        .collect();
 
     Mined {
-        edits,
-        reads,
+        touches,
         session_start_unix,
     }
 }
@@ -327,20 +333,20 @@ mod tests {
     fn dispatches_by_agent_kind() {
         let pi_text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
         let mined = mine_session("pi", pi_text);
-        assert!(!mined.edits.is_empty());
+        assert!(!mined.touches.is_empty());
 
         let claude_text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
         let mined = mine_session("claude", claude_text);
-        assert!(!mined.edits.is_empty());
+        assert!(!mined.touches.is_empty());
 
         let mined = mine_session("codex", pi_text);
         assert!(
-            mined.edits.is_empty() && mined.reads.is_empty(),
+            mined.touches.is_empty(),
             "codex has no parser yet -- must degrade to empty, not crash or misparse"
         );
 
         let mined = mine_session("unknown-future-agent", pi_text);
-        assert!(mined.edits.is_empty() && mined.reads.is_empty());
+        assert!(mined.touches.is_empty());
     }
 
     #[test]
@@ -350,26 +356,35 @@ mod tests {
         let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
         let mined = mine_session("pi", text);
         let new_mod = mined
-            .edits
+            .touches
             .iter()
-            .find(|e| e.path == "/repo/src/new_mod.rs")
+            .find(|t| t.path == "/repo/src/new_mod.rs")
             .unwrap();
         assert!(new_mod.newly_created);
+        assert!(new_mod.was_edited);
         let lib = mined
-            .edits
+            .touches
             .iter()
-            .find(|e| e.path == "/repo/src/lib.rs")
+            .find(|t| t.path == "/repo/src/lib.rs")
             .unwrap();
         assert!(!lib.newly_created);
+        assert!(lib.was_edited);
     }
 
     #[test]
-    fn reads_exclude_paths_that_were_also_edited() {
-        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+    fn read_only_touch_has_was_edited_false_but_keeps_a_real_timestamp() {
+        // Closes the semantic gap the old edits/reads split had: a read-only
+        // path used to vanish into an untimed `reads: Vec<String>` list; now
+        // it's a `MinedTouch` like any other, just with `was_edited: false`.
+        let text = "{\"type\":\"session\",\"version\":3,\"id\":\"x\",\"timestamp\":\"2026-07-22T11:07:49.944Z\",\"cwd\":\"/repo\"}\n{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"2026-07-22T11:08:00.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"read\",\"arguments\":{\"path\":\"/repo/src/readonly.rs\"}}],\"api\":\"anthropic-messages\",\"provider\":\"anthropic\",\"model\":\"claude-sonnet-5\"}}\n";
         let mined = mine_session("pi", text);
-        // /repo/src/lib.rs was read then edited -> only in edits, not reads.
-        assert!(!mined.reads.contains(&"/repo/src/lib.rs".to_owned()));
-        assert!(mined.edits.iter().any(|e| e.path == "/repo/src/lib.rs"));
+        assert_eq!(mined.touches.len(), 1);
+        let touch = &mined.touches[0];
+        assert_eq!(touch.path, "/repo/src/readonly.rs");
+        assert!(!touch.was_edited);
+        assert!(!touch.newly_created);
+        // 2026-07-22T11:08:00.000Z, verified via `date -u -r 1784718480`.
+        assert_eq!(touch.last_touch_unix, Some(1784718480));
     }
 
     #[test]

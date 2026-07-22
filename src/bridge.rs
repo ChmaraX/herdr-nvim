@@ -25,7 +25,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    candidates::{self, BuildInput, Candidate, GitOnlyEdit, Section},
+    candidates::{self, BuildInput, Candidate, GitOnlyEdit},
     config, daemon, extract, gitscan,
     herdr::{self, CliHerdr, Herdr},
     maneuver::{self, Ctx},
@@ -99,6 +99,7 @@ fn start_pick() -> Result<()> {
         tab: ctx.tab.clone(),
         focused_pane: ctx.focused_pane.clone(),
         cwd: cwd.to_string_lossy().into_owned(),
+        max_files: config.picker.max_files,
     };
     let handoff_path = write_handoff(&handoff)?;
     open_picker(&handoff_path)?;
@@ -143,9 +144,11 @@ fn gather_candidates(
             .unwrap_or(false)
     };
 
-    // Git-only edits: dirty paths not already covered by session mining
-    // (e.g. a bash `sed -i` the agent ran, invisible to tool-call mining).
-    let mined_paths: HashSet<&str> = mined.edits.iter().map(|e| e.path.as_str()).collect();
+    // Git-only edits: dirty paths not already covered by session mining --
+    // any touch, read or edit alike, since a path we already have session
+    // data for must not also get a synthesized duplicate entry (e.g. a bash
+    // `sed -i` the agent ran is invisible to tool-call mining and needs one).
+    let mined_paths: HashSet<&str> = mined.touches.iter().map(|t| t.path.as_str()).collect();
     let git_only: Vec<GitOnlyEdit> = git_dirty
         .iter()
         .filter(|p| !mined_paths.contains(p.as_str()))
@@ -162,8 +165,7 @@ fn gather_candidates(
     let scraped = extract::extract(scrape_text, cwd, exists);
 
     let mut candidates = candidates::build_candidates(BuildInput {
-        mined_edits: &mined.edits,
-        mined_reads: &mined.reads,
+        mined_touches: &mined.touches,
         session_start_unix: mined.session_start_unix,
         git_dirty: &git_dirty,
         git_committed_in_session: &git_committed,
@@ -178,15 +180,13 @@ fn gather_candidates(
         // `git diff`/`git diff --cached` pair per dirty file.
         let diff_stats = gitscan::diff_numstat_by_path(top).unwrap_or_default();
         for candidate in &mut candidates {
-            // Only EDITED, git-tracked, currently-dirty, non-newly-created
-            // entries get a diff stat (brief-equivalent scope for this
-            // follow-up): newly-created files already show the `new` badge;
-            // an EDITED entry kept only because it was committed during the
-            // session is now clean (no diff to show); non-git files were
-            // never dirty-tracked at all.
-            if candidate.section == Section::Edited
-                && !candidate.newly_created
-                && git_dirty.contains(&candidate.path)
+            // Only is_edit, currently-dirty, non-newly-created entries get a
+            // diff stat (same eligibility rule as before, now keyed off the
+            // flag instead of a section): newly-created files already show
+            // the `new` badge; an entry kept only because it was committed
+            // during the session is now clean (no diff to show); non-git
+            // and net-change-demoted files were never dirty-tracked at all.
+            if candidate.is_edit && !candidate.newly_created && git_dirty.contains(&candidate.path)
             {
                 if let Some(&(added, removed)) = diff_stats.get(&candidate.path) {
                     if added > 0 || removed > 0 {

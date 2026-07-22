@@ -106,26 +106,32 @@ one in the sidebar. It pops a floating picker — newest paths first, type to
 filter — and on Enter opens the chosen file in the tab's nvim sidebar (opening
 the sidebar first if needed), at the right line, focused.
 
-**What it shows:** two sections — **EDITED** (files the agent's session
-actually wrote/edited, mined from its session log where herdr tracks one,
-plus anything with uncommitted git changes in the pane's worktree) and
-**MENTIONED** (files the agent read this session, or — for agents herdr
-doesn't track a session for — the same text-scrape of recent pane output
-`pick-file` has always used, over the last `picker.scan_lines` lines,
-default 300). A session-edited file whose worktree is clean and wasn't
-committed during the session (i.e. the edit was rolled back) is demoted
-from EDITED to MENTIONED rather than dropped. Either section is omitted
-entirely when it's empty. Both sections are newest-first, existence-filtered
-to real files on disk, and never show edit counts or git status
-letters/deltas — that detail belongs to git tooling, not this picker.
+**What it shows:** a single flat list of files touched this session —
+edited (mined from the agent's session log where herdr tracks one, plus
+anything with uncommitted git changes in the pane's worktree) or merely
+read/mentioned (read this session, or — for agents herdr doesn't track a
+session for — the same text-scrape of recent pane output `pick-file` has
+always used, over the last `picker.scan_lines` lines, default 300) — ordered
+most-recently-touched first, deduped by path, existence-filtered to real
+files on disk. There are no section headers: a session-edited file whose
+worktree is clean and wasn't committed during the session (i.e. the edit was
+rolled back) still shows up in the list, it just no longer counts as an
+edit (no diff stat). The picker never shows edit counts or git status
+letters/deltas beyond the diff stat below — that detail belongs to git
+tooling, not this picker.
 
-Each row shows a smart, shortened path (relative to the pane's working
-directory, `~`-shortened outside it, filename in bold), a `new` badge for
-files created this session, and a relative age (`2m`, `1h`, `3d`) from the
-last edit when known. Typing filters by **whole path**, not just the
-filename (case-insensitive substring, matched span highlighted); the footer
-shows `matched/total`. The cursor starts on the newest EDITED entry, so
-pressing Enter with no typing opens the file the agent just worked on.
+The default (empty-filter) view shows only the most recent
+`picker.max_files` entries (default 20); typing a filter query searches the
+**full** underlying list, not just what's currently visible, so something
+from earlier in the session stays findable. Each row shows a smart,
+shortened path (relative to the pane's working directory, `~`-shortened
+outside it, filename in bold), a `new` badge for files created this
+session, and — for real, currently-relevant edits with uncommitted changes —
+a colored `+N -M` diff stat (green/red) from `git diff HEAD --numstat`.
+Typing filters by **whole path**, not just the filename (case-insensitive
+substring, matched span highlighted); the footer shows `matched/total`. The
+cursor starts on row 0, the most-recently-touched entry, so pressing Enter
+with no typing opens the file the agent just worked on.
 
 Trigger it directly on the focused agent pane:
 
@@ -180,6 +186,8 @@ nvim_bin = "nvim"     # binary used to spawn the per-tab nvim daemon
 
 [picker]
 scan_lines = 300      # trailing pane lines scanned for file paths by pick-file
+max_files = 20        # entries shown in the picker's default (unfiltered) view;
+                       # typing a filter query still searches the full list
 ```
 
 ## Doctor / troubleshooting
