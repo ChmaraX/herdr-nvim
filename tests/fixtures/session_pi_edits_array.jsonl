@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"019f0000-0000-0000-0000-000000000002","timestamp":"2026-07-22T11:09:00.000Z","cwd":"/repo"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-22T11:09:10.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"edit","arguments":{"path":"/repo/src/mod.rs","edits":[{"oldText":"pub mod app;","newText":"pub mod app;\nmod tree;"}]}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-5"}}

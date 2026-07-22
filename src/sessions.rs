@@ -1,8 +1,74 @@
 //! Session-file mining: hand-rolled ISO-8601 UTC timestamp parsing plus
-//! per-agent JSONL parsers (added in later tasks). No new runtime
-//! dependency (`chrono`/`time`) is pulled in since only UTC `Z`-suffixed
-//! timestamps of the fixed `YYYY-MM-DDTHH:MM:SS[.fff]Z` shape are ever seen
-//! in pi/claude session files.
+//! per-agent JSONL parsers. No new runtime dependency (`chrono`/`time`) is
+//! pulled in since only UTC `Z`-suffixed timestamps of the fixed
+//! `YYYY-MM-DDTHH:MM:SS[.fff]Z` shape are ever seen in pi/claude session
+//! files.
+
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RawOp {
+    Write,
+    Edit,
+    Read,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RawEvent {
+    pub path: String,
+    pub op: RawOp,
+    pub unix_ts: Option<u64>,
+}
+
+/// Parse a pi session JSONL file into file-path tool-call events. Skips any
+/// line that isn't valid JSON, isn't a `type:"message"` assistant record, or
+/// carries a `toolCall` whose `name` isn't `read`/`edit`/`write` — never
+/// errors, since a parse failure must never break the picker (brief).
+pub(crate) fn parse_pi_session(text: &str) -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(unix_ts) = value
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let unix_ts = parse_iso8601_unix(&unix_ts);
+        let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in content {
+            if item.get("type").and_then(Value::as_str) != Some("toolCall") {
+                continue;
+            }
+            let Some(name) = item.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let op = match name {
+                "write" => RawOp::Write,
+                "edit" => RawOp::Edit,
+                "read" => RawOp::Read,
+                _ => continue,
+            };
+            let Some(path) = item.pointer("/arguments/path").and_then(Value::as_str) else {
+                continue;
+            };
+            out.push(RawEvent {
+                path: path.to_owned(),
+                op,
+                unix_ts,
+            });
+        }
+    }
+    out
+}
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff]Z` (UTC only) into unix seconds. `None`
 /// for any other shape — a malformed timestamp must never panic or bubble
@@ -83,5 +149,37 @@ mod tests {
         assert_eq!(parse_iso8601_unix("2026-07-22 11:07:49Z"), None); // missing T
         assert_eq!(parse_iso8601_unix("2026-07-22T11:07:49"), None); // missing Z
         assert_eq!(parse_iso8601_unix(""), None);
+    }
+
+    #[test]
+    fn pi_basic_fixture_yields_read_write_edit_ignoring_bash() {
+        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let events = parse_pi_session(text);
+        assert_eq!(events.len(), 3, "bash toolCall must be ignored: {events:?}");
+        assert_eq!(events[0].path, "/repo/src/lib.rs");
+        assert!(matches!(events[0].op, RawOp::Read));
+        // 2026-07-22T11:08:00.000Z, verified via `date -u -r 1784718480`.
+        assert_eq!(events[0].unix_ts, Some(1784718480));
+        assert_eq!(events[1].path, "/repo/src/new_mod.rs");
+        assert!(matches!(events[1].op, RawOp::Write));
+        assert_eq!(events[2].path, "/repo/src/lib.rs");
+        assert!(matches!(events[2].op, RawOp::Edit));
+    }
+
+    #[test]
+    fn pi_edits_array_shape_still_yields_path() {
+        let text = include_str!("../tests/fixtures/session_pi_edits_array.jsonl");
+        let events = parse_pi_session(text);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].path, "/repo/src/mod.rs");
+        assert!(matches!(events[0].op, RawOp::Edit));
+    }
+
+    #[test]
+    fn malformed_line_is_skipped_not_fatal() {
+        let text = "not json at all\n{\"type\":\"message\",\"timestamp\":\"2026-07-22T11:08:00.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"read\",\"arguments\":{\"path\":\"/repo/a.rs\"}}]}}\n";
+        let events = parse_pi_session(text);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].path, "/repo/a.rs");
     }
 }
