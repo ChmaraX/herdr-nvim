@@ -20,6 +20,25 @@ pub struct AgentInfo {
     pub focused: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSession {
+    pub agent: String,
+    pub kind: String,
+    pub value: String,
+}
+
+/// Pure: extract `result.pane.agent_session` from a `pane get` response, if
+/// present. Absence (older herdr, or a pane herdr doesn't track a session
+/// for) is `None`, not an error -- the caller degrades to git/scrape layers.
+fn parse_agent_session(value: &Value) -> Option<AgentSession> {
+    let node = value.pointer("/result/pane/agent_session")?;
+    Some(AgentSession {
+        agent: node.get("agent")?.as_str()?.to_owned(),
+        kind: node.get("kind")?.as_str()?.to_owned(),
+        value: node.get("value")?.as_str()?.to_owned(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     Right,
@@ -63,6 +82,11 @@ pub trait Herdr {
     /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
     /// `agent` label and belong to `workspace`).
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
+    /// The pane's tracked agent session file, if herdr reports one (`pane get`'s
+    /// `agent_session` field: `{agent, kind: "path", value: <abs path>}`). `None`
+    /// for panes herdr doesn't track a session for, or an older herdr that
+    /// doesn't populate the field at all -- never an error.
+    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>>;
 }
 
 pub struct CliHerdr;
@@ -259,6 +283,11 @@ impl Herdr for CliHerdr {
         )?))
     }
 
+    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>> {
+        let value = Self::run(&args(&["pane", "get", pane]))?;
+        Ok(parse_agent_session(&value))
+    }
+
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
         let value = Self::run(&args(&["agent", "list"]))?;
         let agents = value
@@ -357,6 +386,7 @@ pub struct MockHerdr {
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
+    pub agent_session_results: VecDeque<Result<Option<AgentSession>>>,
 }
 
 #[cfg(test)]
@@ -443,6 +473,11 @@ impl Herdr for MockHerdr {
         self.ops.push(format!("agents {workspace}"));
         Self::next(&mut self.agents_results, "agents")
     }
+
+    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>> {
+        self.ops.push(format!("agent_session {pane}"));
+        Self::next(&mut self.agent_session_results, "agent_session")
+    }
 }
 
 #[cfg(test)]
@@ -478,6 +513,23 @@ mod tests {
     fn single_pane_layout_parses() {
         let json = include_str!("../tests/fixtures/layout_1pane.json");
         assert_eq!(parse_pane_rects(json).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parses_pane_get_agent_session_when_present() {
+        let json = include_str!("../tests/fixtures/pane_get_with_session.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        let session = parse_agent_session(&value).unwrap();
+        assert_eq!(session.agent, "pi");
+        assert_eq!(session.kind, "path");
+        assert!(session.value.ends_with(".jsonl"));
+    }
+
+    #[test]
+    fn returns_none_when_agent_session_field_absent() {
+        let json = include_str!("../tests/fixtures/pane_get_without_session.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert!(parse_agent_session(&value).is_none());
     }
 
     #[test]
