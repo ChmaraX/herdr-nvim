@@ -10,6 +10,9 @@ toml = "0.8"
 anyhow = "1"
 crossterm = "0.28"
 
+[dev-dependencies]
+regex = "1"
+
 [profile.release]
 lto = true
 strip = true

@@ -259,8 +259,12 @@ mod tests {
     fn falls_back_to_git_toplevel_for_relative_path() {
         let exists = |p: &Path| p == Path::new("/repo/src/main.rs");
         let toplevel = |_: &Path| Some(PathBuf::from("/repo"));
-        let resolved =
-            resolve_click("src/main.rs", Path::new("/repo/sub/dir"), &exists, &toplevel);
+        let resolved = resolve_click(
+            "src/main.rs",
+            Path::new("/repo/sub/dir"),
+            &exists,
+            &toplevel,
+        );
         assert_eq!(resolved, Some(PathBuf::from("/repo/src/main.rs")));
     }
 
@@ -366,5 +370,88 @@ mod tests {
         env::set_var("HERDR_WORKSPACE_ID", "wA");
 
         assert!(read_click_env().is_none());
+    }
+
+    // --- manifest link_handlers table-tests -------------------------------
+    // The patterns are read out of the real herdr-plugin.toml (include_str!),
+    // so the manifest stays the single source of truth — no drift risk.
+
+    fn manifest_link_pattern(id: &str) -> String {
+        let raw = include_str!("../herdr-plugin.toml");
+        let doc: toml::Value = raw.parse().expect("herdr-plugin.toml must be valid TOML");
+        doc.get("link_handlers")
+            .and_then(toml::Value::as_array)
+            .expect("herdr-plugin.toml must have a link_handlers array")
+            .iter()
+            .find(|handler| handler.get("id").and_then(toml::Value::as_str) == Some(id))
+            .and_then(|handler| handler.get("pattern"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("no link_handlers entry with id {id}"))
+            .to_owned()
+    }
+
+    #[test]
+    fn file_path_handler_pattern_matches_realistic_paths() {
+        let pattern = manifest_link_pattern("file-path");
+        let re = regex::Regex::new(&pattern).expect("file-path pattern must compile");
+
+        let should_match = [
+            "src/main.rs",
+            "./src/bridge.rs:42",
+            "/Users/adam/project/src/lib.rs:10:3",
+            "components/Button.tsx",
+            "app/(marketing)/page.tsx",
+            "app/[slug]/page.tsx",
+            "~/sub/notes.md",
+            // Has a directory segment and an extension, so the *pattern*
+            // matches; resolution (not the regex) is what rejects this —
+            // see resolve_click, which requires the file to actually exist.
+            "example.com/path.js",
+        ];
+        for candidate in should_match {
+            assert!(re.is_match(candidate), "expected {candidate:?} to match");
+        }
+
+        let should_not_match = [
+            "Node.js",
+            "e.g.",
+            "v0.7.0",
+            "README.md", // bare filename: no directory segment
+            "and/or",    // no file extension
+            // Known gap inherited from the approved brief: a home-relative
+            // path with NO intermediate directory doesn't match, because the
+            // pattern requires >=1 char between the optional leading `~` and
+            // the mandatory `/` that precedes the final segment. `~/sub/x.md`
+            // (above) matches fine; only the bare `~/x.md` shape doesn't.
+            "~/notes.md",
+        ];
+        for candidate in should_not_match {
+            assert!(
+                !re.is_match(candidate),
+                "expected {candidate:?} to NOT match"
+            );
+        }
+    }
+
+    #[test]
+    fn file_url_handler_pattern_matches_file_scheme_only() {
+        let pattern = manifest_link_pattern("file-url");
+        let re = regex::Regex::new(&pattern).expect("file-url pattern must compile");
+
+        assert!(re.is_match("file:///tmp/a.py"));
+        assert!(re.is_match("file://localhost/tmp/a.py"));
+        assert!(!re.is_match("https://example.com"));
+        assert!(!re.is_match("src/main.rs"));
+    }
+
+    #[test]
+    fn both_link_handlers_route_to_the_open_link_action() {
+        let raw = include_str!("../herdr-plugin.toml");
+        let doc: toml::Value = raw.parse().unwrap();
+        let handlers = doc["link_handlers"].as_array().unwrap();
+        assert_eq!(handlers.len(), 2);
+        for handler in handlers {
+            assert_eq!(handler["action"].as_str(), Some("open-link"));
+        }
     }
 }
