@@ -50,7 +50,12 @@ pub fn socket_path(tab: &str) -> PathBuf {
 /// Ensure a per-tab headless nvim daemon is listening on its socket,
 /// returning the socket path. If a healthy daemon already exists this is a
 /// no-op; otherwise a detached daemon is spawned and polled until healthy.
-pub fn ensure_daemon(tab: &str, plugin_root: &Path, config: &Config) -> Result<PathBuf> {
+pub fn ensure_daemon(
+    tab: &str,
+    plugin_root: &Path,
+    config: &Config,
+    cwd: &Path,
+) -> Result<PathBuf> {
     let socket = socket_path(tab);
     if daemon_healthy(&socket) {
         return Ok(socket);
@@ -65,7 +70,7 @@ pub fn ensure_daemon(tab: &str, plugin_root: &Path, config: &Config) -> Result<P
     // only get here after the health check failed, so any file present is dead.
     remove_socket(&socket)?;
 
-    spawn_daemon(&socket, plugin_root, &config.sidebar.nvim_bin)?;
+    spawn_daemon(&socket, plugin_root, &config.sidebar.nvim_bin, cwd)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
@@ -82,7 +87,7 @@ pub fn ensure_daemon(tab: &str, plugin_root: &Path, config: &Config) -> Result<P
     }
 }
 
-fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str) -> Result<()> {
+fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -> Result<()> {
     // The pre-init `set rtp+=` below is not enough on its own: LazyVim (and any
     // lazy.nvim config with the default `performance.rtp.reset = true`) rebuilds
     // runtimepath from scratch during startup, dropping our appended path before
@@ -116,6 +121,7 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str) -> Result<()>
         .arg(format!("set rtp+={}", plugin_root.display()))
         .arg("--cmd")
         .arg(&vim_enter)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -168,21 +174,30 @@ fn remote_expr(socket: &Path, expr: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Quote `s` with single quotes if it contains a space, escaping any single
+/// quotes it already contains (`'` -> `'\''`) -- shared by the binary path
+/// and cwd positional args in `sidebar_shell_cmd`.
+fn shell_quote_if_needed(s: &str) -> String {
+    if s.contains(' ') {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    } else {
+        s.to_owned()
+    }
+}
+
 /// Shell command a sidebar pane runs to become the nvim UI: it re-executes this
-/// binary in `sidebar` mode (see `sidebar_cmd`), passing the tab id as a
-/// positional arg so the sidebar pane knows which daemon to attach to (it
-/// can't rely on env, since herdr may not export a tab id into the pane).
-pub fn sidebar_shell_cmd(tab: &str) -> String {
+/// binary in `sidebar` mode (see `sidebar_cmd`), passing the tab id and the
+/// workspace's cwd as positional args so the sidebar pane knows which daemon
+/// to attach to and where to spawn it (it can't rely on env, since herdr may
+/// not export either into the pane).
+pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
     let path = std::env::current_exe()
         .ok()
         .and_then(|path| path.into_os_string().into_string().ok())
         .unwrap_or_else(|| "herdr-nvim".to_owned());
-    let path = if path.contains(' ') {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    } else {
-        path
-    };
-    format!("exec {path} sidebar {tab}")
+    let path = shell_quote_if_needed(&path);
+    let cwd = shell_quote_if_needed(&cwd.display().to_string());
+    format!("exec {path} sidebar {tab} {cwd}")
 }
 
 /// Runs inside the sidebar pane: ensure the tab's daemon is up, then replace
@@ -197,9 +212,16 @@ pub fn sidebar_cmd() -> Result<()> {
         .nth(2)
         .or_else(|| env::var("HERDR_WORKSPACE_ID").ok())
         .context("herdr-nvim sidebar requires a tab id argument or HERDR_WORKSPACE_ID")?;
+    // Prefer the positional cwd arg (`sidebar <tab> <cwd>`, see
+    // `sidebar_shell_cmd`); fall back to $HOME for backward compat with an
+    // old-format invocation that only passed the tab id.
+    let cwd = env::args()
+        .nth(3)
+        .or_else(|| env::var("HOME").ok())
+        .context("herdr-nvim sidebar requires a cwd argument or HOME to be set")?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
-    let socket = ensure_daemon(&tab, &plugin_root, &config)?;
+    let socket = ensure_daemon(&tab, &plugin_root, &config, Path::new(&cwd))?;
 
     let error = Command::new("nvim")
         .arg("--server")
@@ -408,14 +430,17 @@ mod tests {
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let config = Config::default();
 
-        let socket = ensure_daemon("wD", &plugin_root, &config).expect("first ensure_daemon");
+        // Reuse plugin_root (a real, already-existing directory) as the cwd
+        // too -- no need for a second temp dir just for this.
+        let socket =
+            ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("first ensure_daemon");
         assert!(socket.exists(), "socket file should exist after spawn");
 
         let pid1 = remote_expr(&socket, "getpid()").expect("daemon should report a pid");
         assert!(!pid1.is_empty());
 
         let socket_again =
-            ensure_daemon("wD", &plugin_root, &config).expect("second ensure_daemon");
+            ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("second ensure_daemon");
         assert_eq!(socket, socket_again);
 
         let pid2 = remote_expr(&socket, "getpid()").expect("daemon should still report a pid");

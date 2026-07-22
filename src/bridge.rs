@@ -17,7 +17,7 @@ use std::{
     collections::HashSet,
     env,
     io::ErrorKind,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -77,9 +77,9 @@ pub fn target_agent_pane(h: &mut dyn Herdr, workspace: &str, focused: &str) -> R
 /// read-only layers (session mining, git worktree status, scrape), and open
 /// the picker.
 fn start_pick() -> Result<()> {
-    let ctx = maneuver::read_ctx()?;
-    let config = config::load();
     let mut herdr = CliHerdr;
+    let ctx = maneuver::read_ctx(&mut herdr)?;
+    let config = config::load();
 
     let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.focused_pane)?;
     let (cwd, agent_session) = herdr.pane_snapshot(&target)?;
@@ -221,6 +221,10 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
         workspace: handoff.workspace.clone(),
         tab: handoff.tab.clone(),
         focused_pane: handoff.focused_pane.clone(),
+        // Reuse the same cwd already resolved (and carried in the handoff)
+        // for the picker's own path-display purposes -- not a second,
+        // independent cwd lookup.
+        cwd: PathBuf::from(&handoff.cwd),
     };
     let mut herdr = CliHerdr;
 
@@ -246,9 +250,9 @@ pub(crate) fn open_in_sidebar(
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
     let config = config::load();
-    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config)?;
+    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
 
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab);
+    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
     let sidebar = ensure_sidebar_open(h, ctx, &sidebar_cmd)?;
 
     open_in_nvim(&socket, path, line)?;

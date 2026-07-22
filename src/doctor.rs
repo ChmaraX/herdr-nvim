@@ -102,7 +102,8 @@ fn run_checks(h: &mut CliHerdr, ws: &str, with_agent: Option<&str>, fails: &mut 
     );
 
     let config = crate::config::load();
-    match plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root, &config)) {
+    let cwd = env::current_dir().unwrap_or_default();
+    match plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root, &config, &cwd)) {
         Ok(socket) => {
             report(
                 fails,
@@ -201,6 +202,10 @@ fn check_f7(h: &mut CliHerdr, ws: &str) -> Result<String> {
         workspace: ws.to_owned(),
         tab: tab.clone(),
         focused_pane: anchor.clone(),
+        // Not exercised by this check (the trivial `true` sidebar command below
+        // needs no real cwd) -- current_dir() is a harmless, always-available
+        // placeholder.
+        cwd: env::current_dir().unwrap_or_default(),
     };
     // A trivial sidebar command keeps the toggle path hermetic (no daemon needed
     // here — D-F18/F19 exercise the daemon separately). The sidebar pane's shell

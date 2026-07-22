@@ -151,6 +151,9 @@ pub fn open_link_cmd() -> Result<()> {
         workspace: click.workspace,
         tab: click.tab,
         focused_pane: click.pane,
+        // Reuse the same cwd already resolved above for path-resolution --
+        // not a second, independent cwd lookup.
+        cwd: cwd.clone(),
     };
     bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
 }

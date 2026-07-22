@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -14,9 +14,18 @@ pub struct Ctx {
     pub workspace: String,
     pub tab: String,
     pub focused_pane: String,
+    /// The workspace's actual working directory, used to spawn the nvim
+    /// daemon in the right place (see `daemon::spawn_daemon`) instead of
+    /// wherever the herdr-nvim binary process happened to inherit as its own
+    /// cwd.
+    pub cwd: PathBuf,
 }
 
-pub fn read_ctx() -> Result<Ctx> {
+/// Read the invoking plugin context, resolving `cwd` in priority order:
+/// `workspace_cwd` from the context JSON, then `focused_pane_cwd` from the
+/// same JSON, then (only if a very old herdr populated neither field) a
+/// live `pane get` call via `h` as a last resort.
+pub fn read_ctx(h: &mut dyn Herdr) -> Result<Ctx> {
     let workspace = env::var("HERDR_WORKSPACE_ID").context("HERDR_WORKSPACE_ID is not set")?;
     let focused_pane = env::var("HERDR_PANE_ID").context("HERDR_PANE_ID is not set")?;
     let plugin_context =
@@ -25,10 +34,16 @@ pub fn read_ctx() -> Result<Ctx> {
         serde_json::from_str(&plugin_context).context("invalid HERDR_PLUGIN_CONTEXT_JSON")?;
     let tab = tab_id(&plugin_context).context("plugin context is missing pane tab_id")?;
 
+    let cwd = match cwd_from_context(&plugin_context) {
+        Some(cwd) => cwd,
+        None => h.pane_cwd(&focused_pane)?,
+    };
+
     Ok(Ctx {
         workspace,
         tab: tab.to_owned(),
         focused_pane,
+        cwd,
     })
 }
 
@@ -42,6 +57,19 @@ fn tab_id(context: &Value) -> Option<&str> {
                 .pointer("/focused_pane/tab_id")
                 .and_then(Value::as_str)
         })
+}
+
+/// Pure: extract the workspace's cwd from the plugin invocation context
+/// JSON -- prefer the top-level `workspace_cwd` string field, fall back to
+/// `focused_pane_cwd` (both per herdr's PluginInvocationContext schema).
+/// `None` if neither is present (a very old herdr) -- `read_ctx` falls back
+/// to a live `pane get` call in that case.
+fn cwd_from_context(context: &Value) -> Option<PathBuf> {
+    context
+        .get("workspace_cwd")
+        .and_then(Value::as_str)
+        .or_else(|| context.get("focused_pane_cwd").and_then(Value::as_str))
+        .map(PathBuf::from)
 }
 
 pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
@@ -195,9 +223,9 @@ fn parse_dir(dir: &str) -> Result<Dir> {
 }
 
 pub fn toggle_cmd() -> Result<()> {
-    let ctx = read_ctx()?;
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab);
     let mut herdr = CliHerdr;
+    let ctx = read_ctx(&mut herdr)?;
+    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
     toggle(&mut herdr, &ctx, &sidebar_cmd)
 }
 
@@ -226,6 +254,7 @@ mod tests {
             workspace: "wT".into(),
             tab: "wT:t1".into(),
             focused_pane: "wT:p1".into(),
+            cwd: PathBuf::from("/repo"),
         }
     }
 
@@ -554,5 +583,90 @@ mod tests {
             );
             assert!(state::load("wT:t1").unwrap().is_none());
         });
+    }
+
+    struct CtxEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    static CTX_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const CTX_ENV_VARS: [&str; 3] = [
+        "HERDR_WORKSPACE_ID",
+        "HERDR_PANE_ID",
+        "HERDR_PLUGIN_CONTEXT_JSON",
+    ];
+
+    impl CtxEnvGuard {
+        fn new() -> Self {
+            let lock = CTX_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let saved = CTX_ENV_VARS
+                .iter()
+                .map(|&key| (key, env::var_os(key)))
+                .collect();
+            for key in CTX_ENV_VARS {
+                env::remove_var(key);
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for CtxEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => env::set_var(key, v),
+                    None => env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_ctx_prefers_workspace_cwd_from_context_json() {
+        let _guard = CtxEnvGuard::new();
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var(
+            "HERDR_PLUGIN_CONTEXT_JSON",
+            r#"{"tab_id":"wA:t1","workspace_cwd":"/repo/ws","focused_pane_cwd":"/repo/pane"}"#,
+        );
+
+        let mut h = MockHerdr::default();
+        let ctx = read_ctx(&mut h).unwrap();
+        assert_eq!(ctx.cwd, PathBuf::from("/repo/ws"));
+        assert!(h.ops.is_empty(), "no pane_cwd fallback call expected");
+    }
+
+    #[test]
+    fn read_ctx_falls_back_to_focused_pane_cwd_when_workspace_cwd_absent() {
+        let _guard = CtxEnvGuard::new();
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var(
+            "HERDR_PLUGIN_CONTEXT_JSON",
+            r#"{"tab_id":"wA:t1","focused_pane_cwd":"/repo/pane"}"#,
+        );
+
+        let mut h = MockHerdr::default();
+        let ctx = read_ctx(&mut h).unwrap();
+        assert_eq!(ctx.cwd, PathBuf::from("/repo/pane"));
+        assert!(h.ops.is_empty(), "no pane_cwd fallback call expected");
+    }
+
+    #[test]
+    fn read_ctx_falls_back_to_pane_cwd_call_when_neither_json_field_present() {
+        let _guard = CtxEnvGuard::new();
+        env::set_var("HERDR_WORKSPACE_ID", "wA");
+        env::set_var("HERDR_PANE_ID", "wA:p1");
+        env::set_var("HERDR_PLUGIN_CONTEXT_JSON", r#"{"tab_id":"wA:t1"}"#);
+
+        let mut h = MockHerdr {
+            pane_cwd_results: VecDeque::from([Ok(PathBuf::from("/repo/from-cli"))]),
+            ..Default::default()
+        };
+        let ctx = read_ctx(&mut h).unwrap();
+        assert_eq!(ctx.cwd, PathBuf::from("/repo/from-cli"));
+        assert_eq!(h.ops, vec!["pane_cwd wA:p1"]);
     }
 }
