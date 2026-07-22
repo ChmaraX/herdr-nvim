@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod doctor;
 mod extract;
+mod gitscan;
 mod herdr;
 mod layout;
 mod maneuver;

@@ -17,7 +17,6 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::Result;
@@ -110,24 +109,6 @@ pub(crate) fn resolve_click(
     exists(&via_toplevel).then_some(via_toplevel)
 }
 
-/// Shell out to `git -C <cwd> rev-parse --show-toplevel`. `None` if `git`
-/// fails or isn't on PATH (e.g. `cwd` isn't inside a repo).
-fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .arg("rev-parse")
-        .arg("--show-toplevel")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
-}
-
 struct ClickEnv {
     clicked_url: String,
     pane: String,
@@ -160,7 +141,7 @@ pub fn open_link_cmd() -> Result<()> {
 
     let mut herdr = CliHerdr;
     let cwd = herdr.pane_cwd(&click.pane)?;
-    let Some(resolved) = resolve_click(&raw_path, &cwd, &|p| p.is_file(), &git_toplevel) else {
+    let Some(resolved) = resolve_click(&raw_path, &cwd, &|p| p.is_file(), &crate::gitscan::toplevel) else {
         return Ok(());
     };
 
