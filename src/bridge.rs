@@ -14,6 +14,7 @@
 //! phases are exercised live in Task 4's end-to-end run.
 
 use std::{
+    collections::HashSet,
     env,
     io::ErrorKind,
     path::Path,
@@ -24,11 +25,13 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    config, daemon,
-    extract::extract,
+    candidates::{self, BuildInput, Candidate, GitOnlyEdit},
+    config, daemon, extract,
+    gitscan,
     herdr::{CliHerdr, Herdr},
     maneuver::{self, Ctx},
     picker::Handoff,
+    sessions,
     state::{self, Phase},
 };
 
@@ -71,18 +74,19 @@ pub fn target_agent_pane(h: &mut dyn Herdr, workspace: &str, focused: &str) -> R
         .with_context(|| format!("no agent panes found in workspace {workspace}"))
 }
 
-/// Phase 1: read the target agent pane, extract candidates, and open the picker.
+/// Phase 1: read the target agent pane, gather candidates from the three
+/// read-only layers (session mining, git worktree status, scrape), and open
+/// the picker.
 fn start_pick() -> Result<()> {
     let ctx = maneuver::read_ctx()?;
     let config = config::load();
     let mut herdr = CliHerdr;
 
     let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.focused_pane)?;
-    let text = herdr.read_pane(&target, config.picker.scan_lines)?;
     let cwd = herdr.pane_cwd(&target)?;
-    // `extract` expects an existence check that accepts only real files (its own
-    // docs), so filter out directories that happen to be path-shaped.
-    let candidates = extract(&text, &cwd, &|path| path.is_file());
+    let text = herdr.read_pane(&target, config.picker.scan_lines)?;
+
+    let candidates = gather_candidates(&mut herdr, &target, &text, &cwd, &|path| path.is_file());
 
     if candidates.is_empty() {
         notify_no_candidates();
@@ -95,10 +99,80 @@ fn start_pick() -> Result<()> {
         workspace: ctx.workspace.clone(),
         tab: ctx.tab.clone(),
         focused_pane: ctx.focused_pane.clone(),
+        cwd: cwd.to_string_lossy().into_owned(),
     };
     let handoff_path = write_handoff(&handoff)?;
     open_picker(&handoff_path)?;
     Ok(())
+}
+
+/// Gather candidates from all three layers for `pane`. Never fails: any
+/// session-file read error, JSON parse failure, or git command failure
+/// degrades to the remaining layers (brief) -- this function's return type
+/// is `Vec<Candidate>`, not `Result`, on purpose.
+fn gather_candidates(
+    h: &mut dyn Herdr,
+    pane: &str,
+    scrape_text: &str,
+    cwd: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Vec<Candidate> {
+    let exists_str = |p: &str| exists(Path::new(p));
+
+    let agent_session = h.agent_session(pane).ok().flatten();
+    let mined = match &agent_session {
+        Some(session) if session.kind == "path" => match std::fs::read_to_string(&session.value) {
+            Ok(text) => sessions::mine_session(&session.agent, &text),
+            Err(_) => sessions::mine_session(&session.agent, ""),
+        },
+        _ => sessions::mine_session("", ""),
+    };
+
+    let toplevel = gitscan::toplevel(cwd);
+    let git_dirty = toplevel
+        .as_deref()
+        .and_then(|top| gitscan::dirty_paths(top).ok())
+        .unwrap_or_default();
+    let git_committed = match (&toplevel, mined.session_start_unix) {
+        (Some(top), Some(since)) => gitscan::committed_since(top, since).unwrap_or_default(),
+        _ => HashSet::new(),
+    };
+    let in_git_worktree = |path: &str| {
+        toplevel
+            .as_deref()
+            .map(|top| Path::new(path).starts_with(top))
+            .unwrap_or(false)
+    };
+
+    // Git-only edits: dirty paths not already covered by session mining
+    // (e.g. a bash `sed -i` the agent ran, invisible to tool-call mining).
+    let mined_paths: HashSet<&str> = mined.edits.iter().map(|e| e.path.as_str()).collect();
+    let git_only: Vec<GitOnlyEdit> = git_dirty
+        .iter()
+        .filter(|p| !mined_paths.contains(p.as_str()))
+        .map(|p| GitOnlyEdit {
+            path: p.clone(),
+            mtime_unix: std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs()),
+        })
+        .collect();
+
+    let scraped = extract::extract(scrape_text, cwd, exists);
+
+    candidates::build_candidates(BuildInput {
+        mined_edits: &mined.edits,
+        mined_reads: &mined.reads,
+        session_start_unix: mined.session_start_unix,
+        git_dirty: &git_dirty,
+        git_committed_in_session: &git_committed,
+        in_git_worktree: &in_git_worktree,
+        git_only_dirty_not_mined: &git_only,
+        scraped_mentioned: &scraped,
+        exists: &exists_str,
+    })
 }
 
 /// Phase 2: act on the user's selection from the handoff file.
@@ -364,5 +438,17 @@ mod tests {
     fn no_finish_argument_is_phase_one() {
         let args = ["herdr-nvim", "pick-file"].into_iter().map(String::from);
         assert!(finish_handoff_path(args).is_none());
+    }
+
+    #[test]
+    fn gather_candidates_falls_back_to_scrape_when_no_agent_session() {
+        let mut h = MockHerdr {
+            agent_session_results: VecDeque::from([Ok(None)]),
+            ..Default::default()
+        };
+        let text = "see /tmp/does-not-exist-ever.rs";
+        let cwd = std::path::Path::new("/tmp");
+        let out = gather_candidates(&mut h, "wA:p1", text, cwd, &|_| false);
+        assert!(out.is_empty());
     }
 }
