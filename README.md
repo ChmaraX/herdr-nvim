@@ -5,7 +5,7 @@ Annotate code in nvim, send the annotations to any AI agent running in
 
 ## Requirements
 
-- nvim ≥ 0.10, herdr ≥ 0.7.0, running inside a herdr session
+- nvim ≥ 0.10, herdr ≥ 0.7.4, running inside a herdr session
 
 ## Install (lazy.nvim)
 
@@ -132,6 +132,26 @@ description = "open file from agent output"
 ```
 
 Esc (or `q`) in the picker dismisses it without touching the sidebar.
+
+## Ctrl+click to open a file
+
+Agent panes also linkify file paths and `file://` links (including agents'
+own OSC 8 links, e.g. Claude Code's) directly in their terminal output —
+**Ctrl+click** one to open it in the tab's nvim sidebar (opening the sidebar
+first if it's closed), at the right line, focused. This is herdr's fixed
+link-handler modifier (not configurable by this plugin) and needs herdr ≥
+0.7.4.
+
+The path must include at least one directory segment and a file extension
+(e.g. `src/main.rs`, `./lib/util.py:42`, `/abs/path/file.rs:10:3`,
+`~/project/notes.md`) — a bare filename like `README.md` is intentionally
+**not** linkified (`Node.js`, `e.g.`, and similar prose would otherwise become
+false positives); use the picker above for those. Relative paths resolve
+against the clicked pane's working directory, then that directory's git
+toplevel. A path that doesn't resolve to a real file is a silent no-op.
+
+No key to bind — herdr wires Ctrl+click to the plugin's `open-link` action
+automatically for every `link_handlers` match.
 
 ## herdr-nvim config (Rust side)
 
