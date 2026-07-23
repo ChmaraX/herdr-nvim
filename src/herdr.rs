@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,7 +51,8 @@ fn parse_pane_snapshot(value: &Value) -> Result<(PathBuf, Option<AgentSession>)>
     Ok((cwd, parse_agent_session(value)))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Dir {
     Right,
     Down,
@@ -93,11 +95,6 @@ pub trait Herdr {
     /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
     /// `agent` label and belong to `workspace`).
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
-    /// The pane's tracked agent session file, if herdr reports one (`pane get`'s
-    /// `agent_session` field: `{agent, kind: "path", value: <abs path>}`). `None`
-    /// for panes herdr doesn't track a session for, or an older herdr that
-    /// doesn't populate the field at all -- never an error.
-    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>>;
     /// The pane's cwd and agent session together, from a single `pane get`
     /// call. Prefer this over calling `pane_cwd` and `agent_session`
     /// separately when both are needed (as the pick-file action phase
@@ -110,7 +107,10 @@ pub trait Herdr {
 pub struct CliHerdr;
 
 impl CliHerdr {
-    fn run(args: &[String]) -> Result<Value> {
+    /// Runs a `herdr` subcommand and returns its raw `Output`, having already
+    /// checked the exit status. Shared core behind `run`/`run_raw`/`run_text`,
+    /// which differ only in how they interpret stdout on success.
+    fn output(args: &[String]) -> Result<std::process::Output> {
         let command = format!("herdr {}", args.join(" "));
         let output = Command::new("herdr")
             .args(args)
@@ -121,9 +121,13 @@ impl CliHerdr {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("{command} failed: {}", stderr.trim());
         }
+        Ok(output)
+    }
 
+    fn run(args: &[String]) -> Result<Value> {
+        let output = Self::output(args)?;
         serde_json::from_slice(&output.stdout)
-            .with_context(|| format!("failed to parse JSON from {command}"))
+            .with_context(|| format!("failed to parse JSON from herdr {}", args.join(" ")))
     }
 
     /// Runs a `herdr` subcommand that is not expected to emit JSON (e.g.
@@ -131,32 +135,14 @@ impl CliHerdr {
     /// inspected; stdout is ignored entirely so an empty response is not
     /// mistaken for a parse error.
     fn run_raw(args: &[String]) -> Result<()> {
-        let command = format!("herdr {}", args.join(" "));
-        let output = Command::new("herdr")
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to run {command}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("{command} failed: {}", stderr.trim());
-        }
+        Self::output(args)?;
         Ok(())
     }
 
     /// Runs a `herdr` subcommand whose stdout is plain text rather than JSON
     /// (e.g. `pane read --format text`) and returns that stdout verbatim.
     fn run_text(args: &[String]) -> Result<String> {
-        let command = format!("herdr {}", args.join(" "));
-        let output = Command::new("herdr")
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to run {command}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("{command} failed: {}", stderr.trim());
-        }
+        let output = Self::output(args)?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
@@ -301,11 +287,6 @@ impl Herdr for CliHerdr {
         )?))
     }
 
-    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>> {
-        let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(parse_agent_session(&value))
-    }
-
     fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
         parse_pane_snapshot(&value)
@@ -409,7 +390,6 @@ pub struct MockHerdr {
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
-    pub agent_session_results: VecDeque<Result<Option<AgentSession>>>,
     pub pane_snapshot_results: VecDeque<Result<(PathBuf, Option<AgentSession>)>>,
 }
 
@@ -496,11 +476,6 @@ impl Herdr for MockHerdr {
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
         self.ops.push(format!("agents {workspace}"));
         Self::next(&mut self.agents_results, "agents")
-    }
-
-    fn agent_session(&mut self, pane: &str) -> Result<Option<AgentSession>> {
-        self.ops.push(format!("agent_session {pane}"));
-        Self::next(&mut self.agent_session_results, "agent_session")
     }
 
     fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {

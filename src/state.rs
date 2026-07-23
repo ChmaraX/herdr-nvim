@@ -20,28 +20,20 @@ pub struct StateFile {
     pub anchor: String,
     pub parking_tab: Option<String>,
     pub parked: Vec<String>,
-    pub plan_steps: Vec<PlanStep>,
+    pub plan_steps: Vec<crate::layout::MoveStep>,
     pub sidebar_pane: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct PlanStep {
-    pub pane: String,
-    pub dir: String,
-    pub target: String,
-    pub ratio: f64,
-}
-
-/// Sanitize a key (tab id) for use as a filename. Tab ids contain a colon
-/// (e.g. `wG:t1`); replace it with `_` so the id is a valid, single path
-/// component (`wG_t1`). Kept in sync with `daemon::sanitize_key` so the
+/// Sanitize a key (workspace or tab id) for use as a filename. Tab ids
+/// contain a colon (e.g. `wG:t1`); replace it with `_` so the id is a valid,
+/// single path component (`wG_t1`). Shared by `state` and `daemon` so the
 /// orchestrator and the sidebar pane compute the same path.
-fn sanitize_key(key: &str) -> String {
+pub(crate) fn tab_key(key: &str) -> String {
     key.replace(':', "_")
 }
 
-pub fn state_path(tab: &str) -> PathBuf {
-    let base = env::var_os("HERDR_NVIM_STATE_DIR")
+fn state_dir() -> PathBuf {
+    env::var_os("HERDR_NVIM_STATE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("XDG_STATE_HOME").map(|path| PathBuf::from(path).join("herdr-nvim"))
@@ -49,8 +41,15 @@ pub fn state_path(tab: &str) -> PathBuf {
         .or_else(|| {
             env::var_os("HOME").map(|path| PathBuf::from(path).join(".local/state/herdr-nvim"))
         })
-        .unwrap_or_else(|| PathBuf::from(".herdr-nvim-state"));
-    base.join(format!("{}.json", sanitize_key(tab)))
+        .unwrap_or_else(|| PathBuf::from(".herdr-nvim-state"))
+}
+
+fn path_for_key(key: &str) -> PathBuf {
+    state_dir().join(format!("{key}.json"))
+}
+
+pub fn state_path(tab: &str) -> PathBuf {
+    path_for_key(&tab_key(tab))
 }
 
 pub fn load(tab: &str) -> Result<Option<StateFile>> {
@@ -89,7 +88,16 @@ pub fn save(s: &StateFile) -> Result<()> {
 }
 
 pub fn remove(tab: &str) -> Result<()> {
-    let path = state_path(tab);
+    remove_key(&tab_key(tab))
+}
+
+/// Remove the state file for an already-sanitized key (e.g. a socket file
+/// stem, which is already in filename form). Used by `daemon::gc`, which
+/// only ever has the sanitized key on hand -- calling `remove` there would
+/// re-sanitize an already-sanitized key, which only happens to be a no-op
+/// because sanitization is idempotent.
+pub(crate) fn remove_key(key: &str) -> Result<()> {
+    let path = path_for_key(key);
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -145,6 +153,7 @@ mod tests {
     #[test]
     fn state_roundtrip() {
         with_state_dir(|| {
+            use crate::{herdr::Dir, layout::MoveStep};
             let s = StateFile {
                 phase: Phase::Open,
                 workspace: "wT".into(),
@@ -152,9 +161,9 @@ mod tests {
                 anchor: "wT:p1".into(),
                 parking_tab: None,
                 parked: vec![],
-                plan_steps: vec![PlanStep {
+                plan_steps: vec![MoveStep {
                     pane: "wT:p2".into(),
-                    dir: "right".into(),
+                    dir: Dir::Right,
                     target: "wT:p1".into(),
                     ratio: 0.4,
                 }],

@@ -5,9 +5,6 @@
 //! newest-first. This module performs no I/O of its own: existence is checked
 //! through an injected closure so it stays deterministic and testable.
 
-// Wired into the file-bridge picker in a later M3 task; unused until then.
-#![allow(dead_code)]
-
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

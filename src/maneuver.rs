@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::{
     daemon,
     herdr::{CliHerdr, Dir, Herdr},
-    layout::{plan_rebuild, RebuildPlan},
-    state::{self, Phase, PlanStep, StateFile},
+    layout::plan_rebuild,
+    state::{self, Phase, StateFile},
 };
 
 pub struct Ctx {
@@ -75,29 +75,45 @@ fn cwd_from_context(context: &Value) -> Option<PathBuf> {
 pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
     // closed tabs. Non-fatal -- a gc failure must never block a toggle.
-    let _ = daemon::gc(h);
+    let config = crate::config::load();
+    let _ = daemon::gc(h, &config.sidebar.nvim_bin);
 
-    if let Some(existing) = state::load(&ctx.tab)? {
-        // Only a fully-Open sidebar is eligible for the fast close-and-return
-        // path. A sidebar_pane recorded while phase is still Evacuating is a
-        // mid-open checkpoint (see `open()`): closing it here and removing
-        // state directly would strand any still-parked panes and destroy the
-        // recovery info recover() needs to put them back. Evacuating state
-        // always falls through to recover() below instead, which already
-        // knows how to close an orphaned sidebar AND replay parked moves.
-        if matches!(existing.phase, Phase::Open) {
-            if let Some(sidebar) = existing.sidebar_pane.as_deref() {
-                if h.pane_alive(sidebar)? {
-                    h.close_pane(sidebar)?;
-                    state::remove(&ctx.tab)?;
-                    return Ok(());
-                }
-            }
-        }
+    // Only a fully-Open sidebar is eligible for the fast close-and-return
+    // path. A sidebar_pane recorded while phase is still Evacuating is a
+    // mid-open checkpoint (see `open()`): closing it here and removing state
+    // directly would strand any still-parked panes and destroy the recovery
+    // info recover() needs to put them back. Evacuating state always falls
+    // through to recover() below instead, which already knows how to close
+    // an orphaned sidebar AND replay parked moves.
+    if let Some(sidebar) = live_open_sidebar(h, &ctx.tab)? {
+        h.close_pane(&sidebar)?;
+        state::remove(&ctx.tab)?;
+        return Ok(());
     }
 
     recover(h, &ctx.tab)?;
     open(h, ctx, sidebar_cmd)
+}
+
+/// The pane id of `tab`'s sidebar if state records it as fully Open and its
+/// pane is still alive; `None` otherwise (no state, a dead sidebar, or a
+/// mid-open Evacuating checkpoint). Shared by `toggle`'s fast close-and-return
+/// path and `bridge::ensure_sidebar_open`'s idempotent open check.
+pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<String>> {
+    let Some(existing) = state::load(tab)? else {
+        return Ok(None);
+    };
+    if !matches!(existing.phase, Phase::Open) {
+        return Ok(None);
+    }
+    let Some(sidebar) = existing.sidebar_pane else {
+        return Ok(None);
+    };
+    if h.pane_alive(&sidebar)? {
+        Ok(Some(sidebar))
+    } else {
+        Ok(None)
+    }
 }
 
 fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
@@ -110,7 +126,7 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
         anchor: plan.anchor.clone(),
         parking_tab: None,
         parked: vec![],
-        plan_steps: plan_steps(&plan),
+        plan_steps: plan.steps.clone(),
         sidebar_pane: None,
     };
 
@@ -180,7 +196,7 @@ pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
         h.move_pane(
             &step.pane,
             &state_file.tab,
-            parse_dir(&step.dir)?,
+            step.dir,
             Some(&step.target),
             Some(step.ratio),
             false,
@@ -193,33 +209,6 @@ pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
         bail!("recovery state contains parked pane {pane} without a rebuild step");
     }
     state::remove(tab)
-}
-
-fn plan_steps(plan: &RebuildPlan) -> Vec<PlanStep> {
-    plan.steps
-        .iter()
-        .map(|step| PlanStep {
-            pane: step.pane.clone(),
-            dir: dir_name(step.dir).to_owned(),
-            target: step.target.clone(),
-            ratio: step.ratio,
-        })
-        .collect()
-}
-
-fn dir_name(dir: Dir) -> &'static str {
-    match dir {
-        Dir::Right => "right",
-        Dir::Down => "down",
-    }
-}
-
-fn parse_dir(dir: &str) -> Result<Dir> {
-    match dir {
-        "right" => Ok(Dir::Right),
-        "down" => Ok(Dir::Down),
-        _ => bail!("invalid rebuild direction {dir}"),
-    }
 }
 
 pub fn toggle_cmd() -> Result<()> {
@@ -244,7 +233,8 @@ mod tests {
     use super::*;
     use crate::{
         herdr::{MockHerdr, PaneRect},
-        state::{self, Phase, PlanStep, StateFile},
+        layout::MoveStep,
+        state::{self, Phase, StateFile},
     };
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -330,15 +320,15 @@ mod tests {
             parking_tab: Some("wT:t9".into()),
             parked: vec!["wT:p2".into(), "wT:p3".into()],
             plan_steps: vec![
-                PlanStep {
+                MoveStep {
                     pane: "wT:p2".into(),
-                    dir: "right".into(),
+                    dir: Dir::Right,
                     target: "wT:p1".into(),
                     ratio: 0.4,
                 },
-                PlanStep {
+                MoveStep {
                     pane: "wT:p3".into(),
-                    dir: "down".into(),
+                    dir: Dir::Down,
                     target: "wT:p2".into(),
                     ratio: 0.3,
                 },

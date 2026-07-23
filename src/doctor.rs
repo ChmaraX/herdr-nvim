@@ -48,7 +48,11 @@ pub fn doctor_cmd() -> Result<()> {
     env::set_var("HERDR_NVIM_STATE_DIR", &state_dir);
     // Belt-and-suspenders: even if a check panics or an early `?` fires, this
     // guard quits stray daemons and removes the temp dir on unwind.
-    let _temp_guard = TempGuard { dir: temp.clone() };
+    let nvim_bin = crate::config::load().sidebar.nvim_bin;
+    let _temp_guard = TempGuard {
+        dir: temp.clone(),
+        nvim_bin: nvim_bin.clone(),
+    };
 
     let mut herdr = CliHerdr;
     let mut ws = WorkspaceGuard::create(WORKSPACE_LABEL)?;
@@ -62,7 +66,7 @@ pub fn doctor_cmd() -> Result<()> {
     println!();
     println!("--- cleanup ---");
     ws.close();
-    quit_daemons(&runtime_dir);
+    quit_daemons(&runtime_dir, &nvim_bin);
 
     let leftover = reap_leftover_nvim(&temp);
     println!("leaked headless nvim (temp {}): {leftover}", temp.display());
@@ -103,14 +107,18 @@ fn run_checks(h: &mut CliHerdr, ws: &str, with_agent: Option<&str>, fails: &mut 
 
     let config = crate::config::load();
     let cwd = env::current_dir().unwrap_or_default();
-    match plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root, &config, &cwd)) {
+    match daemon::plugin_root().and_then(|root| daemon::ensure_daemon(ws, &root, &config, &cwd)) {
         Ok(socket) => {
             report(
                 fails,
                 "D-F18 daemon-healthy",
                 Ok(format!("socket {}", socket.display())),
             );
-            report(fails, "D-F19 remote-ui-attach", check_f19(h, ws, &socket));
+            report(
+                fails,
+                "D-F19 remote-ui-attach",
+                check_f19(h, ws, &socket, &config.sidebar.nvim_bin),
+            );
         }
         Err(error) => {
             report(fails, "D-F18 daemon-healthy", Err(anyhow!("{error:#}")));
@@ -230,17 +238,25 @@ fn check_f7(h: &mut CliHerdr, ws: &str) -> Result<String> {
 /// daemon to render a unique sentinel line, then reading it back from the pane.
 /// (Real user configs — e.g. LazyVim with `eob=" "` — hide the classic `~`
 /// end-of-buffer markers, so a sentinel is the robust marker.)
-fn check_f19(h: &mut CliHerdr, ws: &str, socket: &Path) -> Result<String> {
+fn check_f19(h: &mut CliHerdr, ws: &str, socket: &Path, nvim_bin: &str) -> Result<String> {
     let (_tab, pane) = h.create_tab(ws)?;
     h.run_in_pane(
         &pane,
-        &format!("exec nvim --server {} --remote-ui", socket.display()),
+        &format!(
+            "exec {} --server {} --remote-ui",
+            daemon::shell_quote(nvim_bin),
+            socket.display()
+        ),
     )?;
     // Let the remote UI attach before we drive it.
     sleep(Duration::from_millis(1500));
 
     let sentinel = format!("DOCTOR_NVIM_OK_{}", std::process::id());
-    nvim_remote_send(socket, &format!("<Esc><Cmd>enew<CR>i{sentinel}<Esc>"))?;
+    nvim_remote_send(
+        socket,
+        &format!("<Esc><Cmd>enew<CR>i{sentinel}<Esc>"),
+        nvim_bin,
+    )?;
 
     let mut content = String::new();
     for _ in 0..12 {
@@ -354,8 +370,8 @@ fn first_split_ratio(layout: &Value) -> Result<f64> {
         .context("pane layout missing result.layout.splits[0].ratio")
 }
 
-fn nvim_remote_send(socket: &Path, keys: &str) -> Result<()> {
-    let status = Command::new("nvim")
+fn nvim_remote_send(socket: &Path, keys: &str, nvim_bin: &str) -> Result<()> {
+    let status = daemon::nvim_cmd(nvim_bin)
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
@@ -369,23 +385,6 @@ fn nvim_remote_send(socket: &Path, keys: &str) -> Result<()> {
         bail!("nvim --remote-send exited with failure");
     }
     Ok(())
-}
-
-// --- plugin root discovery (mirrors daemon::plugin_root) -------------------
-
-fn plugin_root() -> Result<PathBuf> {
-    if let Some(root) = env::var_os("HERDR_NVIM_PLUGIN_ROOT") {
-        return Ok(PathBuf::from(root));
-    }
-    let exe = env::current_exe().context("failed to resolve current executable path")?;
-    let mut dir = exe.parent();
-    while let Some(candidate) = dir {
-        if candidate.join("lua").join("herdr-nvim").is_dir() {
-            return Ok(candidate.to_path_buf());
-        }
-        dir = candidate.parent();
-    }
-    bail!("could not locate plugin root (set HERDR_NVIM_PLUGIN_ROOT)")
 }
 
 // --- cleanup ----------------------------------------------------------------
@@ -432,24 +431,25 @@ impl Drop for WorkspaceGuard {
 
 struct TempGuard {
     dir: PathBuf,
+    nvim_bin: String,
 }
 
 impl Drop for TempGuard {
     fn drop(&mut self) {
-        quit_daemons(&self.dir.join("runtime"));
+        quit_daemons(&self.dir.join("runtime"), &self.nvim_bin);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
 /// Quit every headless nvim daemon whose socket lives in `runtime_dir`.
-fn quit_daemons(runtime_dir: &Path) {
+fn quit_daemons(runtime_dir: &Path, nvim_bin: &str) {
     if let Ok(entries) = fs::read_dir(runtime_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(OsStr::to_str) != Some("sock") {
                 continue;
             }
-            let _ = Command::new("nvim")
+            let _ = daemon::nvim_cmd(nvim_bin)
                 .arg("--server")
                 .arg(&path)
                 .arg("--remote-send")

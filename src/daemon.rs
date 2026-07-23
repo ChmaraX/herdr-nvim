@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use crate::{
     config::Config,
     herdr::{CliHerdr, Herdr},
-    state,
+    state::{self, tab_key},
 };
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -22,13 +22,6 @@ const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[cfg(test)]
 pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Sanitize a key (workspace or tab id) for use as a filename. Tab ids contain
-/// a colon (e.g. `wG:t1`); replace it with `_` so the id is a valid, single
-/// path component (`wG_t1`).
-fn sanitize_key(key: &str) -> String {
-    key.replace(':', "_")
-}
 
 /// Directory that holds one `<tab>.sock` per running daemon, one per tab.
 ///
@@ -44,7 +37,15 @@ fn socket_dir() -> PathBuf {
 }
 
 pub fn socket_path(tab: &str) -> PathBuf {
-    socket_dir().join(format!("{}.sock", sanitize_key(tab)))
+    socket_dir().join(format!("{}.sock", tab_key(tab)))
+}
+
+/// Build a `Command` invoking the configured nvim binary. Shared by every
+/// call site that talks to a daemon (health checks, `--remote-ui` attach,
+/// `--remote-send` quit, `--remote` open) so `sidebar.nvim_bin` applies
+/// uniformly, not just to spawning the daemon itself.
+pub(crate) fn nvim_cmd(nvim_bin: &str) -> Command {
+    Command::new(nvim_bin)
 }
 
 /// Ensure a per-tab headless nvim daemon is listening on its socket,
@@ -57,7 +58,7 @@ pub fn ensure_daemon(
     cwd: &Path,
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
-    if daemon_healthy(&socket) {
+    if daemon_healthy(&socket, &config.sidebar.nvim_bin) {
         return Ok(socket);
     }
 
@@ -74,7 +75,7 @@ pub fn ensure_daemon(
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
-        if daemon_healthy(&socket) {
+        if daemon_healthy(&socket, &config.sidebar.nvim_bin) {
             return Ok(socket);
         }
         if Instant::now() >= deadline {
@@ -112,7 +113,7 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -
     // teardown can no longer reach it.
     use std::os::unix::process::CommandExt;
 
-    let mut command = Command::new(nvim_bin);
+    let mut command = nvim_cmd(nvim_bin);
     command
         .arg("--headless")
         .arg("--listen")
@@ -152,14 +153,14 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -
     Ok(())
 }
 
-fn daemon_healthy(socket: &Path) -> bool {
-    remote_expr(socket, "1+1").as_deref() == Some("2")
+fn daemon_healthy(socket: &Path, nvim_bin: &str) -> bool {
+    remote_expr(socket, "1+1", nvim_bin).as_deref() == Some("2")
 }
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
 /// the trimmed stdout, or `None` if the daemon is unreachable.
-fn remote_expr(socket: &Path, expr: &str) -> Option<String> {
-    let output = Command::new("nvim")
+fn remote_expr(socket: &Path, expr: &str, nvim_bin: &str) -> Option<String> {
+    let output = nvim_cmd(nvim_bin)
         .arg("--server")
         .arg(socket)
         .arg("--remote-expr")
@@ -174,15 +175,12 @@ fn remote_expr(socket: &Path, expr: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Quote `s` with single quotes if it contains a space, escaping any single
-/// quotes it already contains (`'` -> `'\''`) -- shared by the binary path
-/// and cwd positional args in `sidebar_shell_cmd`.
-fn shell_quote_if_needed(s: &str) -> String {
-    if s.contains(' ') {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    } else {
-        s.to_owned()
-    }
+/// Quote `s` with single quotes, escaping any single quotes it already
+/// contains (`'` -> `'\''`) -- shared by the binary path and cwd positional
+/// args in `sidebar_shell_cmd`. `s` is always quoted unconditionally since the
+/// result is executed by a shell (`pane run`), not just displayed.
+pub(crate) fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Shell command a sidebar pane runs to become the nvim UI: it re-executes this
@@ -195,8 +193,8 @@ pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
         .ok()
         .and_then(|path| path.into_os_string().into_string().ok())
         .unwrap_or_else(|| "herdr-nvim".to_owned());
-    let path = shell_quote_if_needed(&path);
-    let cwd = shell_quote_if_needed(&cwd.display().to_string());
+    let path = shell_quote(&path);
+    let cwd = shell_quote(&cwd.display().to_string());
     format!("exec {path} sidebar {tab} {cwd}")
 }
 
@@ -205,25 +203,20 @@ pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
 pub fn sidebar_cmd() -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // Prefer the positional tab id arg (`sidebar <tab>`, see
-    // `sidebar_shell_cmd`); fall back to `HERDR_WORKSPACE_ID` for backward
-    // compat if the arg is missing.
+    // Positional args from `sidebar_shell_cmd` (`sidebar <tab> <cwd>`). This
+    // binary generates and consumes both ends of this invocation itself, so
+    // both are required -- no env-var fallback.
     let tab = env::args()
         .nth(2)
-        .or_else(|| env::var("HERDR_WORKSPACE_ID").ok())
-        .context("herdr-nvim sidebar requires a tab id argument or HERDR_WORKSPACE_ID")?;
-    // Prefer the positional cwd arg (`sidebar <tab> <cwd>`, see
-    // `sidebar_shell_cmd`); fall back to $HOME for backward compat with an
-    // old-format invocation that only passed the tab id.
+        .context("herdr-nvim sidebar requires a tab id argument")?;
     let cwd = env::args()
         .nth(3)
-        .or_else(|| env::var("HOME").ok())
-        .context("herdr-nvim sidebar requires a cwd argument or HOME to be set")?;
+        .context("herdr-nvim sidebar requires a cwd argument")?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, Path::new(&cwd))?;
 
-    let error = Command::new("nvim")
+    let error = nvim_cmd(&config.sidebar.nvim_bin)
         .arg("--server")
         .arg(&socket)
         .arg("--remote-ui")
@@ -253,12 +246,13 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
 /// remove its socket and state file.
 pub fn gc_cmd() -> Result<()> {
     let mut herdr = CliHerdr;
-    gc(&mut herdr)
+    let config = crate::config::load();
+    gc(&mut herdr, &config.sidebar.nvim_bin)
 }
 
 /// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
 /// on every toggle to reap stale per-tab daemons from closed tabs.
-pub(crate) fn gc(h: &mut dyn Herdr) -> Result<()> {
+pub(crate) fn gc(h: &mut dyn Herdr, nvim_bin: &str) -> Result<()> {
     let dir = socket_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -270,7 +264,7 @@ pub(crate) fn gc(h: &mut dyn Herdr) -> Result<()> {
     };
 
     let tabs = h.list_tabs()?;
-    let known: Vec<String> = tabs.iter().map(|tab| sanitize_key(tab)).collect();
+    let known: Vec<String> = tabs.iter().map(|tab| tab_key(tab)).collect();
     for entry in entries {
         let path = entry
             .with_context(|| format!("failed to read entry in {}", dir.display()))?
@@ -285,16 +279,20 @@ pub(crate) fn gc(h: &mut dyn Herdr) -> Result<()> {
             continue;
         }
 
-        // Orphaned: ask the daemon (if any) to quit, then unlink socket + state.
-        let _ = send_quit(&path);
+        // Orphaned: ask the daemon (if any) to quit, then unlink socket +
+        // state. `tab_stem` is a filename component, already sanitized (see
+        // `state::tab_key`), so it goes through `state::remove_key` rather
+        // than `state::remove` -- that avoids sanitizing an already-sanitized
+        // key a second time.
+        let _ = send_quit(&path, nvim_bin);
         remove_socket(&path)?;
-        state::remove(tab_stem)?;
+        state::remove_key(tab_stem)?;
     }
     Ok(())
 }
 
-fn send_quit(socket: &Path) -> Result<()> {
-    Command::new("nvim")
+fn send_quit(socket: &Path, nvim_bin: &str) -> Result<()> {
+    nvim_cmd(nvim_bin)
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
@@ -397,9 +395,9 @@ mod tests {
 
     /// Best-effort daemon shutdown so no stray `nvim --headless` survives a test.
     fn stop_daemon(socket: &Path) {
-        let _ = send_quit(socket);
+        let _ = send_quit(socket, "nvim");
         for _ in 0..50 {
-            if remote_expr(socket, "1+1").is_none() {
+            if remote_expr(socket, "1+1", "nvim").is_none() {
                 break;
             }
             sleep(Duration::from_millis(100));
@@ -436,14 +434,15 @@ mod tests {
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("first ensure_daemon");
         assert!(socket.exists(), "socket file should exist after spawn");
 
-        let pid1 = remote_expr(&socket, "getpid()").expect("daemon should report a pid");
+        let pid1 = remote_expr(&socket, "getpid()", "nvim").expect("daemon should report a pid");
         assert!(!pid1.is_empty());
 
         let socket_again =
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("second ensure_daemon");
         assert_eq!(socket, socket_again);
 
-        let pid2 = remote_expr(&socket, "getpid()").expect("daemon should still report a pid");
+        let pid2 =
+            remote_expr(&socket, "getpid()", "nvim").expect("daemon should still report a pid");
         assert_eq!(
             pid1, pid2,
             "second ensure_daemon must reuse the daemon, not spawn a new one"
@@ -472,7 +471,7 @@ mod tests {
             list_tabs_results: VecDeque::from([Ok(vec!["wsKeep:t1".to_owned()])]),
             ..Default::default()
         };
-        gc(&mut herdr).unwrap();
+        gc(&mut herdr, "nvim").unwrap();
 
         assert!(socket_path("wsKeep:t1").exists(), "known tab kept");
         assert!(

@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::herdr::{Dir, PaneRect};
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MoveStep {
     pub pane: String,
     pub dir: Dir,
@@ -35,57 +37,41 @@ fn is_clean_cut(before_max_end: u32, after_min_start: u32) -> bool {
     after_min_start >= before_max_end
 }
 
-/// Finds a vertical cut position that separates rects into non-empty,
-/// non-overlapping groups.
-fn vertical_cut(rects: &[PaneRect], x0: u32, x1: u32) -> Option<u32> {
-    let mut edges: Vec<u32> = rects
-        .iter()
-        .map(|rect| rect.x + rect.w)
-        .filter(|&edge| edge > x0 + GAP && edge + GAP < x1)
-        .collect();
-    edges.sort_unstable();
-    edges.dedup();
-    edges.into_iter().find(|&cut| {
-        let before_max_end = rects
-            .iter()
-            .filter(|rect| rect.x + rect.w <= cut)
-            .map(|rect| rect.x + rect.w)
-            .max();
-        let after_min_start = rects
-            .iter()
-            .filter(|rect| rect.x + rect.w > cut)
-            .map(|rect| rect.x)
-            .min();
-        match (before_max_end, after_min_start) {
-            (Some(before_max_end), Some(after_min_start)) => {
-                is_clean_cut(before_max_end, after_min_start)
-            }
-            _ => false,
-        }
-    })
+fn x_start(rect: &PaneRect) -> u32 {
+    rect.x
+}
+fn x_extent(rect: &PaneRect) -> u32 {
+    rect.w
+}
+fn y_start(rect: &PaneRect) -> u32 {
+    rect.y
+}
+fn y_extent(rect: &PaneRect) -> u32 {
+    rect.h
 }
 
-/// Finds a horizontal cut position that separates rects into non-empty,
-/// non-overlapping groups.
-fn horizontal_cut(rects: &[PaneRect], y0: u32, y1: u32) -> Option<u32> {
+/// Finds a cut position along one axis that separates rects into non-empty,
+/// non-overlapping groups. `start`/`extent` extract the rect's coordinate and
+/// size on that axis (x/w for a vertical cut, y/h for a horizontal one); `lo`
+/// and `hi` are the axis bounds of the whole region.
+fn cut(
+    rects: &[PaneRect],
+    lo: u32,
+    hi: u32,
+    start: fn(&PaneRect) -> u32,
+    extent: fn(&PaneRect) -> u32,
+) -> Option<u32> {
+    let end = |rect: &PaneRect| start(rect) + extent(rect);
     let mut edges: Vec<u32> = rects
         .iter()
-        .map(|rect| rect.y + rect.h)
-        .filter(|&edge| edge > y0 + GAP && edge + GAP < y1)
+        .map(end)
+        .filter(|&edge| edge > lo + GAP && edge + GAP < hi)
         .collect();
     edges.sort_unstable();
     edges.dedup();
     edges.into_iter().find(|&cut| {
-        let before_max_end = rects
-            .iter()
-            .filter(|rect| rect.y + rect.h <= cut)
-            .map(|rect| rect.y + rect.h)
-            .max();
-        let after_min_start = rects
-            .iter()
-            .filter(|rect| rect.y + rect.h > cut)
-            .map(|rect| rect.y)
-            .min();
+        let before_max_end = rects.iter().filter(|rect| end(rect) <= cut).map(end).max();
+        let after_min_start = rects.iter().filter(|rect| end(rect) > cut).map(start).min();
         match (before_max_end, after_min_start) {
             (Some(before_max_end), Some(after_min_start)) => {
                 is_clean_cut(before_max_end, after_min_start)
@@ -102,22 +88,19 @@ fn partition(rects: &[PaneRect]) -> Result<(String, Vec<MoveStep>)> {
     }
 
     let (x0, y0, x1, y1) = bounds(rects);
-    if let Some(cut) = vertical_cut(rects, x0, x1) {
-        let (left, right): (Vec<_>, Vec<_>) = rects
-            .iter()
-            .cloned()
-            .partition(|rect| rect.x + rect.w <= cut);
-        let ratio = (cut - x0) as f64 / (x1 - x0) as f64;
-        return combine(left, right, Dir::Right, ratio);
-    }
-
-    if let Some(cut) = horizontal_cut(rects, y0, y1) {
-        let (top, bottom): (Vec<_>, Vec<_>) = rects
-            .iter()
-            .cloned()
-            .partition(|rect| rect.y + rect.h <= cut);
-        let ratio = (cut - y0) as f64 / (y1 - y0) as f64;
-        return combine(top, bottom, Dir::Down, ratio);
+    let axes: [(Dir, u32, u32, fn(&PaneRect) -> u32, fn(&PaneRect) -> u32); 2] = [
+        (Dir::Right, x0, x1, x_start, x_extent),
+        (Dir::Down, y0, y1, y_start, y_extent),
+    ];
+    for (dir, lo, hi, start, extent) in axes {
+        if let Some(cut_pos) = cut(rects, lo, hi, start, extent) {
+            let (first, second): (Vec<_>, Vec<_>) = rects
+                .iter()
+                .cloned()
+                .partition(|rect| start(rect) + extent(rect) <= cut_pos);
+            let ratio = (cut_pos - lo) as f64 / (hi - lo) as f64;
+            return combine(first, second, dir, ratio);
+        }
     }
 
     bail!(
