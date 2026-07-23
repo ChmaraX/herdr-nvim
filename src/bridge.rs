@@ -25,13 +25,12 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    candidates::{self, BuildInput, Candidate, GitOnlyEdit},
+    candidates::{self, BuildInput, Candidate},
     config, daemon, extract, gitscan,
     herdr::{self, CliHerdr, Herdr},
     maneuver::{self, Ctx},
     picker::Handoff,
-    sessions,
-    state::{self, Phase},
+    sessions, state,
 };
 
 const PLUGIN_ID: &str = "adamchmara.herdr-nvim";
@@ -133,7 +132,7 @@ fn gather_candidates(
         .as_deref()
         .and_then(|top| gitscan::dirty_paths(top).ok())
         .unwrap_or_default();
-    let git_committed = match (&toplevel, mined.session_start_unix) {
+    let git_committed = match (&toplevel, mined.first_op_unix) {
         (Some(top), Some(since)) => gitscan::committed_since(top, since).unwrap_or_default(),
         _ => HashSet::new(),
     };
@@ -143,61 +142,33 @@ fn gather_candidates(
             .map(|top| Path::new(path).starts_with(top))
             .unwrap_or(false)
     };
-
-    // Git-only edits: dirty paths not already covered by session mining --
-    // any touch, read or edit alike, since a path we already have session
-    // data for must not also get a synthesized duplicate entry (e.g. a bash
-    // `sed -i` the agent ran is invisible to tool-call mining and needs one).
-    let mined_paths: HashSet<&str> = mined.touches.iter().map(|t| t.path.as_str()).collect();
-    let git_only: Vec<GitOnlyEdit> = git_dirty
-        .iter()
-        .filter(|p| !mined_paths.contains(p.as_str()))
-        .map(|p| GitOnlyEdit {
-            path: p.clone(),
-            mtime_unix: std::fs::metadata(p)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
-        })
-        .collect();
+    let git_mtime_unix = |path: &str| {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    };
+    // One bulk `git diff HEAD --numstat` for the whole worktree, not one
+    // `git diff`/`git diff --cached` pair per dirty file.
+    let diff_stats = toplevel
+        .as_deref()
+        .and_then(|top| gitscan::diff_numstat_by_path(top).ok())
+        .unwrap_or_default();
 
     let scraped = extract::extract(scrape_text, cwd, exists);
 
-    let mut candidates = candidates::build_candidates(BuildInput {
+    candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,
-        session_start_unix: mined.session_start_unix,
+        first_op_unix: mined.first_op_unix,
         git_dirty: &git_dirty,
         git_committed_in_session: &git_committed,
         in_git_worktree: &in_git_worktree,
-        git_only_dirty_not_mined: &git_only,
+        git_mtime_unix: &git_mtime_unix,
+        diff_stats: &diff_stats,
         scraped_mentioned: &scraped,
         exists: &exists_str,
-    });
-
-    if let Some(top) = &toplevel {
-        // One bulk `git diff HEAD --numstat` for the whole worktree, not one
-        // `git diff`/`git diff --cached` pair per dirty file.
-        let diff_stats = gitscan::diff_numstat_by_path(top).unwrap_or_default();
-        for candidate in &mut candidates {
-            // Only is_edit, currently-dirty, non-newly-created entries get a
-            // diff stat (same eligibility rule as before, now keyed off the
-            // flag instead of a section): newly-created files already show
-            // the `new` badge; an entry kept only because it was committed
-            // during the session is now clean (no diff to show); non-git
-            // and net-change-demoted files were never dirty-tracked at all.
-            if candidate.is_edit && !candidate.newly_created && git_dirty.contains(&candidate.path)
-            {
-                if let Some(&(added, removed)) = diff_stats.get(&candidate.path) {
-                    if added > 0 || removed > 0 {
-                        candidate.diff_stat = Some((added, removed));
-                    }
-                }
-            }
-        }
-    }
-
-    candidates
+    })
 }
 
 /// Phase 2: act on the user's selection from the handoff file.
@@ -255,7 +226,7 @@ pub(crate) fn open_in_sidebar(
     let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
     let sidebar = ensure_sidebar_open(h, ctx, &sidebar_cmd)?;
 
-    open_in_nvim(&socket, path, line)?;
+    open_in_nvim(&socket, path, line, &config.sidebar.nvim_bin)?;
     focus_pane(&sidebar);
     Ok(())
 }
@@ -268,14 +239,8 @@ pub(crate) fn open_in_sidebar(
 /// `maneuver::toggle`, which follows its own open/recover semantics and leaves
 /// a fresh sidebar in `ctx.tab`.
 fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<String> {
-    if let Some(existing) = state::load(&ctx.tab)? {
-        if matches!(existing.phase, Phase::Open) {
-            if let Some(sidebar) = existing.sidebar_pane.clone() {
-                if h.pane_alive(&sidebar)? {
-                    return Ok(sidebar);
-                }
-            }
-        }
+    if let Some(sidebar) = maneuver::live_open_sidebar(h, &ctx.tab)? {
+        return Ok(sidebar);
     }
 
     maneuver::toggle(h, ctx, sidebar_cmd)?;
@@ -293,10 +258,10 @@ fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Resul
 /// a buffer literally named `+5` and leaves the cursor on line 1), so `+<line>`
 /// only works when *launching* nvim, not against a running server. `--remote-expr`
 /// is also mode-independent (works even mid-insert) and needs no path escaping.
-fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>) -> Result<()> {
+fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>, nvim_bin: &str) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
-    let status = Command::new("nvim")
+    let status = daemon::nvim_cmd(nvim_bin)
         .arg("--server")
         .arg(socket)
         .arg("--remote")
@@ -308,7 +273,7 @@ fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>) -> Result<()> {
     }
     // Jump to the line, if known.
     if let Some(line) = line {
-        let status = Command::new("nvim")
+        let status = daemon::nvim_cmd(nvim_bin)
             .arg("--server")
             .arg(socket)
             .arg("--remote-expr")

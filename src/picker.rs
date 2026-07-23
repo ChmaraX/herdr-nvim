@@ -9,9 +9,6 @@
 //! underlying list. The pure `filter`/`visible_count` halves are unit
 //! tested; the interactive loop is exercised live.
 
-// Wired into main.rs's subcommand dispatch (and bridge.rs) in a later M3 task.
-#![allow(dead_code)]
-
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
@@ -77,14 +74,50 @@ pub fn filter(cands: &[Candidate], query: &str) -> Vec<FilterMatch> {
         .iter()
         .enumerate()
         .filter_map(|(index, cand)| {
-            let lower = cand.path.to_lowercase();
-            let start = lower.find(&needle)?;
+            let (start, len) = find_case_insensitive(&cand.path, &needle)?;
             Some(FilterMatch {
                 index,
-                highlight: Some((start, needle.len())),
+                highlight: Some((start, len)),
             })
         })
         .collect()
+}
+
+/// Find `needle` (already lowercased) in `haystack` case-insensitively,
+/// returning a `(start, len)` byte range that is always a valid char
+/// boundary pair *in `haystack`* -- unlike naively lowercasing `haystack`
+/// and calling `str::find`, which can shift byte offsets when a character's
+/// lowercase form has a different UTF-8 length (e.g. the Kelvin sign `K`
+/// (U+212A, 3 bytes) lowercases to plain `k` (1 byte)), producing an offset
+/// that lands mid-character in the *original* string and panics on
+/// `split_at`. Walks `haystack` by `char_indices` so every candidate start
+/// and end is a real boundary by construction.
+fn find_case_insensitive(haystack: &str, needle_lower: &str) -> Option<(usize, usize)> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let needle_chars: Vec<char> = needle_lower.chars().collect();
+    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
+    for start in 0..hay.len() {
+        let mut hi = start;
+        let mut ni = 0;
+        while ni < needle_chars.len() {
+            let Some(&(_, hc)) = hay.get(hi) else {
+                break;
+            };
+            if !hc.to_lowercase().eq(std::iter::once(needle_chars[ni])) {
+                break;
+            }
+            hi += 1;
+            ni += 1;
+        }
+        if ni == needle_chars.len() {
+            let start_byte = hay[start].0;
+            let end_byte = hay.get(hi).map_or(haystack.len(), |&(b, _)| b);
+            return Some((start_byte, end_byte - start_byte));
+        }
+    }
+    None
 }
 
 pub struct SmartPath {
@@ -522,6 +555,31 @@ mod tests {
     fn no_match_returns_empty() {
         let c = vec![cand("/repo/a.rs")];
         assert!(filter(&c, "zzz").is_empty());
+    }
+
+    #[test]
+    fn filter_does_not_panic_on_unicode_case_folding_that_changes_byte_length() {
+        // U+212A KELVIN SIGN is 3 bytes in UTF-8 and lowercases to plain 'k'
+        // (1 byte). A naive `path.to_lowercase().find(needle)` finds "main"
+        // at byte offset 2 in the *lowered* string ("/kmain.rs"), but that
+        // offset lands in the middle of the 3-byte Kelvin sign in the
+        // *original* string ("/\u{212A}main.rs"), and `split_at` on that
+        // offset during render would panic. The fix must never produce an
+        // offset that isn't a char boundary in the original path.
+        let path = "/\u{212A}main.rs";
+        let c = vec![cand(path)];
+        let m = filter(&c, "main");
+        assert_eq!(m.len(), 1, "the Kelvin sign should still lowercase-match");
+        let (start, len) = m[0].highlight.expect("expected a highlight span");
+        assert!(
+            path.is_char_boundary(start),
+            "start must be a char boundary"
+        );
+        assert!(
+            path.is_char_boundary(start + len),
+            "end must be a char boundary"
+        );
+        assert_eq!(&path[start..start + len], "main");
     }
 
     #[test]

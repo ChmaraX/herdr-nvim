@@ -39,23 +39,23 @@ pub struct Candidate {
     /// for newly-created files (the `new` badge covers those), entries kept
     /// in the list only because they were committed during the session (now
     /// clean -- no diff to show), non-git files, and all non-edit entries.
-    /// Populated by `bridge::gather_candidates` (I/O), never by this pure
-    /// module.
     pub diff_stat: Option<(u32, u32)>,
-}
-
-pub struct GitOnlyEdit {
-    pub path: String,
-    pub mtime_unix: Option<u64>,
 }
 
 pub struct BuildInput<'a> {
     pub mined_touches: &'a [sessions::MinedTouch],
-    pub session_start_unix: Option<u64>,
+    pub first_op_unix: Option<u64>,
+    /// Every currently-dirty git path (`git status`), mined or not.
     pub git_dirty: &'a HashSet<String>,
     pub git_committed_in_session: &'a HashSet<String>,
     pub in_git_worktree: &'a dyn Fn(&str) -> bool,
-    pub git_only_dirty_not_mined: &'a [GitOnlyEdit],
+    /// Best-effort mtime lookup for a git-dirty path the session miner never
+    /// touched (e.g. a bash `sed -i` the agent ran) -- used as that entry's
+    /// `touched_unix` since it has no mined timestamp.
+    pub git_mtime_unix: &'a dyn Fn(&str) -> Option<u64>,
+    /// Bulk `git diff --numstat` result for the whole worktree, keyed by
+    /// path, for the diff-stat eligibility pass below.
+    pub diff_stats: &'a std::collections::HashMap<String, (u32, u32)>,
     pub scraped_mentioned: &'a [extract::ScrapedPath],
     pub exists: &'a dyn Fn(&str) -> bool,
 }
@@ -66,8 +66,10 @@ pub struct BuildInput<'a> {
 /// capping must not happen at this layer.
 pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
+    let mut mined_paths: HashSet<&str> = HashSet::new();
 
     for touch in input.mined_touches {
+        mined_paths.insert(touch.path.as_str());
         let in_repo = (input.in_git_worktree)(&touch.path);
         let dirty = input.git_dirty.contains(&touch.path);
         let committed = input.git_committed_in_session.contains(&touch.path);
@@ -82,21 +84,25 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
         });
     }
 
-    for git_only in input.git_only_dirty_not_mined {
-        // Git-only entries are, by construction, *already known dirty*
-        // paths the session miner never touched at all (see
-        // bridge::gather_candidates) -- e.g. a bash `sed -i` the agent ran.
-        // `dirty` is therefore always true here (that's what "git-only
-        // *dirty*" means), unlike the mined-touch loop above where dirtiness
-        // still needs to be looked up per path.
-        let in_repo = (input.in_git_worktree)(&git_only.path);
+    // Git-only edits: dirty paths not already covered by session mining --
+    // any touch, read or edit alike, since a path we already have session
+    // data for must not also get a synthesized duplicate entry (e.g. a bash
+    // `sed -i` the agent ran is invisible to tool-call mining and needs
+    // one). `dirty` is always true here by construction (that's what
+    // "git-only *dirty*" means), unlike the mined-touch loop above where
+    // dirtiness still needs to be looked up per path.
+    for path in input.git_dirty {
+        if mined_paths.contains(path.as_str()) {
+            continue;
+        }
+        let in_repo = (input.in_git_worktree)(path);
         let is_edit = gitscan::should_keep_edited(in_repo, true, false);
         out.push(Candidate {
-            path: git_only.path.clone(),
+            path: path.clone(),
             line: None,
             is_edit,
             newly_created: false,
-            touched_unix: git_only.mtime_unix,
+            touched_unix: (input.git_mtime_unix)(path),
             diff_stat: None,
         });
     }
@@ -123,6 +129,24 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
 
     out.retain(|c| (input.exists)(&c.path));
 
+    // Diff-stat eligibility: only is_edit, currently-dirty, non-newly-created
+    // entries get a stat. Newly-created files already show the `new` badge;
+    // an entry kept only because it was committed during the session is now
+    // clean (no diff to show); non-git and net-change-demoted files were
+    // never dirty-tracked at all.
+    for candidate in &mut out {
+        if candidate.is_edit
+            && !candidate.newly_created
+            && input.git_dirty.contains(&candidate.path)
+        {
+            if let Some(&(added, removed)) = input.diff_stats.get(&candidate.path) {
+                if added > 0 || removed > 0 {
+                    candidate.diff_stat = Some((added, removed));
+                }
+            }
+        }
+    }
+
     // Descending by touched_unix; `None` sorts after every `Some` (Option's
     // derived Ord puts `None` first ascending, so `b.cmp(&a)` -- descending
     // -- puts it last), and the sort is stable so entries that tie (e.g.
@@ -136,13 +160,21 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
 mod tests {
     use super::*;
     use crate::sessions::MinedTouch;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::OnceLock;
 
     fn always_true(_: &str) -> bool {
         true
     }
     fn always_false(_: &str) -> bool {
         false
+    }
+    fn no_mtime(_: &str) -> Option<u64> {
+        None
+    }
+    fn empty_diff_stats() -> &'static HashMap<String, (u32, u32)> {
+        static EMPTY: OnceLock<HashMap<String, (u32, u32)>> = OnceLock::new();
+        EMPTY.get_or_init(HashMap::new)
     }
 
     fn touch(path: &str, was_edited: bool, last_touch_unix: Option<u64>) -> MinedTouch {
@@ -162,11 +194,12 @@ mod tests {
     ) -> BuildInput<'a> {
         BuildInput {
             mined_touches,
-            session_start_unix: Some(1000),
+            first_op_unix: Some(1000),
             git_dirty,
             git_committed_in_session: git_committed,
             in_git_worktree: in_worktree,
-            git_only_dirty_not_mined: &[],
+            git_mtime_unix: &no_mtime,
+            diff_stats: empty_diff_stats(),
             scraped_mentioned: &[],
             exists: &always_true,
         }
@@ -226,16 +259,17 @@ mod tests {
 
     #[test]
     fn git_only_dirty_file_is_added_as_edit_with_mtime() {
+        fn mtime_42(_: &str) -> Option<u64> {
+            Some(42)
+        }
         let input = BuildInput {
             mined_touches: &[],
-            session_start_unix: None,
-            git_dirty: &HashSet::new(),
+            first_op_unix: None,
+            git_dirty: &HashSet::from(["/repo/sed_edited.rs".to_owned()]),
             git_committed_in_session: &HashSet::new(),
             in_git_worktree: &always_true,
-            git_only_dirty_not_mined: &[GitOnlyEdit {
-                path: "/repo/sed_edited.rs".into(),
-                mtime_unix: Some(42),
-            }],
+            git_mtime_unix: &mtime_42,
+            diff_stats: empty_diff_stats(),
             scraped_mentioned: &[],
             exists: &always_true,
         };
@@ -255,11 +289,12 @@ mod tests {
         }];
         let input = BuildInput {
             mined_touches: &[],
-            session_start_unix: None,
+            first_op_unix: None,
             git_dirty: &HashSet::new(),
             git_committed_in_session: &HashSet::new(),
             in_git_worktree: &always_true,
-            git_only_dirty_not_mined: &[],
+            git_mtime_unix: &no_mtime,
+            diff_stats: empty_diff_stats(),
             scraped_mentioned: &scraped,
             exists: &always_true,
         };
@@ -267,6 +302,61 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].path, "/repo/scraped.rs");
         assert!(!out[0].is_edit);
+    }
+
+    #[test]
+    fn diff_stat_set_for_eligible_dirty_edit() {
+        let touches = [touch("/repo/a.rs", true, Some(5))];
+        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
+        let committed = HashSet::new();
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        let diff_stats = HashMap::from([("/repo/a.rs".to_owned(), (3u32, 1u32))]);
+        input.diff_stats = &diff_stats;
+        let out = build_candidates(input);
+        assert_eq!(out[0].diff_stat, Some((3, 1)));
+    }
+
+    #[test]
+    fn diff_stat_not_set_for_newly_created_entry() {
+        let mut touches = [touch("/repo/new.rs", true, Some(5))];
+        touches[0].newly_created = true;
+        let dirty = HashSet::from(["/repo/new.rs".to_owned()]);
+        let committed = HashSet::new();
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        let diff_stats = HashMap::from([("/repo/new.rs".to_owned(), (3u32, 1u32))]);
+        input.diff_stats = &diff_stats;
+        let out = build_candidates(input);
+        assert_eq!(
+            out[0].diff_stat, None,
+            "newly-created files show the `new` badge instead"
+        );
+    }
+
+    #[test]
+    fn diff_stat_not_set_for_non_dirty_entry() {
+        // `is_edit` via committed-in-session, but no longer in `git_dirty`
+        // (clean now) -- no diff to show even if a stale numstat entry
+        // existed for it.
+        let touches = [touch("/repo/a.rs", true, Some(5))];
+        let dirty = HashSet::new();
+        let committed = HashSet::from(["/repo/a.rs".to_owned()]);
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        let diff_stats = HashMap::from([("/repo/a.rs".to_owned(), (3u32, 1u32))]);
+        input.diff_stats = &diff_stats;
+        let out = build_candidates(input);
+        assert_eq!(out[0].diff_stat, None);
+    }
+
+    #[test]
+    fn diff_stat_zero_zero_is_not_set() {
+        let touches = [touch("/repo/a.rs", true, Some(5))];
+        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
+        let committed = HashSet::new();
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        let diff_stats = HashMap::from([("/repo/a.rs".to_owned(), (0u32, 0u32))]);
+        input.diff_stats = &diff_stats;
+        let out = build_candidates(input);
+        assert_eq!(out[0].diff_stat, None);
     }
 
     #[test]

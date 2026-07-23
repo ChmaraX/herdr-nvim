@@ -20,65 +20,72 @@ pub(crate) struct RawEvent {
     pub unix_ts: Option<u64>,
 }
 
-/// Parse a pi session JSONL file into file-path tool-call events. Skips any
-/// line that isn't valid JSON, isn't a `type:"message"` assistant record, or
-/// carries a `toolCall` whose `name` isn't `read`/`edit`/`write` — never
-/// errors, since a parse failure must never break the picker (brief).
-pub(crate) fn parse_pi_session(text: &str) -> Vec<RawEvent> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if value.get("type").and_then(Value::as_str) != Some("message") {
-            continue;
-        }
-        let Some(unix_ts) = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-        let unix_ts = parse_iso8601_unix(&unix_ts);
-        let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
-            continue;
-        };
-        for item in content {
-            if item.get("type").and_then(Value::as_str) != Some("toolCall") {
-                continue;
-            }
-            let Some(name) = item.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let op = match name {
-                "write" => RawOp::Write,
-                "edit" => RawOp::Edit,
-                "read" => RawOp::Read,
-                _ => continue,
-            };
-            let Some(path) = item.pointer("/arguments/path").and_then(Value::as_str) else {
-                continue;
-            };
-            out.push(RawEvent {
-                path: path.to_owned(),
-                op,
-                unix_ts,
-            });
-        }
-    }
-    out
+/// Per-agent session file shape: everything that differs between pi and
+/// claude-code JSONL records, as data rather than as parallel loops. Adding a
+/// future agent (codex) means adding a new `Dialect` value, not a new parser
+/// function.
+pub(crate) struct Dialect {
+    /// If set, only records whose top-level `type` equals this are considered
+    /// (pi's outer `type:"message"` filter); `None` skips the check (claude
+    /// has no such outer filter).
+    record_type_filter: Option<&'static str>,
+    /// The `type` tag identifying a tool-call content item (`"toolCall"` for
+    /// pi, `"tool_use"` for claude).
+    content_item_type: &'static str,
+    /// JSON pointer, relative to a content item, to the file path argument.
+    path_pointer: &'static str,
+    /// Maps a tool name to the `RawOp` it represents, or `None` to skip it.
+    tool_map: fn(&str) -> Option<RawOp>,
 }
 
-/// Parse a claude-code session JSONL file into file-path tool-use events.
-/// Same defensive contract as `parse_pi_session`: any unparseable line or
-/// unrecognized tool name is skipped, never an error.
-pub(crate) fn parse_claude_session(text: &str) -> Vec<RawEvent> {
+fn pi_tool_map(name: &str) -> Option<RawOp> {
+    match name {
+        "write" => Some(RawOp::Write),
+        "edit" => Some(RawOp::Edit),
+        "read" => Some(RawOp::Read),
+        _ => None,
+    }
+}
+
+fn claude_tool_map(name: &str) -> Option<RawOp> {
+    match name {
+        "Write" => Some(RawOp::Write),
+        "MultiEdit" | "NotebookEdit" | "Edit" => Some(RawOp::Edit),
+        "Read" => Some(RawOp::Read),
+        _ => None,
+    }
+}
+
+pub(crate) const PI_DIALECT: Dialect = Dialect {
+    record_type_filter: Some("message"),
+    content_item_type: "toolCall",
+    path_pointer: "/arguments/path",
+    tool_map: pi_tool_map,
+};
+
+pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
+    record_type_filter: None,
+    content_item_type: "tool_use",
+    path_pointer: "/input/file_path",
+    tool_map: claude_tool_map,
+};
+
+/// Parse a session JSONL file into file-path tool-call events, per `dialect`.
+/// Skips any line that isn't valid JSON, doesn't match the dialect's record
+/// filter, or carries a tool-call item whose name the dialect doesn't map to
+/// a `RawOp` — never errors, since a parse failure must never break the
+/// picker (brief).
+pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
     let mut out = Vec::new();
     for line in text.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if let Some(want_type) = dialect.record_type_filter {
+            if value.get("type").and_then(Value::as_str) != Some(want_type) {
+                continue;
+            }
+        }
         let Some(unix_ts) = value.get("timestamp").and_then(Value::as_str) else {
             continue;
         };
@@ -87,19 +94,16 @@ pub(crate) fn parse_claude_session(text: &str) -> Vec<RawEvent> {
             continue;
         };
         for item in content {
-            if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+            if item.get("type").and_then(Value::as_str) != Some(dialect.content_item_type) {
                 continue;
             }
             let Some(name) = item.get("name").and_then(Value::as_str) else {
                 continue;
             };
-            let op = match name {
-                "Write" => RawOp::Write,
-                "MultiEdit" | "NotebookEdit" | "Edit" => RawOp::Edit,
-                "Read" => RawOp::Read,
-                _ => continue,
+            let Some(op) = (dialect.tool_map)(name) else {
+                continue;
             };
-            let Some(path) = item.pointer("/input/file_path").and_then(Value::as_str) else {
+            let Some(path) = item.pointer(dialect.path_pointer).and_then(Value::as_str) else {
                 continue;
             };
             out.push(RawEvent {
@@ -129,7 +133,10 @@ pub(crate) struct MinedTouch {
 
 pub(crate) struct Mined {
     pub touches: Vec<MinedTouch>,
-    pub session_start_unix: Option<u64>,
+    /// Timestamp of the first *tool-call* event mined from the session file
+    /// (not the session's actual start -- a session can open with plain-text
+    /// turns before its first tool call, which this doesn't see).
+    pub first_op_unix: Option<u64>,
 }
 
 /// Mine a session JSONL file for file-path events, dispatching on the pane's
@@ -145,17 +152,19 @@ pub(crate) struct Mined {
 /// Every path that was touched at all -- read, edited, or both -- ends up
 /// exactly once in `touches`.
 ///
-/// Note: `by_path.contains_key` is checked *before* calling `.entry(...)`,
-/// not inside `or_insert_with`'s closure -- the closure can't borrow
-/// `by_path` immutably while `.entry()` already holds it mutably borrowed.
+/// Note: `by_path.contains_key` is checked *before* calling `.entry(...)` so
+/// `order` records each path's first-appearance position exactly once --
+/// `.entry()` alone can't distinguish a fresh insert from an existing one
+/// without an extra branch on its return value, so the presence check is
+/// done up front instead.
 pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
     let raw: Vec<RawEvent> = match agent_kind {
-        "pi" => parse_pi_session(text),
-        "claude" => parse_claude_session(text),
+        "pi" => parse_session(text, &PI_DIALECT),
+        "claude" => parse_session(text, &CLAUDE_DIALECT),
         _ => Vec::new(),
     };
 
-    let session_start_unix = raw.iter().find_map(|e| e.unix_ts);
+    let first_op_unix = raw.iter().find_map(|e| e.unix_ts);
 
     struct Acc {
         first_op: RawOp,
@@ -197,7 +206,7 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
 
     Mined {
         touches,
-        session_start_unix,
+        first_op_unix,
     }
 }
 
@@ -285,7 +294,7 @@ mod tests {
     #[test]
     fn pi_basic_fixture_yields_read_write_edit_ignoring_bash() {
         let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
-        let events = parse_pi_session(text);
+        let events = parse_session(text, &PI_DIALECT);
         assert_eq!(events.len(), 3, "bash toolCall must be ignored: {events:?}");
         assert_eq!(events[0].path, "/repo/src/lib.rs");
         assert!(matches!(events[0].op, RawOp::Read));
@@ -300,7 +309,7 @@ mod tests {
     #[test]
     fn pi_edits_array_shape_still_yields_path() {
         let text = include_str!("../tests/fixtures/session_pi_edits_array.jsonl");
-        let events = parse_pi_session(text);
+        let events = parse_session(text, &PI_DIALECT);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].path, "/repo/src/mod.rs");
         assert!(matches!(events[0].op, RawOp::Edit));
@@ -309,7 +318,7 @@ mod tests {
     #[test]
     fn malformed_line_is_skipped_not_fatal() {
         let text = "not json at all\n{\"type\":\"message\",\"timestamp\":\"2026-07-22T11:08:00.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"read\",\"arguments\":{\"path\":\"/repo/a.rs\"}}]}}\n";
-        let events = parse_pi_session(text);
+        let events = parse_session(text, &PI_DIALECT);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].path, "/repo/a.rs");
     }
@@ -317,7 +326,7 @@ mod tests {
     #[test]
     fn claude_basic_fixture_yields_read_write_edit_multiedit_ignoring_bash() {
         let text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
-        let events = parse_claude_session(text);
+        let events = parse_session(text, &CLAUDE_DIALECT);
         assert_eq!(events.len(), 4, "Bash tool_use must be ignored: {events:?}");
         assert_eq!(events[0].path, "/repo/src/lib.rs");
         assert!(matches!(events[0].op, RawOp::Read));
@@ -388,10 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn session_start_is_earliest_event_timestamp() {
+    fn first_op_unix_is_earliest_event_timestamp() {
         let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
         let mined = mine_session("pi", text);
         // first event's ts, 2026-07-22T11:08:00Z, verified via `date -u -r`.
-        assert_eq!(mined.session_start_unix, Some(1784718480));
+        assert_eq!(mined.first_op_unix, Some(1784718480));
     }
 }
