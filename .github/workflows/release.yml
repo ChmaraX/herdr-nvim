@@ -16,8 +16,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
       - run: rustup target add ${{ matrix.target }}
       - run: cargo test
+      - run: nvim --headless --noplugin -u NONE -l tests/run.lua
       - run: cargo build --release --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/herdr-nvim herdr-nvim-${{ matrix.target }}
       - uses: softprops/action-gh-release@v2
