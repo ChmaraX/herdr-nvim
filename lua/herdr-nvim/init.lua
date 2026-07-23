@@ -79,17 +79,16 @@ function M.list_comments()
   })
 end
 
-function M._git_context()
-  local ok_root, root = pcall(function()
-    return vim.system({ "git", "rev-parse", "--show-toplevel" }, { text = true }):wait()
+function M._git_context(cwd)
+  local ok, r = pcall(function()
+    return vim.system({ "git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD" },
+      { text = true, cwd = cwd }):wait()
   end)
-  if not ok_root or root.code ~= 0 then return nil end
-  local ok_branch, branch = pcall(function()
-    return vim.system({ "git", "branch", "--show-current" }, { text = true }):wait()
-  end)
-  if not ok_branch then return nil end
+  if not ok or r.code ~= 0 then return nil end
+  local root, branch = r.stdout:match("([^\n]*)\n([^\n]*)")
+  if not root then return nil end
   return string.format("repo: %s, branch: %s",
-    vim.fn.fnamemodify(vim.trim(root.stdout or ""), ":t"), vim.trim(branch.stdout or ""))
+    vim.fn.fnamemodify(vim.trim(root), ":t"), vim.trim(branch))
 end
 
 function M.send_all(opts)
@@ -102,7 +101,9 @@ function M.send_all(opts)
   for _, c in ipairs(list) do
     table.insert(items, { comment = c, snippet = comments.snippet(c.id) })
   end
-  local text = prompt.format(items, { header_context = M._git_context() })
+  local first_file = list[1].file
+  local cwd = first_file ~= "" and vim.fn.fnamemodify(first_file, ":h") or nil
+  local text = prompt.format(items, { header_context = M._git_context(cwd) })
   local agent_list, err = agents.list()
   if not agent_list then
     vim.notify("herdr-nvim: " .. err, vim.log.levels.ERROR)
@@ -116,8 +117,7 @@ function M.send_all(opts)
     end
     if M.config.clear_after_send then
       for _, c in ipairs(list) do
-        ui.undecorate(c.id)
-        comments.delete(c.id)
+        M.delete_comment(c)
       end
     end
     vim.notify(string.format("herdr-nvim: sent %d comment(s) to %s", #list, agent.title))

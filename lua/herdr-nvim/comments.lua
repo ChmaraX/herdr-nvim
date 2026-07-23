@@ -22,6 +22,8 @@ local function resolve(id)
   local pos = vim.api.nvim_buf_get_extmark_by_id(e.bufnr, M.ns, e.extmark, { details = true })
   if not pos or #pos == 0 then return nil end
   local start_line = pos[1] + 1
+  -- pos[3].end_row is 0-indexed and exclusive; numerically that equals the
+  -- 1-indexed inclusive end line, so no conversion is needed here.
   local end_line = pos[3] and pos[3].end_row or (pos[1] + 1)
   if end_line < start_line then end_line = start_line end
   return {

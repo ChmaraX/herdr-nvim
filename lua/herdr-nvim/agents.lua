@@ -1,12 +1,8 @@
 local M = {}
-
-function M.default_exec(argv)
-  local r = vim.system(argv, { text = true }):wait()
-  return { code = r.code, stdout = r.stdout or "", stderr = r.stderr or "" }
-end
+local exec_mod = require("herdr-nvim.exec")
 
 function M.list(exec)
-  exec = exec or M.default_exec
+  exec = exec or exec_mod.default_exec
   local r = exec({ "herdr", "agent", "list" })
   if r.code ~= 0 then
     return nil, "herdr agent list failed: " .. (r.stderr ~= "" and r.stderr or ("exit " .. r.code))
