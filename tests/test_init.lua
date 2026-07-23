@@ -84,6 +84,27 @@ T.test("init: send_all formats, dispatches, clears", function()
   T.eq(comments.list(), {}, "clear_after_send default clears comments")
 end)
 
+T.test("init: send_all retains comments when dispatch.send fails", function()
+  comments.clear()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "alpha" })
+  vim.api.nvim_buf_set_name(b, "/tmp/hn-send-fail.lua")
+  comments.add(b, 1, 1, "check this")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  ui.pick_agent = function(_, cb) cb({ pane_id = "wZ:p9", title = "π", status = "idle" }) end
+  dispatch.send = function() return false, "boom" end
+  agents.list = function() return { { pane_id = "wZ:p9", title = "π", status = "idle" } } end
+
+  hn.send_all({ submit = false })
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+
+  T.eq(#comments.list(), 1, "comments must be retained after a failed send")
+end)
+
 T.test("init: statusline reflects pending comment count", function()
   comments.clear()
   T.eq(hn.statusline(), "")
