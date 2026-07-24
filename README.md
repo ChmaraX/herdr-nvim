@@ -1,29 +1,106 @@
 # herdr-nvim
 
-Annotate code in nvim, send the annotations to any AI agent running in
-[herdr](https://herdr.dev) — without leaving your editor.
+Neovim, fully integrated into your [herdr](https://herdr.dev) workspace — a
+persistent nvim sidebar one key away, with quick access to the files your
+agent is working on.
+
+![herdr-nvim sidebar](docs/assets/screenshot.png)
+
+## Features
+
+- **Full-height nvim sidebar, one key to toggle.** Your panes squeeze into
+  the left half, nvim takes the right; toggle off and the original layout is
+  restored exactly. Each tab keeps its own persistent nvim — buffers, cursor,
+  and pending annotations survive the toggle.
+- **File picker for the agent's session.** Every file the agent edited or
+  mentioned, newest first, with diff stats — Enter opens it in the sidebar
+  at the right line.
+- **Code annotations that go back to the agent.** Comment lines or selections
+  like a code review, then send them all — with file:line and git context —
+  to any agent in the workspace (pi, claude, codex, …).
 
 ## Requirements
 
-- nvim ≥ 0.10, herdr ≥ 0.7.4, running inside a herdr session
+nvim ≥ 0.10 · herdr ≥ 0.7.4 · runs inside a herdr session
 
-## Install (lazy.nvim)
+## Install
+
+Both halves come from this repo:
+
+**1. The herdr plugin** (sidebar + picker):
+
+```sh
+herdr plugin install adamchmara/herdr-nvim
+# or, for a local checkout: herdr plugin link /path/to/herdr-nvim
+```
+
+Bind keys to the two actions in `~/.config/herdr/config.toml` (none are bound
+by default):
+
+```toml
+[[keys.command]]
+key = "prefix+e"
+type = "plugin_action"
+command = "adamchmara.herdr-nvim.toggle"
+description = "nvim sidebar"
+
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "adamchmara.herdr-nvim.pick-file"
+description = "open file from agent output"
+```
+
+**2. The nvim plugin** (annotations), with lazy.nvim:
 
 ```lua
 { "adamchmara/herdr-nvim", opts = {} }
 ```
 
-## Usage
+## The sidebar
+
+`prefix+e` toggles it. Each tab gets its own independent nvim, backed by a
+headless daemon that survives toggling — two tabs can sit on two different
+files in two sidebars, and closing/reopening the sidebar loses nothing.
+Daemons from closed tabs are cleaned up automatically.
+
+## The file picker
+
+`prefix+o` on an agent pane pops a picker of files touched this session:
+edits mined from the agent's session log plus uncommitted git changes, with a
+text-scrape of recent pane output as fallback for agents herdr doesn't track.
+
+- newest-touched first; cursor starts on the file the agent just worked on,
+  so `⏎` with no typing opens it
+- `new` badge for files created this session, green/red `+N -M` diff stats
+  for uncommitted edits
+- shows the latest 20 by default; typing filters the **full** session list
+  (case-insensitive, whole path)
+- `Esc`/`q` dismisses; `⏎` opens in the sidebar at the right line, opening
+  the sidebar first if needed
+
+## Annotations
 
 | Mapping | Action |
 |---|---|
-| `<leader>ac` (visual) | comment the selection |
-| `<leader>ac` (normal) | comment the current line |
-| `<leader>al` | comment list (float): hover to jump, `⏎` edit, `d` delete, `q` close |
-| `<leader>as` | paste all comments into a chosen agent's input (you press Enter) |
+| `<leader>ac` | comment the current line / visual selection |
+| `<leader>al` | list comments (float): hover to jump, `⏎` edit, `d` delete |
+| `<leader>as` | paste all comments into a chosen agent's input |
 | `<leader>aS` | send all comments to a chosen agent (auto-submits) |
 
+Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
+your edits), cleared after a successful send. The sent prompt includes each
+comment's file:line plus the repo and branch, so the agent has context.
+
+For a pending-comment indicator (`● 3`) in your statusline:
+`require("herdr-nvim").statusline()` — returns `""` when there's nothing
+pending.
+
 ## Config
+
+Two small config surfaces, one per half:
+
+**nvim side** — `setup{}` opts:
 
 ```lua
 require("herdr-nvim").setup({
@@ -33,190 +110,31 @@ require("herdr-nvim").setup({
 })
 ```
 
-Comments live in memory only (extmark-tracked, so they follow your edits) and
-are cleared after a successful send.
-
-### Statusline
-
-`require("herdr-nvim").statusline()` returns `""` with no pending comments, or
-`"● 3"` with 3 pending — drop it straight into lualine:
-
-```lua
-require("lualine").setup({
-  sections = {
-    lualine_x = { require("herdr-nvim").statusline },
-  },
-})
-```
-
-## Sidebar (herdr plugin)
-
-herdr-nvim also ships as a [herdr](https://herdr.dev) plugin that toggles a
-full-height nvim sidebar in your current workspace:
-
-```sh
-herdr plugin link /path/to/herdr-nvim   # local checkout (dev)
-# or, once published: herdr plugin install adamchmara/herdr-nvim
-```
-
-Toggling **on** squeezes the tab's existing panes into the left half and opens
-nvim full-height in the right half, focused. Toggling **off** closes the sidebar
-and restores the original layout exactly. **Each tab gets its own independent
-nvim** — its own buffers, cursor and in-flight comments — backed by a persistent
-per-tab headless daemon that survives a toggle off/on. So you can have two tabs
-open with two different files in two separate sidebars at the same time; they
-don't share state and don't follow you between tabs. (Stale per-tab daemons from
-closed tabs are reaped opportunistically on the next toggle.)
-
-```
-before toggle                     after toggle
-+-----------------+               +--------+--------+
-|                 |               |        |        |
-|   your panes    |   prefix+e    | your   |  nvim  |
-|  (agent, shell,  -------------->| panes  | sidebar|
-|   etc.)         |               | (left  | (right,|
-|                 |               |  half) | full-  |
-|                 |               |        | height,|
-|                 |               |        | focused|
-|                 |               |        | )      |
-+-----------------+               +--------+--------+
-```
-
-The sidebar is driven by a single plugin action. Trigger it directly:
-
-```sh
-herdr plugin action invoke toggle --plugin adamchmara.herdr-nvim
-```
-
-No key is bound by default. To toggle with a keypress, add a binding to your
-`~/.config/herdr/config.toml`:
-
-```toml
-[[keys.command]]
-key = "prefix+e"                            # any key you like
-type = "plugin_action"
-command = "adamchmara.herdr-nvim.toggle"
-description = "nvim sidebar"
-```
-
-## Open a file from agent output
-
-When an agent mentions or edits files, the file bridge lets you jump straight to
-one in the sidebar. It pops a floating picker — newest paths first, type to
-filter — and on Enter opens the chosen file in the tab's nvim sidebar (opening
-the sidebar first if needed), at the right line, focused.
-
-**What it shows:** a single flat list of files touched this session —
-edited (mined from the agent's session log where herdr tracks one, plus
-anything with uncommitted git changes in the pane's worktree) or merely
-read/mentioned (read this session, or — for agents herdr doesn't track a
-session for — the same text-scrape of recent pane output `pick-file` has
-always used, over the last `picker.scan_lines` lines, default 300) — ordered
-most-recently-touched first, deduped by path, existence-filtered to real
-files on disk. There are no section headers: a session-edited file whose
-worktree is clean and wasn't committed during the session (i.e. the edit was
-rolled back) still shows up in the list, it just no longer counts as an
-edit (no diff stat). The picker never shows edit counts or git status
-letters/deltas beyond the diff stat below — that detail belongs to git
-tooling, not this picker.
-
-The default (empty-filter) view shows only the most recent
-`picker.max_files` entries (default 20); typing a filter query searches the
-**full** underlying list, not just what's currently visible, so something
-from earlier in the session stays findable. Each row shows a smart,
-shortened path (relative to the pane's working directory, `~`-shortened
-outside it, filename in bold), a `new` badge for files created this
-session, and — for real, currently-relevant edits with uncommitted changes —
-a colored `+N -M` diff stat (green/red) from `git diff HEAD --numstat`.
-Typing filters by **whole path**, not just the filename (case-insensitive
-substring, matched span highlighted); the footer shows `matched/total`. The
-cursor starts on row 0, the most-recently-touched entry, so pressing Enter
-with no typing opens the file the agent just worked on.
-
-Trigger it directly on the focused agent pane:
-
-```sh
-herdr plugin action invoke pick-file --plugin adamchmara.herdr-nvim
-```
-
-No key is bound by default. To trigger with a keypress, add a binding to your
-`~/.config/herdr/config.toml`:
-
-```toml
-[[keys.command]]
-key = "prefix+o"                            # any key you like
-type = "plugin_action"
-command = "adamchmara.herdr-nvim.pick-file"
-description = "open file from agent output"
-```
-
-Esc (or `q`) in the picker dismisses it without touching the sidebar.
-
-## Ctrl+click to open a file
-
-Agent panes also linkify file paths and `file://` links (including agents'
-own OSC 8 links, e.g. Claude Code's) directly in their terminal output —
-**Ctrl+click** one to open it in the tab's nvim sidebar (opening the sidebar
-first if it's closed), at the right line, focused. This is herdr's fixed
-link-handler modifier (not configurable by this plugin) and needs herdr ≥
-0.7.4.
-
-The path must include at least one directory segment and a file extension
-(e.g. `src/main.rs`, `./lib/util.py:42`, `/abs/path/file.rs:10:3`,
-`~/project/notes.md`) — a bare filename like `README.md` is intentionally
-**not** linkified (`Node.js`, `e.g.`, and similar prose would otherwise become
-false positives); use the picker above for those. Relative paths resolve
-against the clicked pane's working directory, then that directory's git
-toplevel. A path that doesn't resolve to a real file is a silent no-op.
-
-No key to bind — herdr wires Ctrl+click to the plugin's `open-link` action
-automatically for every `link_handlers` match.
-
-## herdr-nvim config (Rust side)
-
-The sidebar/picker binary reads its own optional TOML config, separate from
-the Lua `setup{}` above — `~/.config/herdr-nvim/config.toml` (override the
-path with `HERDR_NVIM_CONFIG`). A missing file uses the defaults below; a
-malformed file also falls back to defaults (with one warning on stderr) —
-a bad config file never breaks the plugin.
+**herdr side** — `~/.config/herdr-nvim/config.toml` (optional; missing or
+malformed files fall back to these defaults):
 
 ```toml
 [sidebar]
-nvim_bin = "nvim"     # binary used to spawn the per-tab nvim daemon
+nvim_bin = "nvim"   # binary used to spawn the per-tab nvim daemon
 
 [picker]
-scan_lines = 300      # trailing pane lines scanned for file paths by pick-file
-max_files = 20        # entries shown in the picker's default (unfiltered) view;
-                       # typing a filter query still searches the full list
+scan_lines = 300    # pane lines scanned by the fallback text-scrape
+max_files = 20      # entries shown before you type a filter
 ```
 
-## Doctor / troubleshooting
+## Troubleshooting
 
 ```sh
-herdr-nvim doctor                     # core checks: splits, toggle, daemon, remote-ui attach
-herdr-nvim doctor --with-agent claude # also verifies a live agent registers with herdr
+herdr-nvim doctor                     # live checks: splits, toggle, daemon, remote-ui
+herdr-nvim doctor --with-agent claude # also verify agent registration
 ```
 
-`doctor` creates its own scratch workspace (`herdr-nvim-doctor`), runs a set of
-labelled live checks against it (`OK`/`FAIL` per check), and always cleans up
-after itself — closing the workspace and killing any daemon/nvim it spawned —
-even on failure or panic. If it reports a failure:
-
-- **`daemon-healthy` FAIL** — `herdr-nvim`'s spawned nvim daemon didn't come up;
-  check that `sidebar.nvim_bin` in your config (if set) points at a working
-  `nvim` ≥ 0.10 on `PATH`.
-- **`remote-ui-attach` FAIL** — `nvim --remote-ui` couldn't reach the daemon
-  socket; check for stale sockets under the runtime dir, or that no other
-  process is holding the socket.
-- **`toggle-roundtrip-restores-rects` FAIL** — pane layout wasn't restored
-  exactly after a toggle on/off; run again outside of any other herdr
-  automation that might be racing pane state.
-- **workspace cleanup FAIL** ("still present: true") — the scratch workspace
-  didn't close; check `herdr workspace list` and close it manually with
-  `herdr workspace close <id>`.
-
-If everything is fine, doctor ends with `all doctor checks OK` and exit code 0.
+Doctor runs labelled checks in a scratch workspace and always cleans up after
+itself. Most common failure: `daemon-healthy` FAIL means the nvim daemon
+didn't start — check that `sidebar.nvim_bin` points at a working nvim ≥ 0.10.
 
 ## Tests
 
-`nvim --headless --noplugin -u NONE -l tests/run.lua`
+```sh
+just ci    # cargo fmt + cargo test + headless Lua suite
+```

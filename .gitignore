@@ -1,6 +1,8 @@
 .pi-subagents/
 idea.md
 docs/
+!docs/assets/
+!docs/assets/**
 .superpowers/
 /bin/
 /target/
