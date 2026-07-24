@@ -12,7 +12,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64) target=aarch64-unknown-linux-gnu ;;
   *) target="" ;;
 esac
-url="https://github.com/adamchmara/herdr-nvim/releases/download/v${version}/herdr-nvim-${target}"
+url="https://github.com/ChmaraX/herdr-nvim/releases/download/v${version}/herdr-nvim-${target}"
 if [ -n "$target" ] && curl -fsSL "$url" -o bin/herdr-nvim.tmp; then
   mv bin/herdr-nvim.tmp bin/herdr-nvim
   chmod +x bin/herdr-nvim

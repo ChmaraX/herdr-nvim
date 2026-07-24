@@ -33,7 +33,7 @@ use crate::{
     sessions, state,
 };
 
-const PLUGIN_ID: &str = "adamchmara.herdr-nvim";
+const PLUGIN_ID: &str = "chmarax.herdr-nvim";
 
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.

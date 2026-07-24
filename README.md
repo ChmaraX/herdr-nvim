@@ -30,7 +30,7 @@ Both halves come from this repo:
 **1. The herdr plugin** (sidebar + picker):
 
 ```sh
-herdr plugin install adamchmara/herdr-nvim
+herdr plugin install ChmaraX/herdr-nvim
 # or, for a local checkout: herdr plugin link /path/to/herdr-nvim
 ```
 
@@ -41,20 +41,20 @@ by default):
 [[keys.command]]
 key = "prefix+e"
 type = "plugin_action"
-command = "adamchmara.herdr-nvim.toggle"
+command = "chmarax.herdr-nvim.toggle"
 description = "nvim sidebar"
 
 [[keys.command]]
 key = "prefix+o"
 type = "plugin_action"
-command = "adamchmara.herdr-nvim.pick-file"
+command = "chmarax.herdr-nvim.pick-file"
 description = "open file from agent output"
 ```
 
 **2. The nvim plugin** (annotations), with lazy.nvim:
 
 ```lua
-{ "adamchmara/herdr-nvim", opts = {} }
+{ "ChmaraX/herdr-nvim", opts = {} }
 ```
 
 ## The sidebar
