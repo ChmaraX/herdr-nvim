@@ -4,7 +4,7 @@ Neovim, fully integrated into your [herdr](https://herdr.dev) workspace — a
 persistent nvim sidebar one key away, with quick access to the files your
 agent is working on.
 
-![herdr-nvim sidebar](docs/assets/screenshot.png)
+https://github.com/user-attachments/assets/11a41bf0-5b1b-4561-b543-481efa8be09b
 
 ## Features
 
