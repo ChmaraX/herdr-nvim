@@ -2,14 +2,24 @@ local M = {}
 local comments = require("herdr-nvim.comments")
 local agents = require("herdr-nvim.agents")
 
--- A vertical bar in the sign column spans the annotated block and bends into the
--- callout below it (like an editor scope line, but marking your comment). Uses
--- the diagnostic "warn" color every colorscheme defines; never touches the code
--- text itself, so it stays fully readable.
--- Bar, corner and callout text all share ONE highlight so the whole annotation
--- is a single consistent shade (no brighter-bar / dimmer-text mismatch).
-vim.api.nvim_set_hl(0, "HerdrNvimCommentSign", { default = true, link = "DiagnosticWarn" })
-vim.api.nvim_set_hl(0, "HerdrNvimCommentText", { default = true, link = "HerdrNvimCommentSign" })
+-- An annotated block is drawn as three cooperating layers:
+--   * a solid amber rail in the SIGN COLUMN, one cell per line of the block
+--   * a subtle full-width background tint over those same lines
+--   * a callout above the first line naming the comment
+--
+-- The rail lives in the sign column rather than as inline virt_text on purpose:
+-- inline text shifts the annotated code sideways, so a block visibly jumps out
+-- of alignment with the rest of the file the moment you comment on it.
+--
+-- The colour is a dedicated amber, NOT a link to DiagnosticWarn. Borrowing the
+-- diagnostic colour makes comments compete with real warnings for the same
+-- visual meaning. Override any of these highlights to retheme.
+vim.api.nvim_set_hl(0, "HerdrNvimCommentSign", { default = true, fg = "#d7a65f", bold = true })
+vim.api.nvim_set_hl(0, "HerdrNvimCommentText", { default = true, fg = "#d7a65f" })
+-- Tint stays deliberately quiet -- the rail carries the colour. Linked to
+-- CursorLine so it tracks whatever the active colourscheme uses for "this
+-- region is active", on light and dark themes alike.
+vim.api.nvim_set_hl(0, "HerdrNvimCommentLine", { default = true, link = "CursorLine" })
 
 local decorations = {} -- comment id -> { hl, callout, bufnr }
 
@@ -30,10 +40,11 @@ function M.input_comment(on_done)
   end)
 end
 
--- The virtual lines rendered beneath an annotated block: the bar bends (╰─) into
--- a callout showing the full comment text on its own line (never covers code).
+-- The callout rendered ABOVE the first annotated line. Above, not below: a note
+-- sitting under its block reads as a label for whatever code follows it.
+-- The corner opens downward (╭─) into the rail beneath it.
 function M._callout(text)
-  return { { { "╰─ ", "HerdrNvimCommentSign" }, { "💬 " .. text, "HerdrNvimCommentText" } } }
+  return { { { "╭─ ", "HerdrNvimCommentSign" }, { "💬 " .. text, "HerdrNvimCommentText" } } }
 end
 
 function M.decorate(id)
@@ -42,25 +53,23 @@ function M.decorate(id)
     return
   end
   local ns = comments.ns
-  -- 1. A vertical bar prepended inline at column 0 of every line in the block.
-  --    Rendering it as inline virt_text (not a sign) puts it at the same screen
-  --    column as the callout's corner below, so the block reads as one bracket:
-  --      │ def foo():
-  --      │   …
-  --      ╰─ 💬 your note
-  --    (The block shifts right ~2 cells, like a quote; it never covers code.)
+  -- 1. Rail + tint on every line of the block. ▌ (half block) fills the sign
+  --    cell solidly, so the rail reads as one continuous stripe down the block
+  --    instead of a dotted column of glyphs.
   local bars = {}
   for line = c.start_line, c.end_line do
     bars[#bars + 1] = vim.api.nvim_buf_set_extmark(c.bufnr, ns, line - 1, 0, {
-      virt_text = { { "│ ", "HerdrNvimCommentSign" } },
-      virt_text_pos = "inline",
+      sign_text = "▌",
+      sign_hl_group = "HerdrNvimCommentSign",
+      line_hl_group = "HerdrNvimCommentLine",
       right_gravity = false,
     })
   end
-  -- 2. Callout line beneath the block, aligned to the same column 0.
-  local callout = vim.api.nvim_buf_set_extmark(c.bufnr, ns, c.end_line - 1, 0, {
+
+  -- 2. Callout above the first line, opening into the rail below it.
+  local callout = vim.api.nvim_buf_set_extmark(c.bufnr, ns, c.start_line - 1, 0, {
     virt_lines = M._callout(c.text),
-    virt_lines_above = false,
+    virt_lines_above = true,
   })
   decorations[id] = { bars = bars, callout = callout, bufnr = c.bufnr }
 end
