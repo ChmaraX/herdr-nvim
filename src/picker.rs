@@ -321,7 +321,10 @@ fn run_overlay(
         return Ok(None);
     }
     // Display paths depend only on cwd/home, not the query -- compute once.
-    let displays: Vec<String> = cands.iter().map(|c| display_path(&c.path, cwd, home)).collect();
+    let displays: Vec<String> = cands
+        .iter()
+        .map(|c| display_path(&c.path, cwd, home))
+        .collect();
     let session_total = cands.iter().filter(|c| c.session).count();
 
     let _guard = TerminalGuard::enter()?;
@@ -540,17 +543,41 @@ fn draw_candidate(
     // Build the right-hand metadata cluster.
     let mut segs: Vec<Seg> = Vec::new();
     if let Some((added, removed)) = cand.diff_stat {
-        segs.push(Seg { text: format!("+{added}"), color: Some(Color::Green), dim: false });
-        segs.push(Seg { text: " ".to_owned(), color: None, dim: false });
-        segs.push(Seg { text: format!("-{removed}"), color: Some(Color::Red), dim: false });
+        segs.push(Seg {
+            text: format!("+{added}"),
+            color: Some(Color::Green),
+            dim: false,
+        });
+        segs.push(Seg {
+            text: " ".to_owned(),
+            color: None,
+            dim: false,
+        });
+        segs.push(Seg {
+            text: format!("-{removed}"),
+            color: Some(Color::Red),
+            dim: false,
+        });
     } else if cand.newly_created {
-        segs.push(Seg { text: "new".to_owned(), color: Some(AMBER), dim: false });
+        segs.push(Seg {
+            text: "new".to_owned(),
+            color: Some(AMBER),
+            dim: false,
+        });
     }
     if let Some(ts) = cand.touched_unix {
         if !segs.is_empty() {
-            segs.push(Seg { text: "  ".to_owned(), color: None, dim: false });
+            segs.push(Seg {
+                text: "  ".to_owned(),
+                color: None,
+                dim: false,
+            });
         }
-        segs.push(Seg { text: fmt_age(now, ts), color: None, dim: true });
+        segs.push(Seg {
+            text: fmt_age(now, ts),
+            color: None,
+            dim: true,
+        });
     }
     let cluster_w: usize = segs.iter().map(|s| s.text.chars().count()).sum();
 
@@ -630,8 +657,12 @@ fn draw_spans(
         let in_name = global >= name_start;
 
         if matched {
-            queue!(out, SetForegroundColor(AMBER), SetAttribute(Attribute::Bold))
-                .context("hl on")?;
+            queue!(
+                out,
+                SetForegroundColor(AMBER),
+                SetAttribute(Attribute::Bold)
+            )
+            .context("hl on")?;
         } else if !in_name {
             queue!(out, SetAttribute(Attribute::Dim)).context("dim on")?;
         } else if selected {
@@ -697,7 +728,10 @@ mod tests {
     }
 
     fn displays_of(cands: &[Candidate], cwd: &str) -> Vec<String> {
-        cands.iter().map(|c| display_path(&c.path, cwd, None)).collect()
+        cands
+            .iter()
+            .map(|c| display_path(&c.path, cwd, None))
+            .collect()
     }
 
     // --- fuzzy_match ------------------------------------------------------
@@ -792,7 +826,10 @@ mod tests {
 
     #[test]
     fn display_path_relative_to_cwd() {
-        assert_eq!(display_path("/repo/src/main.rs", "/repo", None), "src/main.rs");
+        assert_eq!(
+            display_path("/repo/src/main.rs", "/repo", None),
+            "src/main.rs"
+        );
     }
 
     #[test]
@@ -805,7 +842,10 @@ mod tests {
 
     #[test]
     fn display_path_absolute_when_outside_cwd_and_home() {
-        assert_eq!(display_path("/var/log/x.log", "/repo", Some("/home/u")), "/var/log/x.log");
+        assert_eq!(
+            display_path("/var/log/x.log", "/repo", Some("/home/u")),
+            "/var/log/x.log"
+        );
     }
 
     #[test]

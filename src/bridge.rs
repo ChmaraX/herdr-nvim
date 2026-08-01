@@ -418,7 +418,10 @@ mod tests {
             ])]),
             ..Default::default()
         };
-        assert_eq!(target_agent_pane(&mut h, "wA", "wA:t1", "wA:p2").unwrap(), "wA:p2");
+        assert_eq!(
+            target_agent_pane(&mut h, "wA", "wA:t1", "wA:p2").unwrap(),
+            "wA:p2"
+        );
         assert_eq!(h.ops, ["agents wA"]);
     }
 
