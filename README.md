@@ -1,23 +1,22 @@
 # herdr-nvim
 
-Neovim, fully integrated into your [herdr](https://herdr.dev) workspace — a
-persistent nvim sidebar one key away, with quick access to the files your
-agent is working on.
+Neovim, built into your [herdr](https://herdr.dev) workspace: a persistent
+nvim sidebar one key away, with quick access to the files your agent works on.
 
 https://github.com/user-attachments/assets/11a41bf0-5b1b-4561-b543-481efa8be09b
 
 ## Features
 
-- **Full-height nvim sidebar, one key to toggle.** Your panes squeeze into
-  the left half, nvim takes the right; toggle off and the original layout is
-  restored exactly. Each tab keeps its own persistent nvim — buffers, cursor,
+- **Full-height nvim sidebar, one key to toggle.** Your panes move into the
+  left half, and nvim takes the right. Toggle it off, and herdr restores the
+  original layout. Each tab keeps its own persistent nvim, so buffers, cursor,
   and pending annotations survive the toggle.
-- **File picker for the agent's session.** Every file the agent edited or
-  mentioned, newest first, with diff stats — Enter opens it in the sidebar
-  at the right line.
-- **Code annotations that go back to the agent.** Comment lines or selections
-  like a code review, then send them all — with file:line and git context —
-  to any agent in the workspace (pi, claude, codex, …).
+- **Fuzzy file picker.** It opens on the files your agent touched recently
+  (newest first, with diff stats). Type to fuzzy-search the whole repo. `⏎`
+  opens the file in the sidebar at the right line.
+- **Code annotations you send to the agent.** Comment lines or a selection
+  like a code review. Then send them all to any agent in the workspace (pi,
+  claude, codex), with file:line and git context.
 
 ## Requirements
 
@@ -34,8 +33,8 @@ herdr plugin install ChmaraX/herdr-nvim
 # or, for a local checkout: herdr plugin link /path/to/herdr-nvim
 ```
 
-Bind keys to the two actions in `~/.config/herdr/config.toml` (none are bound
-by default):
+Bind keys to the two actions in `~/.config/herdr/config.toml` (herdr binds
+none by default):
 
 ```toml
 [[keys.command]]
@@ -59,25 +58,37 @@ description = "open file from agent output"
 
 ## The sidebar
 
-`prefix+e` toggles it. Each tab gets its own independent nvim, backed by a
-headless daemon that survives toggling — two tabs can sit on two different
-files in two sidebars, and closing/reopening the sidebar loses nothing.
-Daemons from closed tabs are cleaned up automatically.
+`prefix+e` toggles it. Each tab gets its own nvim, backed by a headless
+daemon that survives the toggle. Two tabs can show two different files in two
+sidebars. When you close and reopen a sidebar, it loses nothing. herdr
+removes the daemons of closed tabs automatically.
 
 ## The file picker
 
-`prefix+o` on an agent pane pops a picker of files touched this session:
-edits mined from the agent's session log plus uncommitted git changes, with a
-text-scrape of recent pane output as fallback for agents herdr doesn't track.
+`prefix+o` pops a fuzzy file picker. It has two modes:
 
-- newest-touched first; cursor starts on the file the agent just worked on,
-  so `⏎` with no typing opens it
-- `new` badge for files created this session, green/red `+N -M` diff stats
-  for uncommitted edits
-- shows the latest 20 by default; typing filters the **full** session list
-  (case-insensitive, whole path)
-- `Esc`/`q` dismisses; `⏎` opens in the sidebar at the right line, opening
-  the sidebar first if needed
+- **Default view (no query):** the files touched this session, newest first.
+  It mines edits from the agent's session log and adds uncommitted git
+  changes. For agents that herdr does not track, it scrapes recent pane
+  output instead. The cursor starts on the newest file, so `⏎` opens it with
+  no typing.
+- **Typing:** fuzzy matches across the **whole repo**, ranked best first.
+  This includes every file that `git ls-files` reports, and it honors
+  `.gitignore`. The match is on the path and filename, not the file contents.
+
+Each row shows:
+
+- the path, relative to the agent's cwd
+- a `new` badge for files created this session
+- green/red `+N -M` diff stats for uncommitted edits
+- a relative touched-age (`2m`, `3h`)
+
+If you start the picker from a non-agent pane (for example, the sidebar
+itself), it reads the agent in the same tab. So it searches the repo that
+you see.
+
+The default view shows the latest `max_files` entries (20). A typed query is
+uncapped.
 
 ## Annotations
 
@@ -93,7 +104,7 @@ your edits), cleared after a successful send. The sent prompt includes each
 comment's file:line plus the repo and branch, so the agent has context.
 
 For a pending-comment indicator (`● 3`) in your statusline:
-`require("herdr-nvim").statusline()` — returns `""` when there's nothing
+`require("herdr-nvim").statusline()` — it returns `""` when nothing is
 pending.
 
 ## Config
@@ -119,7 +130,8 @@ nvim_bin = "nvim"   # binary used to spawn the per-tab nvim daemon
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape
-max_files = 20      # entries shown before you type a filter
+max_files = 20      # session entries shown before you type a query
+                    # (a typed query fuzzy-searches the whole repo, uncapped)
 ```
 
 ## Troubleshooting
@@ -129,9 +141,10 @@ herdr-nvim doctor                     # live checks: splits, toggle, daemon, rem
 herdr-nvim doctor --with-agent claude # also verify agent registration
 ```
 
-Doctor runs labelled checks in a scratch workspace and always cleans up after
-itself. Most common failure: `daemon-healthy` FAIL means the nvim daemon
-didn't start — check that `sidebar.nvim_bin` points at a working nvim ≥ 0.10.
+Doctor runs labeled checks in a scratch workspace and always removes them
+afterward. The most common failure is `daemon-healthy` FAIL: the nvim daemon
+did not start. Make sure that `sidebar.nvim_bin` points at a working nvim ≥
+0.10.
 
 ## Tests
 
