@@ -18,6 +18,10 @@ pub struct PaneRect {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentInfo {
     pub pane_id: String,
+    /// The tab this agent lives in, so the picker can prefer the agent in the
+    /// *same tab* as the focused pane (e.g. the sidebar's own tab) over an
+    /// unrelated first-in-workspace agent that may sit in a different repo.
+    pub tab_id: String,
     pub focused: bool,
 }
 
@@ -31,6 +35,7 @@ pub struct AgentSession {
 /// Pure: extract `result.pane.agent_session` from a `pane get` response, if
 /// present. Absence (older herdr, or a pane herdr doesn't track a session
 /// for) is `None`, not an error -- the caller degrades to git/scrape layers.
+/// asdas
 fn parse_agent_session(value: &Value) -> Option<AgentSession> {
     let node = value.pointer("/result/pane/agent_session")?;
     Some(AgentSession {
@@ -309,6 +314,11 @@ impl Herdr for CliHerdr {
             .map(|agent| {
                 Ok(AgentInfo {
                     pane_id: string_at(agent, "/pane_id")?.to_owned(),
+                    tab_id: agent
+                        .pointer("/tab_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     focused: agent
                         .get("focused")
                         .and_then(Value::as_bool)

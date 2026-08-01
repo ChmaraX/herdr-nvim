@@ -45,6 +45,43 @@ pub(crate) fn dirty_paths(toplevel: &Path) -> Result<HashSet<String>> {
     ))
 }
 
+/// Every tracked-or-untracked (but not git-ignored) file in the worktree, as
+/// absolute paths. Used as the picker's repo-wide search pool: the default
+/// (empty-query) view shows only session-touched files, but once the user
+/// types, matching widens to the whole repo. Shells out to `git ls-files`
+/// with `--cached --others --exclude-standard` so it honours `.gitignore`
+/// exactly like git does, and `-z` so paths with newlines/spaces survive.
+pub(crate) fn list_repo_files(toplevel: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(toplevel)
+        .arg("ls-files")
+        .arg("--cached")
+        .arg("--others")
+        .arg("--exclude-standard")
+        .arg("-z")
+        .output()
+        .context("failed to run git ls-files")?;
+    if !output.status.success() {
+        anyhow::bail!("git ls-files failed");
+    }
+    Ok(parse_ls_files_z(
+        &String::from_utf8_lossy(&output.stdout),
+        toplevel,
+    ))
+}
+
+/// Pure: parses NUL-separated `git ls-files -z` stdout into absolute paths,
+/// preserving git's output order (roughly alphabetical) and skipping the
+/// trailing empty field after the final NUL.
+pub(crate) fn parse_ls_files_z(output: &str, toplevel: &Path) -> Vec<String> {
+    output
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| toplevel.join(entry).to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Pure: parses `git status --porcelain` stdout into absolute paths.
 /// Each line is `XY PATH` or, for renames, `XY OLD -> NEW` (keeps NEW only).
 pub(crate) fn parse_status_porcelain(output: &str, toplevel: &Path) -> HashSet<String> {
@@ -189,6 +226,21 @@ mod tests {
                 "/repo/untracked.txt".to_owned(),
                 "/repo/src/renamed.rs".to_owned(),
             ])
+        );
+    }
+
+    #[test]
+    fn parses_ls_files_z_into_ordered_absolute_paths() {
+        // -z output is NUL-separated with a trailing NUL after the last entry.
+        let output = "src/main.rs\0lua/foo.lua\0a file with spaces.txt\0";
+        let paths = parse_ls_files_z(output, Path::new("/repo"));
+        assert_eq!(
+            paths,
+            vec![
+                "/repo/src/main.rs".to_owned(),
+                "/repo/lua/foo.lua".to_owned(),
+                "/repo/a file with spaces.txt".to_owned(),
+            ]
         );
     }
 

@@ -29,6 +29,12 @@ pub struct Candidate {
     /// diff stat -- it is never dropped.
     pub is_edit: bool,
     pub newly_created: bool,
+    /// True iff this path was actually touched (read or edited) during the
+    /// session, or is a currently-dirty git file. Repo-wide entries added
+    /// only to widen search (see `repo_files`) are `false`. The picker's
+    /// default (empty-query) view shows only `session: true` entries; typing
+    /// a query searches every entry, session or not.
+    pub session: bool,
     /// Unix timestamp of the most recent touch (read OR edit) of this path,
     /// when known. Drives the list's recency ordering. `None` for entries
     /// with no known timestamp (e.g. scrape-fallback candidates); those sort
@@ -57,6 +63,11 @@ pub struct BuildInput<'a> {
     /// path, for the diff-stat eligibility pass below.
     pub diff_stats: &'a std::collections::HashMap<String, (u32, u32)>,
     pub scraped_mentioned: &'a [extract::ScrapedPath],
+    /// The whole worktree's file list (`git ls-files`), used purely to widen
+    /// search: every entry not already present as a session/git candidate is
+    /// appended with `session: false` so it is reachable by a typed query but
+    /// hidden from the default view. Empty for non-git cwds.
+    pub repo_files: &'a [String],
     pub exists: &'a dyn Fn(&str) -> bool,
 }
 
@@ -79,6 +90,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
             line: None,
             is_edit,
             newly_created: touch.newly_created,
+            session: true,
             touched_unix: touch.last_touch_unix,
             diff_stat: None,
         });
@@ -102,6 +114,7 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
             line: None,
             is_edit,
             newly_created: false,
+            session: true,
             touched_unix: (input.git_mtime_unix)(path),
             diff_stat: None,
         });
@@ -121,6 +134,25 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
                 line: scraped.line,
                 is_edit: false,
                 newly_created: false,
+                session: true,
+                touched_unix: None,
+                diff_stat: None,
+            });
+        }
+    }
+
+    // Repo-wide search pool: every worktree file not already represented as a
+    // session/git candidate, appended as a non-session entry. These are hidden
+    // from the default view (empty query) but reachable once the user types.
+    let mut present: HashSet<String> = out.iter().map(|c| c.path.clone()).collect();
+    for path in input.repo_files {
+        if present.insert(path.clone()) {
+            out.push(Candidate {
+                path: path.clone(),
+                line: None,
+                is_edit: false,
+                newly_created: false,
+                session: false,
                 touched_unix: None,
                 diff_stat: None,
             });
@@ -201,6 +233,7 @@ mod tests {
             git_mtime_unix: &no_mtime,
             diff_stats: empty_diff_stats(),
             scraped_mentioned: &[],
+            repo_files: &[],
             exists: &always_true,
         }
     }
@@ -271,6 +304,7 @@ mod tests {
             git_mtime_unix: &mtime_42,
             diff_stats: empty_diff_stats(),
             scraped_mentioned: &[],
+            repo_files: &[],
             exists: &always_true,
         };
         let out = build_candidates(input);
@@ -296,12 +330,32 @@ mod tests {
             git_mtime_unix: &no_mtime,
             diff_stats: empty_diff_stats(),
             scraped_mentioned: &scraped,
+            repo_files: &[],
             exists: &always_true,
         };
         let out = build_candidates(input);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].path, "/repo/scraped.rs");
         assert!(!out[0].is_edit);
+    }
+
+    #[test]
+    fn repo_files_appended_as_non_session_and_deduped_against_touches() {
+        // /repo/a.rs is both touched and in the repo listing -> one entry,
+        // session; /repo/b.rs is repo-only -> appended, non-session.
+        let touches = [touch("/repo/a.rs", true, Some(5))];
+        let dirty = HashSet::from(["/repo/a.rs".to_owned()]);
+        let repo_files = ["/repo/a.rs".to_owned(), "/repo/b.rs".to_owned()];
+        let committed = HashSet::new();
+        let mut input = base_input(&touches, &dirty, &committed, &always_true);
+        input.repo_files = &repo_files;
+        let out = build_candidates(input);
+        assert_eq!(out.len(), 2, "the touched+repo path must not be duplicated");
+        // Touched (timestamped) entry sorts first; repo-only (untimed) last.
+        assert_eq!(out[0].path, "/repo/a.rs");
+        assert!(out[0].session);
+        assert_eq!(out[1].path, "/repo/b.rs");
+        assert!(!out[1].session, "repo-only entries are non-session");
     }
 
     #[test]

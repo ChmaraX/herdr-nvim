@@ -1,21 +1,27 @@
 //! Overlay list UI for the file bridge.
 //!
 //! Reads a handoff JSON file (path in `$HERDR_NVIM_HANDOFF`) written by the
-//! bridge, renders a full-screen crossterm overlay of a single flat,
-//! recency-ordered [`Candidate`] list, lets the user filter/navigate/pick
-//! one, writes the chosen index back into the handoff, and spawns a
-//! detached finisher. The default (empty-filter) view is capped to
-//! `handoff.max_files` entries; typing a filter query searches the full
-//! underlying list. The pure `filter`/`visible_count` halves are unit
-//! tested; the interactive loop is exercised live.
+//! bridge, renders a framed crossterm overlay of a single flat,
+//! recency-ordered [`Candidate`] list, lets the user fuzzy-filter/navigate/
+//! pick one, writes the chosen index back into the handoff, and spawns a
+//! detached finisher.
+//!
+//! The default (empty-query) view shows only session-touched candidates,
+//! capped to `handoff.max_files`; the moment the user types, matching widens
+//! to every candidate (including the repo-wide pool the bridge appended) and
+//! is ranked by a fuzzy score. The pure halves (`fuzzy_match`, `display_path`,
+//! `ellipsize_prefix`, `compute_matches`, `visible_count`, `scroll_window`,
+//! `fmt_age`) are unit tested; the interactive loop and `render` are exercised
+//! live.
 
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute, queue,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{
@@ -30,6 +36,14 @@ use crate::candidates::Candidate;
 /// Environment variable holding the path to the handoff JSON file.
 const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
 
+/// The plugin's accent, matching the annotation rail in `lua/herdr-nvim/ui.lua`
+/// so the picker reads as part of the same product.
+const AMBER: Color = Color::Rgb {
+    r: 0xd7,
+    g: 0xa6,
+    b: 0x5f,
+};
+
 /// Handoff document exchanged between the bridge and the picker overlay.
 #[derive(Serialize, Deserialize)]
 pub struct Handoff {
@@ -38,147 +52,184 @@ pub struct Handoff {
     pub chosen: Option<usize>,
     pub workspace: String,
     /// Tab the pick-file action was invoked from; the finisher opens/reuses the
-    /// sidebar in this tab (phase 2 threads this into a `maneuver::Ctx`).
+    /// sidebar in this tab.
     pub tab: String,
     /// Pane focused when the action was invoked (used as the `Ctx` focused pane).
     pub focused_pane: String,
     /// Pane's foreground cwd, so the picker can render smart/relative paths.
     pub cwd: String,
-    /// Max entries the default (empty-filter) view shows, from
-    /// `config.picker.max_files`. The picker is a separate spawned process
-    /// reading only this handoff JSON, so this is how it learns the cap
-    /// without loading `config.rs` itself.
+    /// Max entries the default (empty-query) view shows, from
+    /// `config.picker.max_files`.
     pub max_files: u32,
 }
 
+/// A candidate that survived filtering, plus how well it matched.
 pub struct FilterMatch {
     pub index: usize,
-    pub highlight: Option<(usize, usize)>,
+    /// Fuzzy score; higher is better. `0` for empty-query (session) rows.
+    pub score: i32,
+    /// Byte spans **into the candidate's display path** that matched the query,
+    /// already merged over runs of consecutive matched characters. Empty for
+    /// the empty-query view.
+    pub highlights: Vec<(usize, usize)>,
 }
 
-/// Return the candidates whose full `path` contains `query` as a
-/// case-insensitive substring (whole-path match, not just the filename
-/// tail -- v2 behavior per the brief). An empty query matches everything
-/// with no highlight. Pure: no I/O, deterministic, unit tested.
-pub fn filter(cands: &[Candidate], query: &str) -> Vec<FilterMatch> {
+/// Fuzzy-match `needle` against `hay` (a display path), returning `None` if
+/// `needle` is not a subsequence of `hay` (case-insensitive), or `Some((score,
+/// spans))` where a higher score is a better match and `spans` are byte ranges
+/// into `hay` to highlight.
+///
+/// Scoring rewards, per matched character: runs of *consecutive* matches, a
+/// match at a word boundary (start, or after `/ _ - . space`), and a match in
+/// the filename tail (after the last `/`) -- so typing `main` ranks
+/// `src/main.rs` above `domain/other.rs`. Uses a greedy left-to-right
+/// two-pointer walk (complete for subsequence detection; the score is a
+/// heuristic over that alignment). Byte offsets come from `char_indices`, so
+/// every span boundary is a valid char boundary even under Unicode case
+/// folding that changes byte length (e.g. the Kelvin sign).
+pub fn fuzzy_match(hay: &str, needle: &str) -> Option<(i32, Vec<(usize, usize)>)> {
+    if needle.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let hay_chars: Vec<(usize, char)> = hay.char_indices().collect();
+    let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+    let name_start = hay.rfind('/').map(|i| i + 1).unwrap_or(0);
+
+    let mut ni = 0usize;
+    let mut score = 0i32;
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut prev_matched_hi: Option<usize> = None;
+
+    for hi in 0..hay_chars.len() {
+        if ni >= needle_lower.len() {
+            break;
+        }
+        let (byte, ch) = hay_chars[hi];
+        if ch.to_lowercase().next() != Some(needle_lower[ni]) {
+            continue;
+        }
+        let end = hay_chars.get(hi + 1).map_or(hay.len(), |&(b, _)| b);
+
+        let consecutive = prev_matched_hi == Some(hi.wrapping_sub(1)) && hi > 0;
+        // Consecutive outweighs the word-boundary bonus below so an exact
+        // contiguous run (`abc` in `abc.rs`) beats a boundary-scattered one
+        // (`a_b_c.rs`).
+        score += if consecutive { 12 } else { 1 };
+        let boundary = byte == 0
+            || matches!(
+                hay[..byte].chars().next_back(),
+                Some('/' | '_' | '-' | '.' | ' ')
+            );
+        if boundary {
+            score += 10;
+        }
+        if byte >= name_start {
+            score += 3;
+        }
+
+        match spans.last_mut() {
+            Some(last) if last.1 == byte => last.1 = end,
+            _ => spans.push((byte, end)),
+        }
+        prev_matched_hi = Some(hi);
+        ni += 1;
+    }
+
+    if ni == needle_lower.len() {
+        // Prefer tighter matches: a small penalty for noisier (longer) paths.
+        score -= (hay_chars.len() as i32) / 40;
+        Some((score, spans))
+    } else {
+        None
+    }
+}
+
+/// Display form of an absolute `path`: relative to `cwd` if inside it,
+/// `~`-shortened if inside `home`, else absolute. No width handling -- the
+/// renderer ellipsizes the directory prefix to fit. Pure, unit tested.
+pub fn display_path(path: &str, cwd: &str, home: Option<&str>) -> String {
+    if let Some(rest) = path.strip_prefix(&format!("{cwd}/")) {
+        rest.to_owned()
+    } else if let Some(rest) = home.and_then(|h| path.strip_prefix(&format!("{h}/"))) {
+        format!("~/{rest}")
+    } else {
+        path.to_owned()
+    }
+}
+
+/// Shorten a directory `prefix` (the part before the filename) to at most
+/// `budget` columns by ellipsizing its *middle* with `…`, so both the top of
+/// the tree and the immediate parent dir stay visible. Returns `prefix`
+/// unchanged when it already fits. Pure, unit tested.
+pub fn ellipsize_prefix(prefix: &str, budget: usize) -> String {
+    let chars: Vec<char> = prefix.chars().collect();
+    if chars.len() <= budget || budget <= 1 {
+        return prefix.to_owned();
+    }
+    let keep = budget.saturating_sub(1).max(1); // reserve one column for `…`
+    let head = keep / 2;
+    let tail = keep - head;
+    if chars.len() > head + tail {
+        let head_s: String = chars[..head].iter().collect();
+        let tail_s: String = chars[chars.len() - tail..].iter().collect();
+        format!("{head_s}…{tail_s}")
+    } else {
+        prefix.to_owned()
+    }
+}
+
+/// Human relative age of `then` as of `now` (both Unix seconds): `now`, `5m`,
+/// `3h`, `2d`. Pure, unit tested.
+pub fn fmt_age(now: u64, then: u64) -> String {
+    let secs = now.saturating_sub(then);
+    if secs < 60 {
+        "now".to_owned()
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
+/// Build the ranked match list for `query` over `cands` (with precomputed
+/// `displays`). Empty query -> only session candidates, in their given
+/// (recency) order, unscored. Non-empty query -> fuzzy over *every* candidate,
+/// sorted by score descending then original index (which preserves recency and
+/// keeps session entries ahead of equally-scored repo-only ones). Pure, unit
+/// tested.
+pub fn compute_matches(cands: &[Candidate], displays: &[String], query: &str) -> Vec<FilterMatch> {
     if query.is_empty() {
-        return (0..cands.len())
-            .map(|index| FilterMatch {
+        return cands
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.session)
+            .map(|(index, _)| FilterMatch {
                 index,
-                highlight: None,
+                score: 0,
+                highlights: Vec::new(),
             })
             .collect();
     }
-    let needle = query.to_lowercase();
-    cands
+    let mut matches: Vec<FilterMatch> = displays
         .iter()
         .enumerate()
-        .filter_map(|(index, cand)| {
-            let (start, len) = find_case_insensitive(&cand.path, &needle)?;
-            Some(FilterMatch {
+        .filter_map(|(index, display)| {
+            fuzzy_match(display, query).map(|(score, highlights)| FilterMatch {
                 index,
-                highlight: Some((start, len)),
+                score,
+                highlights,
             })
         })
-        .collect()
+        .collect();
+    matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.index.cmp(&b.index)));
+    matches
 }
 
-/// Find `needle` (already lowercased) in `haystack` case-insensitively,
-/// returning a `(start, len)` byte range that is always a valid char
-/// boundary pair *in `haystack`* -- unlike naively lowercasing `haystack`
-/// and calling `str::find`, which can shift byte offsets when a character's
-/// lowercase form has a different UTF-8 length (e.g. the Kelvin sign `K`
-/// (U+212A, 3 bytes) lowercases to plain `k` (1 byte)), producing an offset
-/// that lands mid-character in the *original* string and panics on
-/// `split_at`. Walks `haystack` by `char_indices` so every candidate start
-/// and end is a real boundary by construction.
-fn find_case_insensitive(haystack: &str, needle_lower: &str) -> Option<(usize, usize)> {
-    if needle_lower.is_empty() {
-        return None;
-    }
-    let needle_chars: Vec<char> = needle_lower.chars().collect();
-    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
-    for start in 0..hay.len() {
-        let mut hi = start;
-        let mut ni = 0;
-        while ni < needle_chars.len() {
-            let Some(&(_, hc)) = hay.get(hi) else {
-                break;
-            };
-            if !hc.to_lowercase().eq(std::iter::once(needle_chars[ni])) {
-                break;
-            }
-            hi += 1;
-            ni += 1;
-        }
-        if ni == needle_chars.len() {
-            let start_byte = hay[start].0;
-            let end_byte = hay.get(hi).map_or(haystack.len(), |&(b, _)| b);
-            return Some((start_byte, end_byte - start_byte));
-        }
-    }
-    None
-}
-
-pub struct SmartPath {
-    pub dim_prefix: String,
-    pub bold_name: String,
-}
-
-/// Shorten `path` for display: relative to `cwd` if inside it, `~`-shortened
-/// if inside `home`, else left absolute. Splits into a dim directory prefix
-/// and a bold filename tail; if the combined length exceeds `max_width`, the
-/// *middle* of the prefix is ellipsized (`…`) -- the filename tail is never
-/// truncated, since it's the part users scan for.
-pub fn smart_path(path: &str, cwd: &str, home: Option<&str>, max_width: usize) -> SmartPath {
-    let display_full = if let Some(rest) = path.strip_prefix(&format!("{cwd}/")) {
-        rest.to_owned()
-    } else if let Some(home) = home {
-        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
-            format!("~/{rest}")
-        } else {
-            path.to_owned()
-        }
-    } else {
-        path.to_owned()
-    };
-
-    let (prefix, name) = match display_full.rsplit_once('/') {
-        Some((dir, name)) => (format!("{dir}/"), name.to_owned()),
-        None => (String::new(), display_full),
-    };
-
-    let budget = max_width.saturating_sub(name.chars().count());
-    let prefix = if prefix.chars().count() > budget && budget > 1 {
-        // Reserve 3 units for the ellipsis: `…` is a single *character* but a
-        // 3-byte UTF-8 sequence, and callers (and this fn's own tests) bound
-        // the *byte* length of the rendered result, not its char count.
-        let keep = budget.saturating_sub(3).max(1);
-        let head = keep / 2;
-        let tail = keep - head;
-        let chars: Vec<char> = prefix.chars().collect();
-        if chars.len() > head + tail {
-            let head_s: String = chars[..head].iter().collect();
-            let tail_s: String = chars[chars.len() - tail..].iter().collect();
-            format!("{head_s}…{tail_s}")
-        } else {
-            prefix
-        }
-    } else {
-        prefix
-    };
-
-    SmartPath {
-        dim_prefix: prefix,
-        bold_name: name,
-    }
-}
-
-/// How many of the current filter matches the picker's default view should
-/// show: capped to `max_files` when `query` is empty, or every match once
-/// the user has typed anything -- a non-empty query still searches the full
-/// underlying candidate list, not just the default-view cap. Pure: no I/O,
-/// deterministic, unit tested.
+/// How many matches the view shows: capped to `max_files` when `query` is
+/// empty (the session default view), or every match once the user types. Pure,
+/// unit tested.
 pub fn visible_count(total_matches: usize, query: &str, max_files: u32) -> usize {
     if query.is_empty() {
         total_matches.min(max_files as usize)
@@ -187,10 +238,9 @@ pub fn visible_count(total_matches: usize, query: &str, max_files: u32) -> usize
     }
 }
 
-/// Compute the visible window `[first, first+count)` of a `total`-length
-/// list given the terminal `viewport_rows` and the current `cursor` index,
-/// keeping `cursor` always in view (classic "scroll to keep selection
-/// visible" math). Pure function of cursor/height/len -- unit tested.
+/// Compute the visible window `[first, first+count)` of a `total`-length list
+/// given the terminal `viewport_rows` and the current `cursor` index, keeping
+/// `cursor` in view. Pure, unit tested.
 pub fn scroll_window(cursor: usize, total: usize, viewport_rows: usize) -> (usize, usize) {
     if total <= viewport_rows {
         return (0, total);
@@ -206,11 +256,6 @@ pub fn scroll_window(cursor: usize, total: usize, viewport_rows: usize) -> (usiz
 }
 
 /// Entry point for the picker overlay subcommand.
-///
-/// Reads the handoff at `$HERDR_NVIM_HANDOFF`, renders the overlay, and on a
-/// selection writes the chosen index back and spawns a detached finisher
-/// (`<self> pick-file --finish <handoff>`). Always returns `Ok(())` so the
-/// overlay closes cleanly (Esc/q or empty candidate list just exit).
 pub fn picker_cmd() -> Result<()> {
     let handoff_path =
         std::env::var(HANDOFF_ENV).with_context(|| format!("{HANDOFF_ENV} is not set"))?;
@@ -220,11 +265,16 @@ pub fn picker_cmd() -> Result<()> {
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
     let home = std::env::var("HOME").ok();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if let Some(chosen) = run_overlay(
         &handoff.candidates,
         &handoff.cwd,
         home.as_deref(),
         handoff.max_files,
+        now,
     )? {
         handoff.chosen = Some(chosen);
         let encoded = serde_json::to_string(&handoff)?;
@@ -232,15 +282,15 @@ pub fn picker_cmd() -> Result<()> {
             .with_context(|| format!("writing handoff {handoff_path}"))?;
         spawn_finish(&handoff_path)?;
     } else {
-        // Dismissed (Esc/q, or nothing to pick): no finisher will run to delete
-        // the handoff, so remove it here to avoid leaking the temp file.
+        // Dismissed: no finisher will run to delete the handoff, so remove it
+        // here to avoid leaking the temp file.
         let _ = std::fs::remove_file(&handoff_path);
     }
     Ok(())
 }
 
-/// Restores the terminal (leave alternate screen, show cursor, disable raw
-/// mode) on every exit path, including panics and early returns.
+/// Restores the terminal on every exit path, including panics and early
+/// returns.
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -259,32 +309,45 @@ impl Drop for TerminalGuard {
 }
 
 /// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
-/// or `None` if the user dismissed it (Esc/q) or there is nothing to pick.
+/// or `None` if the user dismissed it (Esc/Ctrl-c) or there is nothing to pick.
 fn run_overlay(
     cands: &[Candidate],
     cwd: &str,
     home: Option<&str>,
     max_files: u32,
+    now: u64,
 ) -> Result<Option<usize>> {
     if cands.is_empty() {
         return Ok(None);
     }
+    // Display paths depend only on cwd/home, not the query -- compute once.
+    let displays: Vec<String> = cands.iter().map(|c| display_path(&c.path, cwd, home)).collect();
+    let session_total = cands.iter().filter(|c| c.session).count();
 
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
-    // `cands` is already recency-sorted (candidates::build_candidates'
-    // invariant), so row 0 is always the most-recently-touched entry --
-    // no separate "land on the newest edit" logic needed anymore.
     let mut cursor = 0usize;
 
     loop {
-        let matches = filter(cands, &query);
-        let visible = &matches[..visible_count(matches.len(), &query, max_files)];
+        let matches = compute_matches(cands, &displays, &query);
+        let shown = visible_count(matches.len(), &query, max_files);
+        let visible = &matches[..shown];
         if cursor >= visible.len() {
             cursor = visible.len().saturating_sub(1);
         }
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 20));
-        render(cands, visible, cursor, &query, cwd, home, cols, rows)?;
+        let viewport = viewport_rows(rows);
+        render(
+            cands,
+            &displays,
+            visible,
+            cursor,
+            &query,
+            session_total,
+            now,
+            cols,
+            rows,
+        )?;
 
         let Event::Key(key) = event::read().context("reading terminal event")? else {
             continue;
@@ -292,19 +355,34 @@ fn run_overlay(
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let last = visible.len().saturating_sub(1);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
+            KeyCode::Esc => return Ok(None),
             KeyCode::Enter => return Ok(visible.get(cursor).map(|m| m.index)),
-            KeyCode::Up | KeyCode::Char('k') => cursor = cursor.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => {
-                if cursor + 1 < visible.len() {
-                    cursor += 1;
-                }
-            }
+            KeyCode::Up => cursor = cursor.saturating_sub(1),
+            KeyCode::Down => cursor = (cursor + 1).min(last),
+            KeyCode::PageUp => cursor = cursor.saturating_sub(viewport),
+            KeyCode::PageDown => cursor = (cursor + viewport).min(last),
+            KeyCode::Home => cursor = 0,
+            KeyCode::End => cursor = last,
             KeyCode::Backspace => {
                 query.pop();
                 cursor = 0;
             }
+            // Ctrl chords: navigation + editing that never reach the query, so
+            // every *printable* key below is free to be typed (no more `q`/`j`/
+            // `k` swallowed by nav).
+            KeyCode::Char('c') if ctrl => return Ok(None),
+            KeyCode::Char('p') if ctrl => cursor = cursor.saturating_sub(1),
+            KeyCode::Char('n') if ctrl => cursor = (cursor + 1).min(last),
+            KeyCode::Char('a') if ctrl => cursor = 0,
+            KeyCode::Char('e') if ctrl => cursor = last,
+            KeyCode::Char('u') if ctrl => {
+                query.clear();
+                cursor = 0;
+            }
+            KeyCode::Char(_) if ctrl => {}
             KeyCode::Char(c) => {
                 query.push(c);
                 cursor = 0;
@@ -314,155 +392,260 @@ fn run_overlay(
     }
 }
 
-/// Draw the title bar and the flat, scrollable, badged match list.
-///
-/// Layout: row 0 is a title (`touched this session`, centered/bold/dim);
-/// row 1 is the filter input (`> {query}`); the last row is a footer
-/// (`⏎ open · esc close` ... `matched/total`, right-aligned); the rows
-/// between are `visible`'s candidate rows, one per row, in the order given
-/// (already recency-ordered, and already capped to the default-view limit
-/// by the caller when the filter query is empty) -- no section grouping.
-///
-/// Not unit tested: crossterm terminal interaction: exercised live.
+/// Columns of blank inset on the left and right of the content, so it doesn't
+/// sit flush against Herdr's popup frame.
+const PAD_X: u16 = 2;
+
+/// The chrome rows the list must leave room for: a blank top-pad row, the query
+/// line, a blank gap row, the keybind-hint line, and a blank bottom-pad row.
+const CHROME_ROWS: u16 = 5;
+
+/// First screen row of the candidate list (top pad + query + gap = rows 0,1,2).
+const LIST_TOP: u16 = 3;
+
+/// Number of candidate rows that fit once the top/query/gap and hint/bottom-pad
+/// chrome is subtracted (Herdr's popup draws the surrounding frame and title,
+/// so the picker itself is borderless).
+fn viewport_rows(rows: u16) -> usize {
+    (rows.saturating_sub(CHROME_ROWS)).max(1) as usize
+}
+
+/// One styled run of text in the right-hand metadata cluster.
+struct Seg {
+    text: String,
+    color: Option<Color>,
+    dim: bool,
+}
+
+/// Draw the borderless overlay: a query line up top, the scrollable candidate
+/// rows, and a keybind-hint line at the bottom. The surrounding frame and the
+/// "open file" title come from Herdr's popup chrome, so the picker draws no box
+/// or title of its own (that used to double up). Not unit tested: crossterm
+/// interaction, exercised live.
 #[allow(clippy::too_many_arguments)]
 fn render(
     cands: &[Candidate],
+    displays: &[String],
     visible: &[FilterMatch],
     cursor: usize,
     query: &str,
-    cwd: &str,
-    home: Option<&str>,
+    session_total: usize,
+    now: u64,
     cols: u16,
     rows: u16,
 ) -> Result<()> {
     let mut out = io::stdout();
-    queue!(out, Clear(ClearType::All), MoveTo(0, 0)).context("clearing screen")?;
+    queue!(out, Clear(ClearType::All)).context("clearing screen")?;
 
-    const TITLE: &str = "touched this session";
-    let title_pad = (cols as usize).saturating_sub(TITLE.len()) / 2;
+    let cols = cols.max(8) as usize;
+    // Drawable width between the left and right insets.
+    let width = cols.saturating_sub(2 * PAD_X as usize);
+
+    // Query line (row 1: one blank top-pad row above it), with a dim count
+    // right-aligned.
+    let count = if query.is_empty() {
+        format!("{session_total} files")
+    } else {
+        format!("{} matches", visible.len())
+    };
+    let prompt = format!("› {query}");
     queue!(
         out,
-        MoveTo(0, 0),
-        SetAttribute(Attribute::Bold),
-        SetAttribute(Attribute::Dim),
-        Print(format!("{}{TITLE}", " ".repeat(title_pad))),
-        SetAttribute(Attribute::Reset)
+        MoveTo(PAD_X, 1),
+        SetForegroundColor(AMBER),
+        Print("› "),
+        ResetColor,
+        Print(query)
     )
-    .context("drawing title")?;
-
-    queue!(out, MoveTo(0, 1), Print(format!("> {query}"))).context("drawing filter input")?;
-
-    let viewport_rows = (rows as usize).saturating_sub(5).max(1);
-    let (first, count) = scroll_window(cursor, visible.len(), viewport_rows);
-    let window = &visible[first..(first + count).min(visible.len())];
-
-    let mut screen_row: u16 = 2;
-    let path_width = (cols as usize).saturating_sub(12).max(4);
-
-    for (offset, m) in window.iter().enumerate() {
-        let row = first + offset;
-        let cand = &cands[m.index];
-
-        let marker = if row == cursor { "> " } else { "  " };
-        let sp = smart_path(&cand.path, cwd, home, path_width);
-
-        queue!(out, MoveTo(0, screen_row), Print(marker)).context("drawing row marker")?;
-
-        // The highlight span is a byte range into the raw full path; only
-        // apply it when it falls entirely within the displayed filename tail
-        // (the common case) -- a match inside the dim/ellipsized prefix is a
-        // documented, accepted simplification (see plan Risks): still counts
-        // toward matched/total, just renders with no visible highlight.
-        let name_start_in_path = cand.path.len().saturating_sub(sp.bold_name.len());
-        let name_highlight = m.highlight.and_then(|(start, len)| {
-            (start >= name_start_in_path && start + len <= cand.path.len())
-                .then(|| (start - name_start_in_path, len))
-        });
-
+    .context("query line")?;
+    let count_col = cols.saturating_sub(count.chars().count() + PAD_X as usize);
+    if count_col > prompt.chars().count() + PAD_X as usize {
         queue!(
             out,
+            MoveTo(count_col as u16, 1),
             SetAttribute(Attribute::Dim),
-            Print(&sp.dim_prefix),
+            Print(&count),
             SetAttribute(Attribute::Reset)
         )
-        .context("drawing dim prefix")?;
-
-        match name_highlight {
-            Some((hstart, hlen)) if hstart + hlen <= sp.bold_name.len() => {
-                let (before, rest) = sp.bold_name.split_at(hstart);
-                let (mid, after) = rest.split_at(hlen);
-                queue!(
-                    out,
-                    SetAttribute(Attribute::Bold),
-                    Print(before),
-                    SetAttribute(Attribute::Reverse),
-                    Print(mid),
-                    SetAttribute(Attribute::Reset),
-                    SetAttribute(Attribute::Bold),
-                    Print(after),
-                    SetAttribute(Attribute::Reset),
-                )
-                .context("drawing highlighted filename")?;
-            }
-            _ => {
-                queue!(
-                    out,
-                    SetAttribute(Attribute::Bold),
-                    Print(&sp.bold_name),
-                    SetAttribute(Attribute::Reset),
-                )
-                .context("drawing filename")?;
-            }
-        }
-
-        if cand.newly_created {
-            queue!(out, Print("  new")).context("drawing new badge")?;
-        }
-        if let Some((added, removed)) = cand.diff_stat {
-            queue!(
-                out,
-                Print("  "),
-                SetForegroundColor(Color::Green),
-                Print(format!("+{added}")),
-                ResetColor,
-                Print(" "),
-                SetForegroundColor(Color::Red),
-                Print(format!("-{removed}")),
-                ResetColor,
-            )
-            .context("drawing diff-stat suffix")?;
-        }
-
-        screen_row += 1;
+        .context("count label")?;
     }
 
-    let footer_row = rows.saturating_sub(1);
-    let matched = visible.len();
-    let total = cands.len();
-    let left = "⏎ open · esc close";
-    let right = format!("{matched}/{total}");
-    let pad = (cols as usize)
-        .saturating_sub(left.len() + right.len())
-        .max(1);
+    // Candidate rows, starting below the query + a blank gap row.
+    let viewport = viewport_rows(rows);
+    let (first, count_rows) = scroll_window(cursor, visible.len(), viewport);
+    for screen in 0..viewport {
+        let row = LIST_TOP + screen as u16;
+        if screen < count_rows {
+            let m = &visible[first + screen];
+            queue!(out, MoveTo(PAD_X, row)).context("row move")?;
+            draw_candidate(
+                &mut out,
+                cands,
+                displays,
+                m,
+                first + screen == cursor,
+                now,
+                width,
+            )?;
+        }
+    }
+
+    // Keybind hint on the second-to-last row (one blank bottom-pad row below).
+    let hint = "↑↓ move  ⏎ open  ^u clear  esc close";
     queue!(
         out,
-        MoveTo(0, footer_row),
-        Print(format!("{left}{}{right}", " ".repeat(pad)))
+        MoveTo(PAD_X, rows.saturating_sub(2)),
+        SetAttribute(Attribute::Dim),
+        Print(hint),
+        SetAttribute(Attribute::Reset)
     )
-    .context("drawing footer")?;
+    .context("hint line")?;
 
     out.flush().context("flushing overlay")?;
     Ok(())
 }
 
+/// Draw one candidate row: a selection bar, the (highlighted, ellipsized) path
+/// on the left, and a right-aligned metadata cluster (diff stat / `new` badge,
+/// then relative age). Assumes the cursor is already at column 0 of the row.
+fn draw_candidate(
+    out: &mut impl Write,
+    cands: &[Candidate],
+    displays: &[String],
+    m: &FilterMatch,
+    selected: bool,
+    now: u64,
+    width: usize,
+) -> Result<()> {
+    let cand = &cands[m.index];
+    let display = &displays[m.index];
+
+    // Selection bar: amber ▌ + space, or two blanks.
+    if selected {
+        queue!(
+            out,
+            SetForegroundColor(AMBER),
+            Print('▌'),
+            ResetColor,
+            Print(' ')
+        )
+        .context("selection bar")?;
+    } else {
+        queue!(out, Print("  ")).context("row indent")?;
+    }
+
+    // Region after the 2-column bar, shared by path + right-aligned metadata.
+    let region = width.saturating_sub(2);
+
+    // Build the right-hand metadata cluster.
+    let mut segs: Vec<Seg> = Vec::new();
+    if let Some((added, removed)) = cand.diff_stat {
+        segs.push(Seg { text: format!("+{added}"), color: Some(Color::Green), dim: false });
+        segs.push(Seg { text: " ".to_owned(), color: None, dim: false });
+        segs.push(Seg { text: format!("-{removed}"), color: Some(Color::Red), dim: false });
+    } else if cand.newly_created {
+        segs.push(Seg { text: "new".to_owned(), color: Some(AMBER), dim: false });
+    }
+    if let Some(ts) = cand.touched_unix {
+        if !segs.is_empty() {
+            segs.push(Seg { text: "  ".to_owned(), color: None, dim: false });
+        }
+        segs.push(Seg { text: fmt_age(now, ts), color: None, dim: true });
+    }
+    let cluster_w: usize = segs.iter().map(|s| s.text.chars().count()).sum();
+
+    // Path gets whatever the cluster doesn't need, minus a one-column gap.
+    let path_budget = region.saturating_sub(cluster_w + 1).max(1);
+    let path_w = draw_path(out, display, &m.highlights, selected, path_budget)?;
+
+    // Fill the gap so the cluster sits flush right, then draw it.
+    let gap = region.saturating_sub(path_w + cluster_w);
+    queue!(out, Print(" ".repeat(gap))).context("cluster gap")?;
+    for seg in &segs {
+        if seg.dim {
+            queue!(out, SetAttribute(Attribute::Dim)).context("seg dim")?;
+        }
+        if let Some(color) = seg.color {
+            queue!(out, SetForegroundColor(color)).context("seg color")?;
+        }
+        queue!(out, Print(&seg.text)).context("seg text")?;
+        queue!(out, ResetColor, SetAttribute(Attribute::Reset)).context("seg reset")?;
+    }
+    Ok(())
+}
+
+/// Draw `display` into at most `budget` columns: dim directory prefix (middle-
+/// ellipsized if needed) + filename tail, with fuzzy-match `highlights`
+/// (amber+bold) applied. Returns the number of columns actually drawn.
+fn draw_path(
+    out: &mut impl Write,
+    display: &str,
+    highlights: &[(usize, usize)],
+    selected: bool,
+    budget: usize,
+) -> Result<usize> {
+    let name_start = display.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let width = display.chars().count();
+
+    if width <= budget {
+        draw_spans(out, display, 0, highlights, name_start, selected)?;
+        return Ok(width);
+    }
+    // Too wide: ellipsize the prefix; the filename tail is never truncated.
+    let prefix = &display[..name_start];
+    let name = &display[name_start..];
+    let name_w = name.chars().count();
+    let prefix_budget = budget.saturating_sub(name_w).max(1);
+    let ellipsized = ellipsize_prefix(prefix, prefix_budget);
+    // Ellipsized prefix loses its byte<->span mapping, so render it plainly dim
+    // (highlights inside an elided directory are dropped -- an accepted
+    // simplification; the filename tail keeps its highlights).
+    queue!(
+        out,
+        SetAttribute(Attribute::Dim),
+        Print(&ellipsized),
+        SetAttribute(Attribute::Reset)
+    )
+    .context("dim ellipsized prefix")?;
+    draw_spans(out, name, name_start, highlights, name_start, selected)?;
+    Ok(ellipsized.chars().count() + name_w)
+}
+
+/// Print `text` char-by-char, applying styles: matched chars (per `highlights`,
+/// whose byte ranges are in the *full display path* offset by `base`) render
+/// amber + bold; unmatched chars in the directory prefix (before `name_start`)
+/// render dim; unmatched filename chars render bold when `selected`, else
+/// plain.
+fn draw_spans(
+    out: &mut impl Write,
+    text: &str,
+    base: usize,
+    highlights: &[(usize, usize)],
+    name_start: usize,
+    selected: bool,
+) -> Result<()> {
+    for (local, ch) in text.char_indices() {
+        let global = base + local;
+        let matched = highlights.iter().any(|&(s, e)| global >= s && global < e);
+        let in_name = global >= name_start;
+
+        if matched {
+            queue!(out, SetForegroundColor(AMBER), SetAttribute(Attribute::Bold))
+                .context("hl on")?;
+        } else if !in_name {
+            queue!(out, SetAttribute(Attribute::Dim)).context("dim on")?;
+        } else if selected {
+            queue!(out, SetAttribute(Attribute::Bold)).context("bold on")?;
+        }
+        queue!(out, Print(ch)).context("path char")?;
+        if matched || !in_name || selected {
+            queue!(out, ResetColor, SetAttribute(Attribute::Reset)).context("style reset")?;
+        }
+    }
+    Ok(())
+}
+
 /// Spawn the detached finisher that acts on the written selection.
-///
-/// The overlay pane closes the instant this picker process exits, and herdr
-/// tears down the pane's whole *session* on close. A plain child would share
-/// that session and be killed mid-flight (before it can open the sidebar and
-/// load the file). So put the finisher in its own session via setsid(2) — the
-/// same rule the nvim daemon relies on to outlive the sidebar pane (see
-/// `daemon.rs`) — and detach its stdio from the pane's terminal.
 fn spawn_finish(handoff_path: &str) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -477,8 +660,6 @@ fn spawn_finish(handoff_path: &str) -> Result<()> {
         .stderr(Stdio::null());
     // SAFETY: the pre_exec closure runs post-fork/pre-exec in the child. It only
     // calls setsid(2), which is async-signal-safe and touches no shared memory.
-    // A fresh fork is never a process-group leader, so setsid succeeds; we ignore
-    // its result either way so a failure can't abort the (valid) exec.
     unsafe {
         command.pre_exec(|| {
             extern "C" {
@@ -502,10 +683,155 @@ mod tests {
             line: None,
             is_edit: false,
             newly_created: false,
+            session: true,
             touched_unix: None,
             diff_stat: None,
         }
     }
+
+    fn repo_cand(path: &str) -> Candidate {
+        Candidate {
+            session: false,
+            ..cand(path)
+        }
+    }
+
+    fn displays_of(cands: &[Candidate], cwd: &str) -> Vec<String> {
+        cands.iter().map(|c| display_path(&c.path, cwd, None)).collect()
+    }
+
+    // --- fuzzy_match ------------------------------------------------------
+
+    #[test]
+    fn fuzzy_matches_subsequence_not_just_substring() {
+        // "mnrs" is a subsequence of "main.rs" but not a substring.
+        assert!(fuzzy_match("src/main.rs", "mnrs").is_some());
+    }
+
+    #[test]
+    fn fuzzy_rejects_out_of_order() {
+        assert!(fuzzy_match("src/main.rs", "rsmain").is_none());
+    }
+
+    #[test]
+    fn fuzzy_is_case_insensitive() {
+        assert!(fuzzy_match("src/Main.rs", "MAIN").is_some());
+    }
+
+    #[test]
+    fn fuzzy_empty_needle_matches_with_no_spans() {
+        let (score, spans) = fuzzy_match("anything", "").unwrap();
+        assert_eq!(score, 0);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_prefers_filename_over_directory_match() {
+        // "main" appears in the filename of A and the directory of B; A wins.
+        let a = fuzzy_match("src/main.rs", "main").unwrap().0;
+        let b = fuzzy_match("main/util.rs", "main").unwrap().0;
+        assert!(a > b, "filename match ({a}) should outrank dir match ({b})");
+    }
+
+    #[test]
+    fn fuzzy_prefers_consecutive_over_scattered() {
+        let consecutive = fuzzy_match("abc.rs", "abc").unwrap().0;
+        let scattered = fuzzy_match("a_b_c.rs", "abc").unwrap().0;
+        assert!(consecutive > scattered);
+    }
+
+    #[test]
+    fn fuzzy_spans_are_char_boundaries_under_case_folding() {
+        // U+212A KELVIN SIGN is 3 bytes, lowercases to 1-byte 'k'.
+        let path = "/\u{212A}main.rs";
+        let (_, spans) = fuzzy_match(path, "kmain").expect("kelvin should match");
+        for (s, e) in spans {
+            assert!(path.is_char_boundary(s));
+            assert!(path.is_char_boundary(e));
+        }
+    }
+
+    // --- compute_matches --------------------------------------------------
+
+    #[test]
+    fn empty_query_shows_only_session_candidates() {
+        let cands = vec![cand("/r/a.rs"), repo_cand("/r/b.rs")];
+        let displays = displays_of(&cands, "/r");
+        let m = compute_matches(&cands, &displays, "");
+        assert_eq!(m.len(), 1, "repo-only candidates hidden from default view");
+        assert_eq!(m[0].index, 0);
+    }
+
+    #[test]
+    fn typed_query_searches_repo_candidates_too() {
+        let cands = vec![cand("/r/a.rs"), repo_cand("/r/deep/target.rs")];
+        let displays = displays_of(&cands, "/r");
+        let m = compute_matches(&cands, &displays, "target");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].index, 1, "repo file reachable once the user types");
+    }
+
+    #[test]
+    fn matches_sorted_by_score_desc() {
+        let cands = vec![cand("/r/domain/other.rs"), cand("/r/src/main.rs")];
+        let displays = displays_of(&cands, "/r");
+        let m = compute_matches(&cands, &displays, "main");
+        // main.rs (filename hit) must rank before domain/ (dir hit).
+        assert_eq!(m[0].index, 1);
+    }
+
+    #[test]
+    fn equal_score_breaks_toward_lower_index_recency() {
+        let cands = vec![cand("/r/a/x.rs"), cand("/r/b/x.rs")];
+        let displays = displays_of(&cands, "/r");
+        let m = compute_matches(&cands, &displays, "x.rs");
+        assert_eq!(m[0].index, 0, "ties keep original (recency) order");
+    }
+
+    // --- display_path / ellipsize_prefix ---------------------------------
+
+    #[test]
+    fn display_path_relative_to_cwd() {
+        assert_eq!(display_path("/repo/src/main.rs", "/repo", None), "src/main.rs");
+    }
+
+    #[test]
+    fn display_path_uses_tilde_for_home() {
+        assert_eq!(
+            display_path("/home/u/.config/foo.toml", "/repo", Some("/home/u")),
+            "~/.config/foo.toml"
+        );
+    }
+
+    #[test]
+    fn display_path_absolute_when_outside_cwd_and_home() {
+        assert_eq!(display_path("/var/log/x.log", "/repo", Some("/home/u")), "/var/log/x.log");
+    }
+
+    #[test]
+    fn ellipsize_prefix_keeps_head_and_tail() {
+        let out = ellipsize_prefix("a/b/c/d/e/f/", 6);
+        assert!(out.chars().count() <= 6, "got {out:?}");
+        assert!(out.contains('…'));
+    }
+
+    #[test]
+    fn ellipsize_prefix_leaves_short_prefix_untouched() {
+        assert_eq!(ellipsize_prefix("src/", 20), "src/");
+    }
+
+    // --- fmt_age ----------------------------------------------------------
+
+    #[test]
+    fn fmt_age_buckets() {
+        assert_eq!(fmt_age(100, 100), "now");
+        assert_eq!(fmt_age(100 + 30, 100), "now");
+        assert_eq!(fmt_age(100 + 120, 100), "2m");
+        assert_eq!(fmt_age(100 + 3 * 3600, 100), "3h");
+        assert_eq!(fmt_age(100 + 2 * 86_400, 100), "2d");
+    }
+
+    // --- visible_count / scroll_window ------------------------------------
 
     #[test]
     fn visible_count_caps_default_view_to_max_files() {
@@ -523,106 +849,12 @@ mod tests {
     }
 
     #[test]
-    fn filter_matches_whole_path_not_just_tail() {
-        let c = vec![cand("/repo/src/main.rs"), cand("/repo/lib/util.rs")];
-        let m = filter(&c, "src");
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].index, 0);
-    }
-
-    #[test]
-    fn filter_is_case_insensitive() {
-        let c = vec![cand("/repo/Main.rs")];
-        assert_eq!(filter(&c, "MAIN").len(), 1);
-    }
-
-    #[test]
-    fn empty_query_matches_everything_with_no_highlight() {
-        let c = vec![cand("/repo/a.rs"), cand("/repo/b.rs")];
-        let m = filter(&c, "");
-        assert_eq!(m.len(), 2);
-        assert!(m[0].highlight.is_none());
-    }
-
-    #[test]
-    fn highlight_span_points_at_the_match() {
-        let c = vec![cand("/repo/src/main.rs")];
-        let m = filter(&c, "main");
-        assert_eq!(m[0].highlight, Some((10, 4))); // "main" starts at byte 10 in "/repo/src/main.rs"
-    }
-
-    #[test]
-    fn no_match_returns_empty() {
-        let c = vec![cand("/repo/a.rs")];
-        assert!(filter(&c, "zzz").is_empty());
-    }
-
-    #[test]
-    fn filter_does_not_panic_on_unicode_case_folding_that_changes_byte_length() {
-        // U+212A KELVIN SIGN is 3 bytes in UTF-8 and lowercases to plain 'k'
-        // (1 byte). A naive `path.to_lowercase().find(needle)` finds "main"
-        // at byte offset 2 in the *lowered* string ("/kmain.rs"), but that
-        // offset lands in the middle of the 3-byte Kelvin sign in the
-        // *original* string ("/\u{212A}main.rs"), and `split_at` on that
-        // offset during render would panic. The fix must never produce an
-        // offset that isn't a char boundary in the original path.
-        let path = "/\u{212A}main.rs";
-        let c = vec![cand(path)];
-        let m = filter(&c, "main");
-        assert_eq!(m.len(), 1, "the Kelvin sign should still lowercase-match");
-        let (start, len) = m[0].highlight.expect("expected a highlight span");
-        assert!(
-            path.is_char_boundary(start),
-            "start must be a char boundary"
-        );
-        assert!(
-            path.is_char_boundary(start + len),
-            "end must be a char boundary"
-        );
-        assert_eq!(&path[start..start + len], "main");
-    }
-
-    #[test]
-    fn smart_path_relative_to_cwd() {
-        let sp = smart_path("/repo/src/main.rs", "/repo", None, 80);
-        assert_eq!(sp.dim_prefix, "src/");
-        assert_eq!(sp.bold_name, "main.rs");
-    }
-
-    #[test]
-    fn smart_path_outside_cwd_uses_tilde() {
-        let sp = smart_path("/home/u/.config/foo.toml", "/repo", Some("/home/u"), 80);
-        assert_eq!(sp.dim_prefix, "~/.config/");
-        assert_eq!(sp.bold_name, "foo.toml");
-    }
-
-    #[test]
-    fn smart_path_outside_cwd_and_home_stays_absolute() {
-        let sp = smart_path("/var/log/x.log", "/repo", Some("/home/u"), 80);
-        assert_eq!(sp.dim_prefix, "/var/log/");
-        assert_eq!(sp.bold_name, "x.log");
-    }
-
-    #[test]
-    fn smart_path_ellipsizes_long_middle_to_fit_width() {
-        let sp = smart_path("/repo/a/b/c/d/e/f/deep/file.rs", "/repo", None, 20);
-        let full = format!("{}{}", sp.dim_prefix, sp.bold_name);
-        assert!(full.len() <= 20, "got {full:?} ({} bytes)", full.len());
-        assert!(full.contains('…'));
-        assert!(
-            sp.bold_name == "file.rs",
-            "filename tail must never be the part elided"
-        );
-    }
-
-    #[test]
     fn scroll_window_fits_when_total_within_viewport() {
         assert_eq!(scroll_window(0, 5, 10), (0, 5));
     }
 
     #[test]
     fn scroll_window_keeps_cursor_visible_scrolling_down() {
-        // 20 items, 5-row viewport, cursor at 10 -> window must include index 10.
         let (first, count) = scroll_window(10, 20, 5);
         assert!(first <= 10 && 10 < first + count);
         assert_eq!(count, 5);

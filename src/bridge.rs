@@ -58,12 +58,25 @@ fn finish_handoff_path(args: impl Iterator<Item = String>) -> Option<String> {
 /// Selection rule for which agent pane to read.
 ///
 /// * If the currently `focused` pane is itself an agent, use it.
+/// * Otherwise prefer an agent in the *same tab* as the focused pane -- when
+///   you trigger the picker from the nvim sidebar, the agent you mean is its
+///   tab-mate, not some unrelated first agent elsewhere in the workspace (that
+///   other agent's cwd would otherwise drive the git/repo-wide file search, so
+///   picking it silently searches the wrong repo).
 /// * Otherwise fall back to the first agent pane in `workspace`.
 /// * If the workspace has no agent panes, error.
-pub fn target_agent_pane(h: &mut dyn Herdr, workspace: &str, focused: &str) -> Result<String> {
+pub fn target_agent_pane(
+    h: &mut dyn Herdr,
+    workspace: &str,
+    tab: &str,
+    focused: &str,
+) -> Result<String> {
     let agents = h.agents(workspace)?;
-    if agents.iter().any(|agent| agent.pane_id == focused) {
-        return Ok(focused.to_owned());
+    if let Some(agent) = agents.iter().find(|agent| agent.pane_id == focused) {
+        return Ok(agent.pane_id.clone());
+    }
+    if let Some(agent) = agents.iter().find(|agent| agent.tab_id == tab) {
+        return Ok(agent.pane_id.clone());
     }
     agents
         .into_iter()
@@ -80,7 +93,7 @@ fn start_pick() -> Result<()> {
     let ctx = maneuver::read_ctx(&mut herdr)?;
     let config = config::load();
 
-    let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.focused_pane)?;
+    let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane)?;
     let (cwd, agent_session) = herdr.pane_snapshot(&target)?;
     let text = herdr.read_pane(&target, config.picker.scan_lines)?;
 
@@ -155,6 +168,12 @@ fn gather_candidates(
         .as_deref()
         .and_then(|top| gitscan::diff_numstat_by_path(top).ok())
         .unwrap_or_default();
+    // Whole-worktree file list, used only to widen search once the user types
+    // (the default view stays session-only). Empty for non-git cwds.
+    let repo_files = toplevel
+        .as_deref()
+        .and_then(|top| gitscan::list_repo_files(top).ok())
+        .unwrap_or_default();
 
     let scraped = extract::extract(scrape_text, cwd, exists);
 
@@ -167,6 +186,7 @@ fn gather_candidates(
         git_mtime_unix: &git_mtime_unix,
         diff_stats: &diff_stats,
         scraped_mentioned: &scraped,
+        repo_files: &repo_files,
         exists: &exists_str,
     })
 }
@@ -381,9 +401,10 @@ mod tests {
     use super::*;
     use crate::herdr::{AgentInfo, MockHerdr};
 
-    fn agent(pane_id: &str, focused: bool) -> AgentInfo {
+    fn agent(pane_id: &str, tab_id: &str, focused: bool) -> AgentInfo {
         AgentInfo {
             pane_id: pane_id.into(),
+            tab_id: tab_id.into(),
             focused,
         }
     }
@@ -391,24 +412,49 @@ mod tests {
     #[test]
     fn focused_pane_that_is_an_agent_is_used() {
         let mut h = MockHerdr {
-            agents_results: VecDeque::from([Ok(vec![agent("wA:p1", false), agent("wA:p2", true)])]),
+            agents_results: VecDeque::from([Ok(vec![
+                agent("wA:p1", "wA:t1", false),
+                agent("wA:p2", "wA:t1", true),
+            ])]),
             ..Default::default()
         };
-        assert_eq!(target_agent_pane(&mut h, "wA", "wA:p2").unwrap(), "wA:p2");
+        assert_eq!(target_agent_pane(&mut h, "wA", "wA:t1", "wA:p2").unwrap(), "wA:p2");
         assert_eq!(h.ops, ["agents wA"]);
     }
 
     #[test]
-    fn non_agent_focus_falls_back_to_first_agent() {
+    fn non_agent_focus_prefers_agent_in_the_same_tab() {
         let mut h = MockHerdr {
             agents_results: VecDeque::from([Ok(vec![
-                agent("wA:p1", false),
-                agent("wA:p2", false),
+                // First-in-workspace agent, but in a different tab (e.g. another
+                // repo) -- must NOT win over the tab-mate below.
+                agent("wA:p1", "wA:t9", false),
+                agent("wA:p2", "wA:t1", false),
             ])]),
             ..Default::default()
         };
-        // Focused pane wA:p9 is not among the agents, so the first agent wins.
-        assert_eq!(target_agent_pane(&mut h, "wA", "wA:p9").unwrap(), "wA:p1");
+        // Focused pane wA:sidebar isn't an agent, but it lives in tab wA:t1, so
+        // its tab-mate agent wA:p2 is chosen over the first-listed wA:p1.
+        assert_eq!(
+            target_agent_pane(&mut h, "wA", "wA:t1", "wA:sidebar").unwrap(),
+            "wA:p2"
+        );
+    }
+
+    #[test]
+    fn non_agent_focus_falls_back_to_first_agent_when_no_tab_match() {
+        let mut h = MockHerdr {
+            agents_results: VecDeque::from([Ok(vec![
+                agent("wA:p1", "wA:t3", false),
+                agent("wA:p2", "wA:t4", false),
+            ])]),
+            ..Default::default()
+        };
+        // No agent in the focused pane's tab (wA:t9), so the first agent wins.
+        assert_eq!(
+            target_agent_pane(&mut h, "wA", "wA:t9", "wA:p9").unwrap(),
+            "wA:p1"
+        );
     }
 
     #[test]
@@ -417,7 +463,7 @@ mod tests {
             agents_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         };
-        assert!(target_agent_pane(&mut h, "wA", "wA:p9").is_err());
+        assert!(target_agent_pane(&mut h, "wA", "wA:t1", "wA:p9").is_err());
     }
 
     #[test]
