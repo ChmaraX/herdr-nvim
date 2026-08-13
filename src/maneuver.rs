@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use crate::{
+    config::SidebarPosition,
     daemon,
     herdr::{CliHerdr, Dir, Herdr},
     layout::plan_rebuild,
@@ -92,7 +93,7 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     }
 
     recover(h, &ctx.tab)?;
-    open(h, ctx, sidebar_cmd)
+    open(h, ctx, sidebar_cmd, config.sidebar.position)
 }
 
 /// The pane id of `tab`'s sidebar if state records it as fully Open and its
@@ -116,7 +117,7 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
+fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str, position: SidebarPosition) -> Result<()> {
     let rects = h.pane_rects(&ctx.tab)?;
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
@@ -130,7 +131,7 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
         sidebar_pane: None,
     };
 
-    let parking_placeholder = if rects.len() > 1 {
+    let mut parking = if rects.len() > 1 {
         let (parking_tab, placeholder) = h.create_tab(&ctx.workspace)?;
         state_file.phase = Phase::Evacuating;
         state_file.parking_tab = Some(parking_tab.clone());
@@ -144,14 +145,48 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
         for pane in &state_file.parked {
             h.move_pane(pane, &parking_tab, Dir::Right, None, None, false)?;
         }
-        Some(placeholder)
+        Some((parking_tab, placeholder))
     } else {
         None
     };
 
-    let sidebar = h.split_pane(&plan.anchor, Dir::Right, 0.5, true)?;
+    // herdr only supports creating splits to the right or down. For a left
+    // or top sidebar, create the inverse split and then move the original
+    // anchor to the other side of the new sidebar.
+    let split_dir = match position {
+        SidebarPosition::Left | SidebarPosition::Right => Dir::Right,
+        SidebarPosition::Top | SidebarPosition::Bottom => Dir::Down,
+    };
+    let sidebar = h.split_pane(&plan.anchor, split_dir, 0.5, true)?;
     state_file.sidebar_pane = Some(sidebar.clone());
     state::save(&state_file)?;
+
+    if matches!(position, SidebarPosition::Left | SidebarPosition::Top) {
+        // Moving a pane relative to a sibling in the same tab does not reorder
+        // them. Round-trip the original anchor through a temporary tab, then
+        // place it right/below the sidebar so the sidebar becomes left/top.
+        if parking.is_none() {
+            let (parking_tab, placeholder) = h.create_tab(&ctx.workspace)?;
+            parking = Some((parking_tab, placeholder));
+        }
+        let Some((parking_tab, _)) = parking.as_ref() else {
+            unreachable!("inverse positions always create a parking tab")
+        };
+        h.move_pane(&plan.anchor, parking_tab, Dir::Right, None, None, false)?;
+        let dir = match position {
+            SidebarPosition::Left => Dir::Right,
+            SidebarPosition::Top => Dir::Down,
+            SidebarPosition::Right | SidebarPosition::Bottom => unreachable!(),
+        };
+        h.move_pane(
+            &plan.anchor,
+            &ctx.tab,
+            dir,
+            Some(&sidebar),
+            Some(0.5),
+            false,
+        )?;
+    }
 
     h.run_in_pane(&sidebar, sidebar_cmd)?;
     for step in &plan.steps {
@@ -164,7 +199,7 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
             false,
         )?;
     }
-    if let Some(placeholder) = parking_placeholder {
+    if let Some((_, placeholder)) = parking {
         h.close_pane(&placeholder)?;
     }
 
@@ -400,7 +435,7 @@ mod tests {
     fn open_on_multi_pane_tab_emits_validated_sequence() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+            open(&mut h, &ctx(), "exec sidebar", SidebarPosition::Right).unwrap();
             assert_eq!(
                 h.ops,
                 vec![
@@ -426,12 +461,75 @@ mod tests {
     fn open_on_single_pane_tab_skips_evacuation() {
         with_state_dir(|| {
             let mut h = mock_1pane();
-            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+            open(&mut h, &ctx(), "exec sidebar", SidebarPosition::Right).unwrap();
             assert!(h.ops.iter().all(|op| !op.starts_with("create_tab")));
             assert!(h
                 .ops
                 .iter()
                 .any(|op| op.starts_with("split wT:p1") && op.ends_with("focus:true")));
+        });
+    }
+
+    #[test]
+    fn sidebar_position_controls_split_direction() {
+        with_state_dir(|| {
+            let cases = [
+                (
+                    SidebarPosition::Left,
+                    "split wT:p1 dir:Right ratio:0.5 focus:true",
+                    Some("move wT:p1 -> tab:wT:t1 dir:Right target:wT:p99 ratio:0.5 focus:false"),
+                ),
+                (
+                    SidebarPosition::Right,
+                    "split wT:p1 dir:Right ratio:0.5 focus:true",
+                    None,
+                ),
+                (
+                    SidebarPosition::Top,
+                    "split wT:p1 dir:Down ratio:0.5 focus:true",
+                    Some("move wT:p1 -> tab:wT:t1 dir:Down target:wT:p99 ratio:0.5 focus:false"),
+                ),
+                (
+                    SidebarPosition::Bottom,
+                    "split wT:p1 dir:Down ratio:0.5 focus:true",
+                    None,
+                ),
+            ];
+
+            for (position, split, reposition) in cases {
+                let mut h = mock_1pane();
+                if matches!(position, SidebarPosition::Left | SidebarPosition::Top) {
+                    h.create_tab_results
+                        .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
+                }
+                open(&mut h, &ctx(), "exec sidebar", position).unwrap();
+                assert!(
+                    h.ops.iter().any(|op| op == split),
+                    "{position:?}: {:?}",
+                    h.ops
+                );
+                if let Some(reposition) = reposition {
+                    let parked = h
+                        .ops
+                        .iter()
+                        .position(|op| {
+                            op == "move wT:p1 -> tab:wT:t9 dir:Right target:- ratio:- focus:false"
+                        })
+                        .expect("inverse position must park the anchor first");
+                    let restored = h
+                        .ops
+                        .iter()
+                        .position(|op| op == reposition)
+                        .expect("inverse position must restore the anchor beside the sidebar");
+                    assert!(parked < restored, "{position:?}: {:?}", h.ops);
+                } else {
+                    assert!(
+                        h.ops.iter().all(|op| !op.starts_with("create_tab")),
+                        "{position:?}: {:?}",
+                        h.ops
+                    );
+                }
+            }
         });
     }
 
