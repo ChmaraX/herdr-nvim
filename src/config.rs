@@ -22,14 +22,27 @@ pub struct Config {
 pub struct Sidebar {
     #[serde(default = "default_nvim_bin")]
     pub nvim_bin: String,
+    #[serde(default)]
+    pub position: SidebarPosition,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
         Self {
             nvim_bin: default_nvim_bin(),
+            position: SidebarPosition::default(),
         }
     }
+}
+
+#[derive(Deserialize, Default, Copy, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarPosition {
+    Left,
+    #[default]
+    Right,
+    Top,
+    Bottom,
 }
 
 fn default_nvim_bin() -> String {
@@ -157,12 +170,13 @@ mod tests {
         let guard = ConfigEnvGuard::new();
         fs::write(
             &guard.path,
-            "[sidebar]\nnvim_bin = \"nvim-custom\"\n\n[picker]\nscan_lines = 500\nmax_files = 50\n",
+            "[sidebar]\nnvim_bin = \"nvim-custom\"\nposition = \"bottom\"\n\n[picker]\nscan_lines = 500\nmax_files = 50\n",
         )
         .unwrap();
 
         let config = load();
         assert_eq!(config.sidebar.nvim_bin, "nvim-custom");
+        assert_eq!(config.sidebar.position, SidebarPosition::Bottom);
         assert_eq!(config.picker.scan_lines, 500);
         assert_eq!(config.picker.max_files, 50);
     }
@@ -174,6 +188,7 @@ mod tests {
 
         let config = load();
         assert_eq!(config.sidebar.nvim_bin, "nvim-custom");
+        assert_eq!(config.sidebar.position, SidebarPosition::Right);
         assert_eq!(config.picker.scan_lines, 300);
         assert_eq!(config.picker.max_files, 20);
     }
@@ -196,6 +211,7 @@ mod tests {
         let config = load();
         assert_eq!(config, Config::default());
         assert_eq!(config.sidebar.nvim_bin, "nvim");
+        assert_eq!(config.sidebar.position, SidebarPosition::Right);
         assert_eq!(config.picker.scan_lines, 300);
         assert_eq!(config.picker.max_files, 20);
     }

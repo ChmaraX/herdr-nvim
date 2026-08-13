@@ -3,7 +3,7 @@
 Neovim, built into your [herdr](https://herdr.dev) workspace: a persistent
 nvim sidebar one key away, with quick access to the files your agent works on.
 
-https://github.com/user-attachments/assets/11a41bf0-5b1b-4561-b543-481efa8be09b
+<https://github.com/user-attachments/assets/11a41bf0-5b1b-4561-b543-481efa8be09b>
 
 ## Features
 
@@ -93,7 +93,7 @@ uncapped.
 ## Annotations
 
 | Mapping | Action |
-|---|---|
+| --- | --- |
 | `<leader>ac` | comment the current line / visual selection |
 | `<leader>al` | list comments (float): hover to jump, `⏎` edit, `d` delete |
 | `<leader>as` | paste all comments into a chosen agent's input |
@@ -127,6 +127,7 @@ malformed files fall back to these defaults):
 ```toml
 [sidebar]
 nvim_bin = "nvim"   # binary used to spawn the per-tab nvim daemon
+position = "right"   # right (default), left, top, or bottom
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape
