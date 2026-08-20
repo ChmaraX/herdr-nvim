@@ -32,10 +32,38 @@ pub struct AgentSession {
     pub value: String,
 }
 
+/// Scroll geometry from `pane get` (`result.pane.scroll`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneScroll {
+    pub viewport_rows: u32,
+    pub max_offset_from_bottom: u32,
+}
+
+impl PaneScroll {
+    /// Lines herdr can serve *cheaply*: the live screen plus host scrollback.
+    ///
+    /// Asking `pane read` for more makes herdr drive the *application's own
+    /// scroll* to recover history -- visibly scrolling an alt-screen TUI
+    /// (pi's chat, which keeps `max_offset_from_bottom` at 0) at ~40ms per
+    /// extra line. Callers use this to clamp read sizes.
+    pub fn cheap_read_limit(self) -> u32 {
+        self.viewport_rows
+            .saturating_add(self.max_offset_from_bottom)
+    }
+}
+
+/// The cwd, agent session, and scroll geometry of a pane, from a single
+/// `pane get` response (see `Herdr::pane_snapshot`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneSnapshot {
+    pub cwd: PathBuf,
+    pub agent_session: Option<AgentSession>,
+    pub scroll: Option<PaneScroll>,
+}
+
 /// Pure: extract `result.pane.agent_session` from a `pane get` response, if
 /// present. Absence (older herdr, or a pane herdr doesn't track a session
 /// for) is `None`, not an error -- the caller degrades to git/scrape layers.
-/// asdas
 fn parse_agent_session(value: &Value) -> Option<AgentSession> {
     let node = value.pointer("/result/pane/agent_session")?;
     Some(AgentSession {
@@ -45,15 +73,32 @@ fn parse_agent_session(value: &Value) -> Option<AgentSession> {
     })
 }
 
-/// Pure: extract both `result.pane.foreground_cwd` (required) and
-/// `result.pane.agent_session` (optional) from a single `pane get`
-/// response. Backs `pane_snapshot`, which folds what used to be two
-/// separate `pane get` subprocess spawns (`pane_cwd` + `agent_session`) --
-/// profiled as a meaningful chunk of the pick-file action phase's latency
-/// -- into one.
-fn parse_pane_snapshot(value: &Value) -> Result<(PathBuf, Option<AgentSession>)> {
-    let cwd = PathBuf::from(string_at(value, "/result/pane/foreground_cwd")?);
-    Ok((cwd, parse_agent_session(value)))
+/// Pure: extract `result.pane.scroll` from a `pane get` response, if present.
+/// Absence (older herdr without the scroll block) is `None`, not an error --
+/// the caller then skips the read clamp and behaves as before.
+fn parse_pane_scroll(value: &Value) -> Option<PaneScroll> {
+    let node = value.pointer("/result/pane/scroll")?;
+    Some(PaneScroll {
+        viewport_rows: node.get("viewport_rows")?.as_u64()?.try_into().ok()?,
+        max_offset_from_bottom: node
+            .get("max_offset_from_bottom")?
+            .as_u64()?
+            .try_into()
+            .ok()?,
+    })
+}
+
+/// Pure: extract `result.pane.foreground_cwd` (required) plus the optional
+/// `agent_session` and `scroll` blocks from a single `pane get` response.
+/// Backs `pane_snapshot`, which folds what used to be two separate `pane get`
+/// subprocess spawns (`pane_cwd` + `agent_session`) -- profiled as a
+/// meaningful chunk of the pick-file action phase's latency -- into one.
+fn parse_pane_snapshot(value: &Value) -> Result<PaneSnapshot> {
+    Ok(PaneSnapshot {
+        cwd: PathBuf::from(string_at(value, "/result/pane/foreground_cwd")?),
+        agent_session: parse_agent_session(value),
+        scroll: parse_pane_scroll(value),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,13 +145,13 @@ pub trait Herdr {
     /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
     /// `agent` label and belong to `workspace`).
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
-    /// The pane's cwd and agent session together, from a single `pane get`
-    /// call. Prefer this over calling `pane_cwd` and `agent_session`
-    /// separately when both are needed (as the pick-file action phase
-    /// does) -- each of those is otherwise its own `pane get` subprocess
-    /// spawn against the exact same underlying data. `open-link` only ever
-    /// needs the cwd, so it keeps using `pane_cwd` alone.
-    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)>;
+    /// The pane's cwd, agent session, and scroll geometry together, from a
+    /// single `pane get` call. Prefer this over calling `pane_cwd` and
+    /// `agent_session` separately when both are needed (as the pick-file
+    /// action phase does) -- each of those is otherwise its own `pane get`
+    /// subprocess spawn against the exact same underlying data. `open-link`
+    /// only ever needs the cwd, so it keeps using `pane_cwd` alone.
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot>;
 }
 
 pub struct CliHerdr;
@@ -292,7 +337,7 @@ impl Herdr for CliHerdr {
         )?))
     }
 
-    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
         parse_pane_snapshot(&value)
     }
@@ -400,7 +445,7 @@ pub struct MockHerdr {
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
-    pub pane_snapshot_results: VecDeque<Result<(PathBuf, Option<AgentSession>)>>,
+    pub pane_snapshot_results: VecDeque<Result<PaneSnapshot>>,
 }
 
 #[cfg(test)]
@@ -488,7 +533,7 @@ impl Herdr for MockHerdr {
         Self::next(&mut self.agents_results, "agents")
     }
 
-    fn pane_snapshot(&mut self, pane: &str) -> Result<(PathBuf, Option<AgentSession>)> {
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
         self.ops.push(format!("pane_snapshot {pane}"));
         Self::next(&mut self.pane_snapshot_results, "pane_snapshot")
     }
@@ -547,21 +592,29 @@ mod tests {
     }
 
     #[test]
-    fn parses_pane_snapshot_cwd_and_session_from_one_response() {
+    fn parses_pane_snapshot_cwd_session_and_scroll_from_one_response() {
         let json = include_str!("../tests/fixtures/pane_get_with_session.json");
         let value: Value = serde_json::from_str(json).unwrap();
-        let (cwd, session) = parse_pane_snapshot(&value).unwrap();
-        assert_eq!(cwd, PathBuf::from("/repo"));
-        assert_eq!(session.unwrap().agent, "pi");
+        let snapshot = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
+        assert_eq!(snapshot.agent_session.unwrap().agent, "pi");
+        assert_eq!(
+            snapshot.scroll,
+            Some(PaneScroll {
+                viewport_rows: 73,
+                max_offset_from_bottom: 0,
+            })
+        );
     }
 
     #[test]
-    fn parses_pane_snapshot_cwd_with_no_session() {
+    fn parses_pane_snapshot_cwd_with_no_session_or_scroll() {
         let json = include_str!("../tests/fixtures/pane_get_without_session.json");
         let value: Value = serde_json::from_str(json).unwrap();
-        let (cwd, session) = parse_pane_snapshot(&value).unwrap();
-        assert_eq!(cwd, PathBuf::from("/repo"));
-        assert!(session.is_none());
+        let snapshot = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
+        assert!(snapshot.agent_session.is_none());
+        assert!(snapshot.scroll.is_none());
     }
 
     #[test]
