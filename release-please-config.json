@@ -1,6 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "rust",
+  "include-component-in-tag": false,
+  "bootstrap-sha": "dce64f9e2a17d52ee25a484f90a080097e7665df",
   "packages": {
     ".": {
       "package-name": "herdr-nvim",
