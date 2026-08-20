@@ -152,3 +152,4 @@ did not start. Make sure that `sidebar.nvim_bin` points at a working nvim ≥
 ```sh
 just ci    # cargo fmt + cargo test + headless Lua suite
 ```
+test
