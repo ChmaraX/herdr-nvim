@@ -9,7 +9,7 @@ description = "Full-height nvim sidebar with agent annotations: toggle with one 
 id = "toggle"
 title = "nvim sidebar: toggle"
 contexts = ["pane", "workspace"]
-command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 
 # Overlay pane that renders the file picker. Opened programmatically by the
 # `pick-file` action (via `herdr plugin pane open --entrypoint picker`), which
@@ -18,20 +18,20 @@ command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 id = "picker"
 title = "open file"
 placement = "popup"
-command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
 
 [[actions]]
 id = "pick-file"
 title = "nvim sidebar: open file from agent output"
 contexts = ["pane"]
-command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" pick-file"]
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" pick-file"]
 
 # Invoked by herdr on Ctrl+click of a link_handlers match below — never bound
 # to a key or palette entry directly.
 [[actions]]
 id = "open-link"
 title = "nvim sidebar: open clicked file"
-command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open-link"]
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open-link"]
 
 # Linkify plain-text file paths in every pane's output. Conservative: requires
 # a directory segment + extension (bare `README.md` stays unlinkified to avoid
