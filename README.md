@@ -1,5 +1,9 @@
 # herdr-nvim
 
+[![CI](https://github.com/ChmaraX/herdr-nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/ChmaraX/herdr-nvim/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ChmaraX/herdr-nvim)](https://github.com/ChmaraX/herdr-nvim/releases)
+[![License](https://img.shields.io/github/license/ChmaraX/herdr-nvim)](LICENSE)
+
 Neovim, built into your [herdr](https://herdr.dev) workspace: a persistent
 nvim sidebar one key away, with quick access to the files your agent works on.
 
