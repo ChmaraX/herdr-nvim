@@ -48,10 +48,10 @@ pub fn doctor_cmd() -> Result<()> {
     env::set_var("HERDR_NVIM_STATE_DIR", &state_dir);
     // Belt-and-suspenders: even if a check panics or an early `?` fires, this
     // guard quits stray daemons and removes the temp dir on unwind.
-    let nvim_bin = crate::config::load().sidebar.nvim_bin;
+    let config = crate::config::load();
     let _temp_guard = TempGuard {
         dir: temp.clone(),
-        nvim_bin: nvim_bin.clone(),
+        sidebar: config.sidebar.clone(),
     };
 
     let mut herdr = CliHerdr;
@@ -66,7 +66,7 @@ pub fn doctor_cmd() -> Result<()> {
     println!();
     println!("--- cleanup ---");
     ws.close();
-    quit_daemons(&runtime_dir, &nvim_bin);
+    quit_daemons(&runtime_dir, &config.sidebar);
 
     let leftover = reap_leftover_nvim(&temp);
     println!("leaked headless nvim (temp {}): {leftover}", temp.display());
@@ -117,7 +117,7 @@ fn run_checks(h: &mut CliHerdr, ws: &str, with_agent: Option<&str>, fails: &mut 
             report(
                 fails,
                 "D-F19 remote-ui-attach",
-                check_f19(h, ws, &socket, &config.sidebar.nvim_bin),
+                check_f19(h, ws, &socket, &config.sidebar),
             );
         }
         Err(error) => {
@@ -236,18 +236,26 @@ fn check_f7(h: &mut CliHerdr, ws: &str) -> Result<String> {
 /// D-F19: attaching `nvim --remote-ui` to the daemon inside a scratch pane makes
 /// that pane display nvim. We prove it config-independently by driving the
 /// daemon to render a unique sentinel line, then reading it back from the pane.
-/// (Real user configs — e.g. LazyVim with `eob=" "` — hide the classic `~`
-/// end-of-buffer markers, so a sentinel is the robust marker.)
-fn check_f19(h: &mut CliHerdr, ws: &str, socket: &Path, nvim_bin: &str) -> Result<String> {
+/// (Real user configs — e.g. distro setups that restyle end-of-buffer
+/// markers via `eob=" "` — hide the classic `~`, so a sentinel is the robust
+/// marker.)
+fn check_f19(
+    h: &mut CliHerdr,
+    ws: &str,
+    socket: &Path,
+    sidebar: &crate::config::Sidebar,
+) -> Result<String> {
     let (_tab, pane) = h.create_tab(ws)?;
-    h.run_in_pane(
-        &pane,
-        &format!(
-            "exec {} --server {} --remote-ui",
-            daemon::shell_quote(nvim_bin),
-            socket.display()
-        ),
-    )?;
+    let mut attach = String::from("exec env");
+    for (key, value) in sidebar.env_override() {
+        attach.push_str(&format!(" {}={}", key, daemon::shell_quote(value)));
+    }
+    attach.push_str(&format!(
+        " {} --server {} --remote-ui",
+        daemon::shell_quote(&sidebar.nvim_bin),
+        socket.display()
+    ));
+    h.run_in_pane(&pane, &attach)?;
     // Let the remote UI attach before we drive it.
     sleep(Duration::from_millis(1500));
 
@@ -255,7 +263,7 @@ fn check_f19(h: &mut CliHerdr, ws: &str, socket: &Path, nvim_bin: &str) -> Resul
     nvim_remote_send(
         socket,
         &format!("<Esc><Cmd>enew<CR>i{sentinel}<Esc>"),
-        nvim_bin,
+        sidebar,
     )?;
 
     let mut content = String::new();
@@ -370,8 +378,8 @@ fn first_split_ratio(layout: &Value) -> Result<f64> {
         .context("pane layout missing result.layout.splits[0].ratio")
 }
 
-fn nvim_remote_send(socket: &Path, keys: &str, nvim_bin: &str) -> Result<()> {
-    let status = daemon::nvim_cmd(nvim_bin)
+fn nvim_remote_send(socket: &Path, keys: &str, sidebar: &crate::config::Sidebar) -> Result<()> {
+    let status = daemon::nvim_cmd(sidebar)
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
@@ -431,25 +439,25 @@ impl Drop for WorkspaceGuard {
 
 struct TempGuard {
     dir: PathBuf,
-    nvim_bin: String,
+    sidebar: crate::config::Sidebar,
 }
 
 impl Drop for TempGuard {
     fn drop(&mut self) {
-        quit_daemons(&self.dir.join("runtime"), &self.nvim_bin);
+        quit_daemons(&self.dir.join("runtime"), &self.sidebar);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
 /// Quit every headless nvim daemon whose socket lives in `runtime_dir`.
-fn quit_daemons(runtime_dir: &Path, nvim_bin: &str) {
+fn quit_daemons(runtime_dir: &Path, sidebar: &crate::config::Sidebar) {
     if let Ok(entries) = fs::read_dir(runtime_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(OsStr::to_str) != Some("sock") {
                 continue;
             }
-            let _ = daemon::nvim_cmd(nvim_bin)
+            let _ = daemon::nvim_cmd(sidebar)
                 .arg("--server")
                 .arg(&path)
                 .arg("--remote-send")
