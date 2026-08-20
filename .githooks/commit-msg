@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Enforces Conventional Commits (https://www.conventionalcommits.org).
+# Installed via `just setup` -> git config core.hooksPath .githooks
+
+msg_file="$1"
+subject=$(head -n1 "$msg_file")
+
+# type(scope)!: subject   |   type: subject
+pattern='^(feat|fix|perf|refactor|docs|test|chore|ci|build|style|revert)(\([a-z0-9_-]+\))?!?: .+'
+
+if [[ "$subject" =~ ^Merge ]] || [[ "$subject" =~ ^Revert\  ]]; then
+  exit 0
+fi
+
+if ! [[ "$subject" =~ $pattern ]]; then
+  echo "commit-msg: not a Conventional Commit: \"$subject\"" >&2
+  echo "  expected: type(scope)?: subject   e.g. feat(picker): add fuzzy search" >&2
+  echo "  types: feat fix perf refactor docs test chore ci build style revert" >&2
+  exit 1
+fi
