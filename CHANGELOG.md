@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ChmaraX/herdr-nvim/compare/v0.2.0...v0.2.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* clamp pick-file scrape to herdr's cheap pane-read range ([#11](https://github.com/ChmaraX/herdr-nvim/issues/11)) ([994ff67](https://github.com/ChmaraX/herdr-nvim/commit/994ff67eba25856f77231b93fd1dd35377b5ef3d))
+
 ## [0.2.0](https://github.com/ChmaraX/herdr-nvim/compare/v0.1.1...v0.2.0) (2026-08-20)
 
 
