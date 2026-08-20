@@ -55,6 +55,18 @@ fn finish_handoff_path(args: impl Iterator<Item = String>) -> Option<String> {
     None
 }
 
+/// Clamp the configured scrape depth to [`herdr::PaneScroll::cheap_read_limit`],
+/// so `pane read` never triggers herdr's slow, user-visible app-scroll
+/// fallback (~9s of pi's chat scrolling into the past at the default 300
+/// lines). Nothing is lost: deep file history still comes from session mining
+/// and git. `None` (older herdr without the scroll block in `pane get`) keeps
+/// the configured value unchanged.
+fn effective_scan_lines(configured: u32, scroll: Option<herdr::PaneScroll>) -> u32 {
+    scroll.map_or(configured, |scroll| {
+        configured.min(scroll.cheap_read_limit())
+    })
+}
+
 /// Selection rule for which agent pane to read.
 ///
 /// * If the currently `focused` pane is itself an agent, use it.
@@ -94,10 +106,14 @@ fn start_pick() -> Result<()> {
     let config = config::load();
 
     let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane)?;
-    let (cwd, agent_session) = herdr.pane_snapshot(&target)?;
-    let text = herdr.read_pane(&target, config.picker.scan_lines)?;
+    let snapshot = herdr.pane_snapshot(&target)?;
+    let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
+    let text = herdr.read_pane(&target, lines)?;
 
-    let candidates = gather_candidates(agent_session.as_ref(), &text, &cwd, &|path| path.is_file());
+    let cwd = snapshot.cwd;
+    let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
+        path.is_file()
+    });
 
     if candidates.is_empty() {
         notify_no_candidates();
@@ -467,6 +483,40 @@ mod tests {
             ..Default::default()
         };
         assert!(target_agent_pane(&mut h, "wA", "wA:t1", "wA:p9").is_err());
+    }
+
+    #[test]
+    fn effective_scan_lines_clamps_to_viewport_for_alt_screen_panes() {
+        // pi pane: no host scrollback, so anything past the viewport would
+        // trigger herdr's slow app-scroll fallback.
+        let scroll = crate::herdr::PaneScroll {
+            viewport_rows: 73,
+            max_offset_from_bottom: 0,
+        };
+        assert_eq!(effective_scan_lines(300, Some(scroll)), 73);
+    }
+
+    #[test]
+    fn effective_scan_lines_allows_host_scrollback_when_present() {
+        let scroll = crate::herdr::PaneScroll {
+            viewport_rows: 34,
+            max_offset_from_bottom: 3459,
+        };
+        assert_eq!(effective_scan_lines(300, Some(scroll)), 300);
+    }
+
+    #[test]
+    fn effective_scan_lines_keeps_configured_value_without_scroll_info() {
+        assert_eq!(effective_scan_lines(300, None), 300);
+    }
+
+    #[test]
+    fn effective_scan_lines_never_raises_a_small_configured_value() {
+        let scroll = crate::herdr::PaneScroll {
+            viewport_rows: 73,
+            max_offset_from_bottom: 500,
+        };
+        assert_eq!(effective_scan_lines(50, Some(scroll)), 50);
     }
 
     #[test]
