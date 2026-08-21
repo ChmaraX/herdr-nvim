@@ -77,7 +77,7 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
     // closed tabs. Non-fatal -- a gc failure must never block a toggle.
     let config = crate::config::load();
-    let _ = daemon::gc(h, &config.sidebar.nvim_bin);
+    let _ = daemon::gc(h, &config.sidebar);
 
     // Only a fully-Open sidebar is eligible for the fast close-and-return
     // path. A sidebar_pane recorded while phase is still Evacuating is a

@@ -262,7 +262,7 @@ pub(crate) fn open_in_sidebar(
     let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
     let sidebar = ensure_sidebar_open(h, ctx, &sidebar_cmd)?;
 
-    open_in_nvim(&socket, path, line, &config.sidebar.nvim_bin)?;
+    open_in_nvim(&socket, path, line, &config.sidebar)?;
     focus_pane(&sidebar);
     Ok(())
 }
@@ -294,10 +294,15 @@ fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Resul
 /// a buffer literally named `+5` and leaves the cursor on line 1), so `+<line>`
 /// only works when *launching* nvim, not against a running server. `--remote-expr`
 /// is also mode-independent (works even mid-insert) and needs no path escaping.
-fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>, nvim_bin: &str) -> Result<()> {
+fn open_in_nvim(
+    socket: &Path,
+    path: &str,
+    line: Option<u32>,
+    sidebar: &crate::config::Sidebar,
+) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
-    let status = daemon::nvim_cmd(nvim_bin)
+    let status = daemon::nvim_cmd(sidebar)
         .arg("--server")
         .arg(socket)
         .arg("--remote")
@@ -309,7 +314,7 @@ fn open_in_nvim(socket: &Path, path: &str, line: Option<u32>, nvim_bin: &str) ->
     }
     // Jump to the line, if known.
     if let Some(line) = line {
-        let status = daemon::nvim_cmd(nvim_bin)
+        let status = daemon::nvim_cmd(sidebar)
             .arg("--server")
             .arg(socket)
             .arg("--remote-expr")
