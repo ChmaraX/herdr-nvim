@@ -221,11 +221,10 @@ function M.pick_agent(agent_list, on_choice)
     vim.notify("herdr-nvim: no herdr agents found", vim.log.levels.WARN)
     return
   end
+  -- Pure selection: send-time policy (e.g. the "working" warning) lives in the
+  -- caller's on_choice, so both the picker and the auto-resolve path share it.
   vim.ui.select(agent_list, { prompt = "Send to agent", format_item = agents.display }, function(a)
     if a then
-      if a.status == "working" then
-        vim.notify("herdr-nvim: " .. agents.display(a) .. " is working — sending anyway", vim.log.levels.WARN)
-      end
       on_choice(a)
     end
   end)

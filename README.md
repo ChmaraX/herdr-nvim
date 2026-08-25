@@ -100,8 +100,12 @@ uncapped.
 | --- | --- |
 | `<leader>ac` | comment the current line / visual selection |
 | `<leader>al` | list comments (float): hover to jump, `⏎` edit, `d` delete |
-| `<leader>as` | paste all comments into a chosen agent's input |
-| `<leader>aS` | send all comments to a chosen agent (auto-submits) |
+| `<leader>as` | paste all comments into the agent's input |
+| `<leader>aS` | send all comments to the agent (auto-submits) |
+
+Sending skips the picker when the target is obvious: the lone agent in the
+workspace, or the single agent sharing this tab (the sibling pane). The picker
+only appears when two or more agents could plausibly be meant.
 
 Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
 your edits), cleared after a successful send. The sent prompt includes each
