@@ -188,6 +188,11 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// workspace's cwd as positional args so the sidebar pane knows which daemon
 /// to attach to and where to spawn it (it can't rely on env, since herdr may
 /// not export either into the pane).
+///
+/// Legacy: the current spawn path uses `plugin pane open --entrypoint sidebar`
+/// (non-interactive, no shell echo) and `sidebar_cmd` reads tab/cwd from env.
+/// This is retained only for the argv fallback in `sidebar_cmd`.
+#[allow(dead_code)]
 pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
     let path = std::env::current_exe()
         .ok()
@@ -200,21 +205,32 @@ pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
 
 /// Runs inside the sidebar pane: ensure the tab's daemon is up, then replace
 /// this process with `nvim --remote-ui` attached to it.
+///
+/// The tab id and cwd resolve in priority order:
+///   1. `HERDR_TAB_ID` env / the pane's own cwd — set by herdr for plugin
+///      panes (the non-interactive `plugin pane open --entrypoint sidebar`
+///      spawn path, which has no shell echo).
+///   2. positional argv `sidebar <tab> <cwd>` — the legacy interactive
+///      `pane run` spawn path (`sidebar_shell_cmd`).
+/// Both ends of the legacy path are generated and consumed by this binary
+/// itself, so the argv fallback stays for backward compatibility.
 pub fn sidebar_cmd() -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // Positional args from `sidebar_shell_cmd` (`sidebar <tab> <cwd>`). This
-    // binary generates and consumes both ends of this invocation itself, so
-    // both are required -- no env-var fallback.
-    let tab = env::args()
-        .nth(2)
-        .context("herdr-nvim sidebar requires a tab id argument")?;
-    let cwd = env::args()
-        .nth(3)
-        .context("herdr-nvim sidebar requires a cwd argument")?;
+    let tab = env::var("HERDR_TAB_ID")
+        .ok()
+        .or_else(|| env::args().nth(2))
+        .context("herdr-nvim sidebar requires a tab id (HERDR_TAB_ID env or argv)")?;
+    let cwd = match env::current_dir() {
+        Ok(cwd) if !cwd.as_os_str().is_empty() => cwd,
+        _ => env::args()
+            .nth(3)
+            .map(PathBuf::from)
+            .context("herdr-nvim sidebar requires a cwd (current dir or argv)")?,
+    };
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
-    let socket = ensure_daemon(&tab, &plugin_root, &config, Path::new(&cwd))?;
+    let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
 
     let error = nvim_cmd(&config.sidebar.nvim_bin)
         .arg("--server")

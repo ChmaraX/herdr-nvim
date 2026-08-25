@@ -218,8 +218,8 @@ fn check_f7(h: &mut CliHerdr, ws: &str) -> Result<String> {
     // A trivial sidebar command keeps the toggle path hermetic (no daemon needed
     // here — D-F18/F19 exercise the daemon separately). The sidebar pane's shell
     // stays alive so the close half of the round trip can find and close it.
-    maneuver::toggle(h, &ctx, "true").context("toggle open failed")?;
-    maneuver::toggle(h, &ctx, "true").context("toggle close failed")?;
+    maneuver::toggle(h, &ctx).context("toggle open failed")?;
+    maneuver::toggle(h, &ctx).context("toggle close failed")?;
 
     let mut after = h.pane_rects(&tab)?;
     after.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
