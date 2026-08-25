@@ -109,7 +109,12 @@ function M.send_all(opts)
     vim.notify("herdr-nvim: " .. err, vim.log.levels.ERROR)
     return
   end
-  ui.pick_agent(agent_list, function(agent)
+  -- Single funnel for every send (both the resolved and picked paths), so the
+  -- "agent is working" warning lives in exactly one place.
+  local function deliver(agent)
+    if agent.status == "working" then
+      vim.notify("herdr-nvim: " .. agents.display(agent) .. " is working — sending anyway", vim.log.levels.WARN)
+    end
     local ok, derr = dispatch.send(agent.pane_id, text, opts)
     if not ok then
       vim.notify("herdr-nvim: " .. derr, vim.log.levels.ERROR)
@@ -121,7 +126,15 @@ function M.send_all(opts)
       end
     end
     vim.notify(string.format("herdr-nvim: sent %d comment(s) to %s", #list, agent.title))
-  end)
+  end
+  -- Skip the picker when the target is unambiguous (the common one-agent case);
+  -- fall back to the picker only when 2+ agents could plausibly be meant.
+  local agent = agents.resolve(agent_list)
+  if agent then
+    deliver(agent)
+  else
+    ui.pick_agent(agent_list, deliver)
+  end
 end
 
 function M.statusline()

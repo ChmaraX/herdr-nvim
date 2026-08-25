@@ -58,6 +58,44 @@ T.test("agents: unparseable JSON returns err", function()
   T.ok(err and err:match("unparseable"))
 end)
 
+T.test("agents: resolve returns the lone workspace agent", function()
+  local a = agents.resolve({ { pane_id = "wA:p1", tab_id = "wA:t1" } })
+  T.eq(a.pane_id, "wA:p1")
+end)
+
+T.test("agents: resolve picks the single agent in the current tab", function()
+  local previous = vim.env.HERDR_TAB_ID
+  vim.env.HERDR_TAB_ID = "wA:t2"
+  local a = agents.resolve({
+    { pane_id = "wA:p1", tab_id = "wA:t1" },
+    { pane_id = "wA:p2", tab_id = "wA:t2" },
+  })
+  vim.env.HERDR_TAB_ID = previous
+  T.eq(a.pane_id, "wA:p2")
+end)
+
+T.test("agents: resolve returns nil when the tab is ambiguous", function()
+  local previous = vim.env.HERDR_TAB_ID
+  vim.env.HERDR_TAB_ID = "wA:t1"
+  local a = agents.resolve({
+    { pane_id = "wA:p1", tab_id = "wA:t1" },
+    { pane_id = "wA:p2", tab_id = "wA:t1" },
+  })
+  vim.env.HERDR_TAB_ID = previous
+  T.eq(a, nil)
+end)
+
+T.test("agents: resolve returns nil when no tab context disambiguates", function()
+  local previous = vim.env.HERDR_TAB_ID
+  vim.env.HERDR_TAB_ID = nil
+  local a = agents.resolve({
+    { pane_id = "wA:p1", tab_id = "wA:t1" },
+    { pane_id = "wB:p2", tab_id = "wB:t1" },
+  })
+  vim.env.HERDR_TAB_ID = previous
+  T.eq(a, nil)
+end)
+
 T.test("agents: display row leads with agent kind", function()
   local row = agents.display({ kind = "pi", title = "π - a", status = "idle", cwd = "/x/y/proj" })
   T.eq(row, "pi · idle · proj")

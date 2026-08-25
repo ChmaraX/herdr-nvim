@@ -17,6 +17,7 @@ function M.list(exec)
       table.insert(out, {
         pane_id = a.pane_id,
         workspace_id = a.workspace_id,
+        tab_id = a.tab_id,
         kind = a.agent or "unknown",
         status = a.agent_status or "unknown",
         cwd = a.cwd or "",
@@ -26,6 +27,25 @@ function M.list(exec)
   end
   table.sort(out, function(x, y) return x.title < y.title end)
   return out
+end
+
+-- Resolve the one agent to target without a picker, or nil when it's ambiguous.
+-- `list` is already workspace-scoped by M.list. Narrowest unambiguous match wins:
+--   1. a single agent sharing the current tab (HERDR_TAB_ID) — the sibling pane,
+--      same convention the file picker uses to find "the agent in this tab";
+--   2. otherwise, a lone agent in the workspace.
+-- Anything ambiguous (2+ candidates) returns nil so the caller shows the picker.
+function M.resolve(list)
+  if #list == 1 then return list[1] end
+  local tab = vim.env.HERDR_TAB_ID
+  if tab then
+    local in_tab = {}
+    for _, a in ipairs(list) do
+      if a.tab_id == tab then table.insert(in_tab, a) end
+    end
+    if #in_tab == 1 then return in_tab[1] end
+  end
+  return nil
 end
 
 function M.display(agent)

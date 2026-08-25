@@ -84,6 +84,84 @@ T.test("init: send_all formats, dispatches, clears", function()
   T.eq(comments.list(), {}, "clear_after_send default clears comments")
 end)
 
+T.test("init: send_all warns once when the resolved agent is working", function()
+  comments.clear()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "alpha" })
+  vim.api.nvim_buf_set_name(b, "/tmp/hn-send-working.lua")
+  comments.add(b, 1, 1, "check this")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local warns = {}
+  local o1, o2, o3, on = ui.pick_agent, dispatch.send, agents.list, vim.notify
+  ui.pick_agent = function() error("picker must not open for a lone agent") end
+  dispatch.send = function() return true end
+  agents.list = function() return { { pane_id = "wZ:p9", tab_id = "wZ:t1", kind = "pi", title = "pi", status = "working", cwd = "/x/y/z" } } end
+  vim.notify = function(msg, level) if level == vim.log.levels.WARN then table.insert(warns, msg) end end
+
+  hn.send_all({ submit = true })
+  ui.pick_agent, dispatch.send, agents.list, vim.notify = o1, o2, o3, on
+
+  T.eq(#warns, 1, "working warning must fire exactly once")
+  T.ok(warns[1]:find("is working", 1, true), "warning names the working state")
+end)
+
+T.test("init: send_all shows the picker when agents are ambiguous", function()
+  comments.clear()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "alpha" })
+  vim.api.nvim_buf_set_name(b, "/tmp/hn-send-multi.lua")
+  comments.add(b, 1, 1, "check this")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local previous = vim.env.HERDR_TAB_ID
+  vim.env.HERDR_TAB_ID = nil
+  local picked, sent = false, {}
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  ui.pick_agent = function(l, cb) picked = true; cb(l[1]) end
+  dispatch.send = function(pane) sent = { pane }; return true end
+  agents.list = function()
+    return {
+      { pane_id = "wA:p1", tab_id = "wA:t1", title = "pi", status = "idle" },
+      { pane_id = "wB:p2", tab_id = "wB:t1", title = "claude", status = "idle" },
+    }
+  end
+
+  hn.send_all({ submit = false })
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+  vim.env.HERDR_TAB_ID = previous
+
+  T.ok(picked, "picker must open when the target is ambiguous")
+  T.eq(sent[1], "wA:p1")
+end)
+
+T.test("init: send_all skips the picker for a lone agent", function()
+  comments.clear()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "alpha" })
+  vim.api.nvim_buf_set_name(b, "/tmp/hn-send-solo.lua")
+  comments.add(b, 1, 1, "check this")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local picked, sent = false, {}
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  ui.pick_agent = function() picked = true end
+  dispatch.send = function(pane) sent = { pane }; return true end
+  agents.list = function() return { { pane_id = "wZ:p9", tab_id = "wZ:t1", title = "pi", status = "idle" } } end
+
+  hn.send_all({ submit = false })
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+
+  T.ok(not picked, "picker must not open for a single unambiguous agent")
+  T.eq(sent[1], "wZ:p9")
+end)
+
 T.test("init: send_all retains comments when dispatch.send fails", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
