@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/ChmaraX/herdr-nvim/compare/v0.2.1...v0.3.0) (2026-08-25)
+
+
+### Features
+
+* skip agent picker when target is unambiguous ([#17](https://github.com/ChmaraX/herdr-nvim/issues/17)) ([cf31879](https://github.com/ChmaraX/herdr-nvim/commit/cf3187992bbed14f628af045bba1179ba8efeae2))
+
 ## [0.2.1](https://github.com/ChmaraX/herdr-nvim/compare/v0.2.0...v0.2.1) (2026-08-20)
 
 
