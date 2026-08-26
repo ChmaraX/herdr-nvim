@@ -1,6 +1,26 @@
 local M = {}
 local exec_mod = require("herdr-nvim.exec")
 
+-- Plugin panes (sidebar/picker) only get workspace/tab context bundled as
+-- HERDR_PLUGIN_CONTEXT_JSON; plain terminal panes get flat HERDR_WORKSPACE_ID /
+-- HERDR_TAB_ID instead. Prefer the flat vars, fall back to decoding the JSON
+-- blob so resolve() works from either context.
+local function plugin_context()
+  local raw = vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  if not raw then return {} end
+  local ok, decoded = pcall(vim.json.decode, raw)
+  if not ok or type(decoded) ~= "table" then return {} end
+  return decoded
+end
+
+local function current_workspace_id()
+  return vim.env.HERDR_WORKSPACE_ID or plugin_context().workspace_id
+end
+
+local function current_tab_id()
+  return vim.env.HERDR_TAB_ID or plugin_context().tab_id
+end
+
 function M.list(exec)
   exec = exec or exec_mod.default_exec
   local r = exec({ "herdr", "agent", "list" })
@@ -11,7 +31,7 @@ function M.list(exec)
   if not ok or type(decoded) ~= "table" then return nil, "herdr agent list: unparseable JSON" end
   local raw = (decoded.result or {}).agents or {}
   local out = {}
-  local here = vim.env.HERDR_WORKSPACE_ID
+  local here = current_workspace_id()
   for _, a in ipairs(raw) do
     if not here or a.workspace_id == here then
       table.insert(out, {
@@ -37,7 +57,7 @@ end
 -- Anything ambiguous (2+ candidates) returns nil so the caller shows the picker.
 function M.resolve(list)
   if #list == 1 then return list[1] end
-  local tab = vim.env.HERDR_TAB_ID
+  local tab = current_tab_id()
   if tab then
     local in_tab = {}
     for _, a in ipairs(list) do

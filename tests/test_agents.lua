@@ -46,6 +46,36 @@ T.test("agents: current workspace excludes other workspaces", function()
   T.eq(list[1].pane_id, "wB:p2")
 end)
 
+T.test("agents: HERDR_PLUGIN_CONTEXT_JSON scopes workspace when flat var is unset", function()
+  local prev_flat, prev_json = vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  vim.env.HERDR_WORKSPACE_ID = nil
+  vim.env.HERDR_PLUGIN_CONTEXT_JSON = vim.json.encode({ workspace_id = "wB" })
+  local list = agents.list(fake_exec(fixture))
+  vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON = prev_flat, prev_json
+  T.eq(#list, 1)
+  T.eq(list[1].pane_id, "wB:p2")
+end)
+
+T.test("agents: flat HERDR_WORKSPACE_ID wins over HERDR_PLUGIN_CONTEXT_JSON", function()
+  local prev_flat, prev_json = vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  vim.env.HERDR_WORKSPACE_ID = "wA"
+  vim.env.HERDR_PLUGIN_CONTEXT_JSON = vim.json.encode({ workspace_id = "wB" })
+  local list = agents.list(fake_exec(fixture))
+  vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON = prev_flat, prev_json
+  T.eq(#list, 1)
+  T.eq(list[1].pane_id, "wA:p1")
+end)
+
+T.test("agents: malformed HERDR_PLUGIN_CONTEXT_JSON is ignored, not fatal", function()
+  local prev_flat, prev_json = vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  vim.env.HERDR_WORKSPACE_ID = nil
+  vim.env.HERDR_PLUGIN_CONTEXT_JSON = "not json"
+  local list, err = agents.list(fake_exec(fixture))
+  vim.env.HERDR_WORKSPACE_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON = prev_flat, prev_json
+  T.eq(err, nil)
+  T.eq(#list, 2) -- no valid workspace scope, so unscoped (same as no context at all)
+end)
+
 T.test("agents: CLI failure returns err", function()
   local list, err = agents.list(fake_exec("", 1))
   T.eq(list, nil)
@@ -83,6 +113,18 @@ T.test("agents: resolve returns nil when the tab is ambiguous", function()
   })
   vim.env.HERDR_TAB_ID = previous
   T.eq(a, nil)
+end)
+
+T.test("agents: resolve uses HERDR_PLUGIN_CONTEXT_JSON tab when flat var is unset", function()
+  local prev_flat, prev_json = vim.env.HERDR_TAB_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  vim.env.HERDR_TAB_ID = nil
+  vim.env.HERDR_PLUGIN_CONTEXT_JSON = vim.json.encode({ workspace_id = "wA", tab_id = "wA:t2" })
+  local a = agents.resolve({
+    { pane_id = "wA:p1", tab_id = "wA:t1" },
+    { pane_id = "wA:p2", tab_id = "wA:t2" },
+  })
+  vim.env.HERDR_TAB_ID, vim.env.HERDR_PLUGIN_CONTEXT_JSON = prev_flat, prev_json
+  T.eq(a.pane_id, "wA:p2")
 end)
 
 T.test("agents: resolve returns nil when no tab context disambiguates", function()
