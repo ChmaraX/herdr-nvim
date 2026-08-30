@@ -5,6 +5,7 @@
 //! files.
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RawOp {
@@ -20,21 +21,64 @@ pub(crate) struct RawEvent {
     pub unix_ts: Option<u64>,
 }
 
+/// Load the session text from disk given an AgentSession metadata and pane cwd.
+pub(crate) fn load_session_text(
+    session: &crate::herdr::AgentSession,
+    cwd: &Path,
+) -> Option<String> {
+    if session.kind == "path" {
+        return std::fs::read_to_string(&session.value).ok();
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    match session.agent.as_str() {
+        "claude" => {
+            let projects_dir = home.join(".claude/projects");
+            let slug = cwd.to_string_lossy().replace('/', "-");
+            let direct = projects_dir
+                .join(&slug)
+                .join(format!("{}.jsonl", session.value));
+            if direct.exists() {
+                return std::fs::read_to_string(direct).ok();
+            }
+            if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+                for entry in entries.flatten() {
+                    let candidate = entry.path().join(format!("{}.jsonl", session.value));
+                    if candidate.exists() {
+                        return std::fs::read_to_string(candidate).ok();
+                    }
+                }
+            }
+            None
+        }
+        "agy" | "antigravity" | "antigravity_cli" => {
+            let transcript = home
+                .join(".gemini/antigravity-cli/brain")
+                .join(&session.value)
+                .join(".system_generated/logs/transcript.jsonl");
+            if transcript.exists() {
+                std::fs::read_to_string(transcript).ok()
+            } else {
+                None
+            }
+        }
+        "pi" => {
+            let pi_path = home.join(format!(".pi/agent/sessions/{}.jsonl", session.value));
+            if pi_path.exists() {
+                std::fs::read_to_string(pi_path).ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Per-agent session file shape: everything that differs between pi and
-/// claude-code JSONL records, as data rather than as parallel loops. Adding a
-/// future agent (codex) means adding a new `Dialect` value, not a new parser
-/// function.
+/// claude-code JSONL records, as data rather than as parallel loops.
 pub(crate) struct Dialect {
-    /// If set, only records whose top-level `type` equals this are considered
-    /// (pi's outer `type:"message"` filter); `None` skips the check (claude
-    /// has no such outer filter).
     record_type_filter: Option<&'static str>,
-    /// The `type` tag identifying a tool-call content item (`"toolCall"` for
-    /// pi, `"tool_use"` for claude).
     content_item_type: &'static str,
-    /// JSON pointer, relative to a content item, to the file path argument.
     path_pointer: &'static str,
-    /// Maps a tool name to the `RawOp` it represents, or `None` to skip it.
     tool_map: fn(&str) -> Option<RawOp>,
 }
 
@@ -49,9 +93,11 @@ fn pi_tool_map(name: &str) -> Option<RawOp> {
 
 fn claude_tool_map(name: &str) -> Option<RawOp> {
     match name {
-        "Write" => Some(RawOp::Write),
-        "MultiEdit" | "NotebookEdit" | "Edit" => Some(RawOp::Edit),
-        "Read" => Some(RawOp::Read),
+        "Write" | "write" => Some(RawOp::Write),
+        "MultiEdit" | "NotebookEdit" | "Edit" | "edit" | "replace_file_content" => {
+            Some(RawOp::Edit)
+        }
+        "Read" | "read" | "View" | "view" | "view_file" => Some(RawOp::Read),
         _ => None,
     }
 }
@@ -70,11 +116,58 @@ pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
     tool_map: claude_tool_map,
 };
 
+/// Parse Antigravity transcript JSONL
+fn parse_agy_session(text: &str) -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let unix_ts = value
+            .get("created_at")
+            .or_else(|| value.get("timestamp"))
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_unix);
+
+        if let Some(tool_calls) = value.get("tool_calls").and_then(Value::as_array) {
+            for tc in tool_calls {
+                let Some(name) = tc.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let op = match name {
+                    "write_to_file" => RawOp::Write,
+                    "replace_file_content" | "edit" | "Edit" | "Write" => RawOp::Edit,
+                    "view_file" | "read_file" | "read" | "Read" => RawOp::Read,
+                    _ => continue,
+                };
+                let args = tc.get("args");
+                let path_val = args.and_then(|a| {
+                    a.get("TargetFile")
+                        .or_else(|| a.get("AbsolutePath"))
+                        .or_else(|| a.get("TargetFilePath"))
+                        .or_else(|| a.get("path"))
+                        .or_else(|| a.get("file_path"))
+                });
+                let Some(raw_path) = path_val else { continue };
+                let path_str = if let Some(s) = raw_path.as_str() {
+                    s.trim_matches('"').to_string()
+                } else {
+                    continue;
+                };
+                if !path_str.is_empty() {
+                    out.push(RawEvent {
+                        path: path_str,
+                        op,
+                        unix_ts,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Parse a session JSONL file into file-path tool-call events, per `dialect`.
-/// Skips any line that isn't valid JSON, doesn't match the dialect's record
-/// filter, or carries a tool-call item whose name the dialect doesn't map to
-/// a `RawOp` — never errors, since a parse failure must never break the
-/// picker (brief).
 pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -86,10 +179,12 @@ pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
                 continue;
             }
         }
-        let Some(unix_ts) = value.get("timestamp").and_then(Value::as_str) else {
-            continue;
-        };
-        let unix_ts = parse_iso8601_unix(unix_ts);
+        let unix_ts = value
+            .get("timestamp")
+            .or_else(|| value.get("created_at"))
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_unix);
+
         let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
             continue;
         };
@@ -103,7 +198,15 @@ pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
             let Some(op) = (dialect.tool_map)(name) else {
                 continue;
             };
-            let Some(path) = item.pointer(dialect.path_pointer).and_then(Value::as_str) else {
+            let path = item
+                .pointer(dialect.path_pointer)
+                .or_else(|| item.pointer("/input/path"))
+                .or_else(|| item.pointer("/input/TargetFile"))
+                .or_else(|| item.pointer("/input/target_file"))
+                .or_else(|| item.pointer("/input/filename"))
+                .or_else(|| item.pointer("/arguments/file_path"))
+                .and_then(Value::as_str);
+            let Some(path) = path else {
                 continue;
             };
             out.push(RawEvent {
@@ -161,6 +264,7 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
     let raw: Vec<RawEvent> = match agent_kind {
         "pi" => parse_session(text, &PI_DIALECT),
         "claude" => parse_session(text, &CLAUDE_DIALECT),
+        "agy" | "antigravity" | "antigravity_cli" => parse_agy_session(text),
         _ => Vec::new(),
     };
 
@@ -347,6 +451,14 @@ mod tests {
         let claude_text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
         let mined = mine_session("claude", claude_text);
         assert!(!mined.touches.is_empty());
+
+        let agy_text = "{\"created_at\":\"2026-08-30T10:00:00Z\",\"tool_calls\":[{\"name\":\"write_to_file\",\"args\":{\"TargetFile\":\"/repo/main.rs\"}},{\"name\":\"replace_file_content\",\"args\":{\"TargetFile\":\"/repo/lib.rs\"}}]}\n";
+        let mined = mine_session("agy", agy_text);
+        assert_eq!(mined.touches.len(), 2);
+        assert_eq!(mined.touches[0].path, "/repo/main.rs");
+        assert!(mined.touches[0].newly_created);
+        assert_eq!(mined.touches[1].path, "/repo/lib.rs");
+        assert!(mined.touches[1].was_edited);
 
         let mined = mine_session("codex", pi_text);
         assert!(
