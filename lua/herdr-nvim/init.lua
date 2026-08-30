@@ -8,7 +8,13 @@ local ui = require("herdr-nvim.ui")
 M.config = { prefix = "<leader>a", keymaps = true, clear_after_send = true }
 
 local function map(mode, lhs, rhs, desc)
-  if vim.fn.maparg(vim.api.nvim_replace_termcodes(lhs, true, true, true), mode) ~= "" then
+  local existing = vim.fn.maparg(vim.api.nvim_replace_termcodes(lhs, true, true, true), mode, false, true)
+  if existing.lhs then
+    -- The sidebar daemon calls setup() on VimEnter after lazy.nvim already
+    -- did. Same desc means we own the map; do not warn about ourselves.
+    if existing.desc == desc then
+      return
+    end
     vim.notify("herdr-nvim: not overriding existing map " .. lhs, vim.log.levels.WARN)
     return
   end

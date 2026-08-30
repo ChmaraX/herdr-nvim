@@ -60,6 +60,12 @@ description = "open file from agent output"
 { "ChmaraX/herdr-nvim", opts = {} }
 ```
 
+The sidebar daemon also calls `setup()` on VimEnter. LazyVim rebuilds
+`runtimepath` during startup, so the daemon cannot rely on a `--cmd`
+inject. `{ opts = {} }` is enough: the second call skips maps it
+already owns. A map owned by another plugin is left alone, with a
+warning.
+
 ## The sidebar
 
 `prefix+e` toggles it. Each tab gets its own nvim, backed by a headless

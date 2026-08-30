@@ -10,6 +10,20 @@ T.test("init: setup creates guarded keymaps", function()
   vim.keymap.del("n", " ac")
 end)
 
+T.test("init: a second setup does not warn about maps it already owns", function()
+  vim.g.mapleader = " "
+  local warns = {}
+  local orig = vim.notify
+  vim.notify = function(msg, level)
+    if level == vim.log.levels.WARN then table.insert(warns, msg) end
+  end
+  hn.setup({})
+  hn.setup({})
+  vim.notify = orig
+  T.eq(warns, {}, "second setup must not warn about its own maps")
+  T.ok(vim.fn.maparg(" al", "n") ~= "", "maps still present after the second setup")
+end)
+
 T.test("init: comment_line adds a decorated comment via stubbed input", function()
   comments.clear()
   local ui = require("herdr-nvim.ui")
