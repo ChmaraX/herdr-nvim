@@ -4,6 +4,7 @@ mod config;
 mod daemon;
 mod doctor;
 mod extract;
+mod fff;
 mod gitscan;
 mod herdr;
 mod layout;

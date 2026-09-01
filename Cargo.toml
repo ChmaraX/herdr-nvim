@@ -9,6 +9,13 @@ serde_json = "1"
 toml = "0.8"
 anyhow = "1"
 crossterm = "0.28"
+# fff-search backend for the picker's fuzzy fallback tier. Users install
+# prebuilt release binaries, so the extra dependency weight is a CI/build
+# cost, not a user-facing one.
+fff-search = "0.10.6"
+
+[[example]]
+name = "fff_cold"
 
 [dev-dependencies]
 regex = "1"

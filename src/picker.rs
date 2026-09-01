@@ -10,7 +10,7 @@
 //! capped to `handoff.max_files`; the moment the user types, matching widens
 //! to every candidate (including the repo-wide pool the bridge appended) and
 //! is ranked by a fuzzy score. The pure halves (`fuzzy_match`, `display_path`,
-//! `ellipsize_prefix`, `compute_matches`, `visible_count`, `scroll_window`,
+//! `ellipsize_prefix`, `default_view`, `visible_count`, `scroll_window`,
 //! `fmt_age`) are unit tested; the interactive loop and `render` are exercised
 //! live.
 
@@ -32,6 +32,7 @@ use crossterm::{
 use serde::{Deserialize, Serialize};
 
 use crate::candidates::Candidate;
+use crate::fff::{FffHit, FffIndex};
 
 /// Environment variable holding the path to the handoff JSON file.
 const HANDOFF_ENV: &str = "HERDR_NVIM_HANDOFF";
@@ -193,28 +194,32 @@ pub fn fmt_age(now: u64, then: u64) -> String {
     }
 }
 
-/// Build the ranked match list for `query` over `cands` (with precomputed
-/// `displays`). Empty query -> only session candidates, in their given
-/// (recency) order, unscored. Non-empty query -> fuzzy over *every* candidate,
-/// sorted by score descending then original index (which preserves recency and
-/// keeps session entries ahead of equally-scored repo-only ones). Pure, unit
-/// tested.
-pub fn compute_matches(cands: &[Candidate], displays: &[String], query: &str) -> Vec<FilterMatch> {
-    if query.is_empty() {
-        return cands
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.session)
-            .map(|(index, _)| FilterMatch {
-                index,
-                score: 0,
-                highlights: Vec::new(),
-            })
-            .collect();
-    }
+/// The default (empty-query) view: only session candidates, in their given
+/// (recency) order, unscored. Pure, unit tested.
+pub fn default_view(cands: &[Candidate]) -> Vec<FilterMatch> {
+    cands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.session)
+        .map(|(index, _)| FilterMatch {
+            index,
+            score: 0,
+            highlights: Vec::new(),
+        })
+        .collect()
+}
+
+/// Fuzzy-rank only the session (agent-touched) candidates for `query`.
+/// Always the first tier shown; the fff backend supplies the fallback tier.
+pub fn session_tier_matches(
+    cands: &[Candidate],
+    displays: &[String],
+    query: &str,
+) -> Vec<FilterMatch> {
     let mut matches: Vec<FilterMatch> = displays
         .iter()
         .enumerate()
+        .filter(|(index, _)| cands[*index].session)
         .filter_map(|(index, display)| {
             fuzzy_match(display, query).map(|(score, highlights)| FilterMatch {
                 index,
@@ -225,6 +230,62 @@ pub fn compute_matches(cands: &[Candidate], displays: &[String], query: &str) ->
         .collect();
     matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.index.cmp(&b.index)));
     matches
+}
+
+/// Append the fff repo-wide tier after the session tier, resolving each hit
+/// to its candidate index by path. Hits already in the session tier are
+/// dropped (agent tier wins); hits outside the candidate pool are skipped
+/// (the handoff protocol is index-based). Highlight spans are kept only when
+/// they land on char boundaries of the display string, otherwise dropped.
+pub fn merge_fff_tier(
+    cands: &[Candidate],
+    displays: &[String],
+    session: Vec<FilterMatch>,
+    fff_hits: Vec<FffHit>,
+) -> Vec<FilterMatch> {
+    use std::collections::{HashMap, HashSet};
+
+    let by_path: HashMap<&str, usize> = cands
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.path.as_str(), i))
+        .collect();
+    let taken: HashSet<usize> = session.iter().map(|m| m.index).collect();
+
+    let mut out = session;
+    for hit in fff_hits {
+        let Some(&index) = by_path.get(hit.path.as_str()) else {
+            continue;
+        };
+        if taken.contains(&index) {
+            continue;
+        }
+        let display = &displays[index];
+        let spans_ok = hit.highlights.iter().all(|&(s, e)| {
+            s < e
+                && e <= display.len()
+                && display.is_char_boundary(s)
+                && display.is_char_boundary(e)
+        });
+        out.push(FilterMatch {
+            index,
+            score: 0,
+            highlights: if spans_ok { hit.highlights } else { Vec::new() },
+        });
+    }
+    out
+}
+
+/// Ranked matches for a non-empty `query`: session candidates first, then
+/// the fff backend's repo-wide results appended and deduped.
+pub fn compute_matches_fff(
+    cands: &[Candidate],
+    displays: &[String],
+    query: &str,
+    fff: &FffIndex,
+) -> Vec<FilterMatch> {
+    let session = session_tier_matches(cands, displays, query);
+    merge_fff_tier(cands, displays, session, fff.search(query))
 }
 
 /// How many matches the view shows: capped to `max_files` when `query` is
@@ -269,12 +330,19 @@ pub fn picker_cmd() -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // `None` on init failure leaves the fuzzy fallback tier empty.
+    let config = crate::config::load();
+    let fff = FffIndex::open(&handoff.cwd, config.picker.frecency);
+    if fff.is_none() {
+        eprintln!("herdr-nvim: fff index failed to initialize; fuzzy fallback tier is empty");
+    }
     if let Some(chosen) = run_overlay(
         &handoff.candidates,
         &handoff.cwd,
         home.as_deref(),
         handoff.max_files,
         now,
+        fff.as_ref(),
     )? {
         handoff.chosen = Some(chosen);
         let encoded = serde_json::to_string(&handoff)?;
@@ -316,6 +384,7 @@ fn run_overlay(
     home: Option<&str>,
     max_files: u32,
     now: u64,
+    fff: Option<&FffIndex>,
 ) -> Result<Option<usize>> {
     if cands.is_empty() {
         return Ok(None);
@@ -332,7 +401,11 @@ fn run_overlay(
     let mut cursor = 0usize;
 
     loop {
-        let matches = compute_matches(cands, &displays, &query);
+        let matches = match (fff, query.is_empty()) {
+            (_, true) => default_view(cands),
+            (Some(index), false) => compute_matches_fff(cands, &displays, &query, index),
+            (None, false) => session_tier_matches(cands, &displays, &query),
+        };
         let shown = visible_count(matches.len(), &query, max_files);
         let visible = &matches[..shown];
         if cursor >= visible.len() {
@@ -785,31 +858,21 @@ mod tests {
         }
     }
 
-    // --- compute_matches --------------------------------------------------
+    // --- default_view / session_tier_matches -------------------------------
 
     #[test]
     fn empty_query_shows_only_session_candidates() {
         let cands = vec![cand("/r/a.rs"), repo_cand("/r/b.rs")];
-        let displays = displays_of(&cands, "/r");
-        let m = compute_matches(&cands, &displays, "");
+        let m = default_view(&cands);
         assert_eq!(m.len(), 1, "repo-only candidates hidden from default view");
         assert_eq!(m[0].index, 0);
-    }
-
-    #[test]
-    fn typed_query_searches_repo_candidates_too() {
-        let cands = vec![cand("/r/a.rs"), repo_cand("/r/deep/target.rs")];
-        let displays = displays_of(&cands, "/r");
-        let m = compute_matches(&cands, &displays, "target");
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].index, 1, "repo file reachable once the user types");
     }
 
     #[test]
     fn matches_sorted_by_score_desc() {
         let cands = vec![cand("/r/domain/other.rs"), cand("/r/src/main.rs")];
         let displays = displays_of(&cands, "/r");
-        let m = compute_matches(&cands, &displays, "main");
+        let m = session_tier_matches(&cands, &displays, "main");
         // main.rs (filename hit) must rank before domain/ (dir hit).
         assert_eq!(m[0].index, 1);
     }
@@ -818,7 +881,7 @@ mod tests {
     fn equal_score_breaks_toward_lower_index_recency() {
         let cands = vec![cand("/r/a/x.rs"), cand("/r/b/x.rs")];
         let displays = displays_of(&cands, "/r");
-        let m = compute_matches(&cands, &displays, "x.rs");
+        let m = session_tier_matches(&cands, &displays, "x.rs");
         assert_eq!(m[0].index, 0, "ties keep original (recency) order");
     }
 
@@ -905,5 +968,134 @@ mod tests {
         let (first, count) = scroll_window(19, 20, 5);
         assert_eq!(first, 15);
         assert_eq!(count, 5);
+    }
+
+    // --- merge_fff_tier ---------------------------------------------------
+
+    fn hit(path: &str, highlights: Vec<(usize, usize)>) -> FffHit {
+        FffHit {
+            path: path.into(),
+            highlights,
+        }
+    }
+
+    #[test]
+    fn fff_tier_appends_after_session_tier() {
+        let cands = vec![cand("/r/touched.rs"), repo_cand("/r/repo_only.rs")];
+        let displays = displays_of(&cands, "/r");
+        let session = session_tier_matches(&cands, &displays, "rs");
+        assert_eq!(session.len(), 1, "session tier only ranks session cands");
+        let merged = merge_fff_tier(
+            &cands,
+            &displays,
+            session,
+            vec![hit("/r/repo_only.rs", vec![(0, 2)])],
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].index, 0, "agent tier always first");
+        assert_eq!(merged[1].index, 1);
+    }
+
+    #[test]
+    fn fff_hits_for_session_matched_paths_are_deduped() {
+        let cands = vec![cand("/r/touched.rs")];
+        let displays = displays_of(&cands, "/r");
+        let session = session_tier_matches(&cands, &displays, "touched");
+        let merged = merge_fff_tier(
+            &cands,
+            &displays,
+            session,
+            vec![hit("/r/touched.rs", vec![(0, 7)])],
+        );
+        assert_eq!(merged.len(), 1, "no duplicate row for an agent-tier path");
+        assert_eq!(merged[0].index, 0);
+    }
+
+    #[test]
+    fn fff_hit_rescues_session_path_the_builtin_matcher_missed() {
+        // The built-in matcher can't do multi-term; fff can.
+        let cands = vec![cand("/r/cargo/config.toml")];
+        let displays = displays_of(&cands, "/r");
+        let session = session_tier_matches(&cands, &displays, "cargo toml");
+        assert!(session.is_empty(), "builtin matcher can't do multi-term");
+        let merged = merge_fff_tier(
+            &cands,
+            &displays,
+            session,
+            vec![hit("/r/cargo/config.toml", vec![(0, 5)])],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].index, 0);
+    }
+
+    #[test]
+    fn fff_hits_outside_the_candidate_pool_are_skipped() {
+        let cands = vec![cand("/r/a.rs")];
+        let displays = displays_of(&cands, "/r");
+        let merged = merge_fff_tier(
+            &cands,
+            &displays,
+            Vec::new(),
+            vec![hit("/r/not_in_handoff.rs", vec![])],
+        );
+        assert!(merged.is_empty(), "index-based handoff can't represent it");
+    }
+
+    #[test]
+    fn fff_bad_highlight_spans_are_dropped_not_rendered() {
+        let cands = vec![repo_cand("/r/a.rs")];
+        let displays = displays_of(&cands, "/r"); // display "a.rs", 4 bytes
+        let merged = merge_fff_tier(
+            &cands,
+            &displays,
+            Vec::new(),
+            vec![hit("/r/a.rs", vec![(0, 99)])],
+        );
+        assert_eq!(merged.len(), 1);
+        assert!(
+            merged[0].highlights.is_empty(),
+            "out-of-range spans dropped, row kept"
+        );
+    }
+
+    /// Indexes this repo through the real fff backend and checks the tier
+    /// contract: agent tier first, results resolved to candidate indices, deduped.
+    #[test]
+    fn fff_end_to_end_over_this_repo() {
+        let cwd = env!("CARGO_MANIFEST_DIR").to_owned();
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .arg("ls-files")
+            .output()
+            .expect("git ls-files");
+        // Session tier: picker.rs itself. Repo tier: everything tracked.
+        let mut cands = vec![cand(&format!("{cwd}/src/picker.rs"))];
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let abs = format!("{cwd}/{line}");
+            if abs != cands[0].path {
+                cands.push(repo_cand(&abs));
+            }
+        }
+        let displays = displays_of(&cands, &cwd);
+        let fff = FffIndex::open(&cwd, true).expect("fff index should open");
+
+        let matches = compute_matches_fff(&cands, &displays, "picker", &fff);
+        assert!(!matches.is_empty(), "fff found nothing for 'picker'");
+        assert_eq!(
+            matches[0].index, 0,
+            "agent-touched src/picker.rs must rank first"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for m in &matches {
+            assert!(seen.insert(m.index), "duplicate candidate in results");
+        }
+
+        // Multi-term query the built-in matcher can't do at all.
+        let multi = compute_matches_fff(&cands, &displays, "cargo toml", &fff);
+        assert!(
+            multi.iter().any(|m| displays[m.index] == "Cargo.toml"),
+            "multi-term 'cargo toml' should surface Cargo.toml via fff"
+        );
     }
 }
