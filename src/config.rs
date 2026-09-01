@@ -59,6 +59,10 @@ pub struct Picker {
     /// list, not just this capped default view.
     #[serde(default = "default_max_files")]
     pub max_files: u32,
+    /// Reuse an existing fff.nvim frecency database (`~/.cache/nvim/fff_nvim`)
+    /// for ranking, read-only via a temp copy.
+    #[serde(default = "default_true")]
+    pub frecency: bool,
 }
 
 impl Default for Picker {
@@ -66,6 +70,7 @@ impl Default for Picker {
         Self {
             scan_lines: default_scan_lines(),
             max_files: default_max_files(),
+            frecency: true,
         }
     }
 }
@@ -76,6 +81,10 @@ fn default_scan_lines() -> u32 {
 
 fn default_max_files() -> u32 {
     20
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Path to the config file. `HERDR_NVIM_CONFIG` overrides everything (used by
@@ -223,5 +232,22 @@ mod tests {
 
         let config = load();
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn frecency_defaults_to_on() {
+        let _guard = ConfigEnvGuard::new();
+
+        let config = load();
+        assert!(config.picker.frecency);
+    }
+
+    #[test]
+    fn frecency_can_be_disabled() {
+        let guard = ConfigEnvGuard::new();
+        fs::write(&guard.path, "[picker]\nfrecency = false\n").unwrap();
+
+        let config = load();
+        assert!(!config.picker.frecency);
     }
 }
