@@ -146,15 +146,21 @@ fn gather_candidates(
     cwd: &Path,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<Candidate> {
-    let exists_str = |p: &str| exists(Path::new(p));
-
-    let mined = match agent_session {
-        Some(session) if session.kind == "path" => match std::fs::read_to_string(&session.value) {
-            Ok(text) => sessions::mine_session(&session.agent, &text),
-            Err(_) => sessions::mine_session(&session.agent, ""),
-        },
-        _ => sessions::mine_session("", ""),
+    let exists_str = |p: &str| {
+        let path = Path::new(p);
+        if path.is_absolute() {
+            exists(path)
+        } else {
+            exists(&cwd.join(path))
+        }
     };
+
+    let session_text = agent_session.and_then(|s| sessions::load_session_text(s, cwd));
+    let agent_name = agent_session.map(|s| s.agent.as_str()).unwrap_or("");
+    let mined = session_text
+        .as_deref()
+        .map(|text| sessions::mine_session(agent_name, text))
+        .unwrap_or_else(|| sessions::mine_session("", ""));
 
     let toplevel = gitscan::toplevel(cwd);
     let git_dirty = toplevel
