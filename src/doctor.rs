@@ -210,14 +210,16 @@ fn check_f7(h: &mut CliHerdr, ws: &str) -> Result<String> {
         workspace: ws.to_owned(),
         tab: tab.clone(),
         focused_pane: anchor.clone(),
-        // Not exercised by this check (the trivial `true` sidebar command below
-        // needs no real cwd) -- current_dir() is a harmless, always-available
-        // placeholder.
+        // The toggle now spawns the real sidebar plugin pane (`plugin pane
+        // open --entrypoint sidebar`), which starts a per-tab nvim daemon in
+        // this cwd; current_dir() is a valid, always-available choice.
         cwd: env::current_dir().unwrap_or_default(),
     };
-    // A trivial sidebar command keeps the toggle path hermetic (no daemon needed
-    // here — D-F18/F19 exercise the daemon separately). The sidebar pane's shell
-    // stays alive so the close half of the round trip can find and close it.
+    // This check proves the layout round-trips exactly after an open+close.
+    // Since the sidebar-echo fix, `toggle` spawns the real sidebar plugin pane
+    // (and its per-tab daemon) rather than a trivial placeholder command; the
+    // pane stays alive so the close half of the round trip can find and close
+    // it. D-F18/F19 still exercise the daemon internals separately.
     maneuver::toggle(h, &ctx).context("toggle open failed")?;
     maneuver::toggle(h, &ctx).context("toggle close failed")?;
 
