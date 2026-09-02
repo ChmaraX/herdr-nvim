@@ -157,6 +157,9 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
         SidebarPosition::Left | SidebarPosition::Right => Dir::Right,
         SidebarPosition::Top | SidebarPosition::Bottom => Dir::Down,
     };
+    // Note: unlike the old `split_pane(.., 0.5, ..)`, `plugin pane open` takes
+    // no ratio, so the sidebar opens at herdr's default split (~50%). If an
+    // exact width is ever required, follow this with a `pane resize`.
     let sidebar = h.open_sidebar_pane(&plan.anchor, split_dir, &ctx.cwd, true)?;
     state_file.sidebar_pane = Some(sidebar.clone());
     state::save(&state_file)?;
