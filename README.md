@@ -54,7 +54,7 @@ command = "chmarax.herdr-nvim.pick-file"
 description = "open file from agent output"
 ```
 
-**2. The nvim plugin** (annotations), with lazy.nvim:
+**2. The nvim plugin** (annotations), with your plugin manager (e.g. lazy.nvim):
 
 ```lua
 { "ChmaraX/herdr-nvim", opts = {} }
@@ -143,8 +143,13 @@ malformed files fall back to these defaults):
 
 ```toml
 [sidebar]
-nvim_bin = "nvim"   # binary used to spawn the per-tab nvim daemon
-position = "right"   # right (default), left, top, or bottom
+nvim_bin = "nvim"     # binary used to spawn the per-tab nvim daemon
+nvim_env = []         # env overrides for that nvim, applied to the daemon,
+                      # the sidebar window, and open-file clients. For
+                      # example, nvim_env = ["NVIM_APPNAME=myapp"] runs the
+                      # sidebar under the config in ~/.config/myapp instead
+                      # of vanilla nvim (replace myapp with your app name).
+position = "right"    # right (default), left, top, or bottom
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape
@@ -152,6 +157,13 @@ max_files = 20      # session entries shown before you type a query
                     # (a typed query fuzzy-searches the whole repo, uncapped)
 frecency = true     # let fff reuse ~/.cache/nvim/fff_nvim (read-only copy)
 ```
+
+If your normal nvim config lives under a custom `NVIM_APPNAME` (any name you
+launch `nvim` with — e.g. a distro or your own config directory), set
+`sidebar.nvim_env = ["NVIM_APPNAME=myapp"]` so the sidebar's daemon and window
+run that configuration too. Without it the sidebar is vanilla nvim. The daemon
+still injects this plugin's lua over runtimepath after your config loads
+(VimEnter fallback), so annotations work under any appname.
 
 ## Troubleshooting
 

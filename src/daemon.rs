@@ -12,7 +12,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    config::Config,
+    config::{Config, Sidebar},
     herdr::{CliHerdr, Herdr},
     state::{self, tab_key},
 };
@@ -40,12 +40,17 @@ pub fn socket_path(tab: &str) -> PathBuf {
     socket_dir().join(format!("{}.sock", tab_key(tab)))
 }
 
-/// Build a `Command` invoking the configured nvim binary. Shared by every
-/// call site that talks to a daemon (health checks, `--remote-ui` attach,
-/// `--remote-send` quit, `--remote` open) so `sidebar.nvim_bin` applies
-/// uniformly, not just to spawning the daemon itself.
-pub(crate) fn nvim_cmd(nvim_bin: &str) -> Command {
-    Command::new(nvim_bin)
+/// Build a `Command` invoking the configured nvim binary with the configured
+/// environment overrides. Shared by every call site that talks to a daemon
+/// (health checks, `--remote-ui` attach, `--remote-send` quit, `--remote`
+/// open) so both `sidebar.nvim_bin` and `sidebar.nvim_env` apply uniformly,
+/// not just to spawning the daemon itself.
+pub(crate) fn nvim_cmd(sidebar: &Sidebar) -> Command {
+    let mut command = Command::new(&sidebar.nvim_bin);
+    for (key, value) in sidebar.env_override() {
+        command.env(key, value);
+    }
+    command
 }
 
 /// Ensure a per-tab headless nvim daemon is listening on its socket,
@@ -58,7 +63,7 @@ pub fn ensure_daemon(
     cwd: &Path,
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
-    if daemon_healthy(&socket, &config.sidebar.nvim_bin) {
+    if daemon_healthy(&socket, &config.sidebar) {
         return Ok(socket);
     }
 
@@ -71,11 +76,11 @@ pub fn ensure_daemon(
     // only get here after the health check failed, so any file present is dead.
     remove_socket(&socket)?;
 
-    spawn_daemon(&socket, plugin_root, &config.sidebar.nvim_bin, cwd)?;
+    spawn_daemon(&socket, plugin_root, &config.sidebar, cwd)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
-        if daemon_healthy(&socket, &config.sidebar.nvim_bin) {
+        if daemon_healthy(&socket, &config.sidebar) {
             return Ok(socket);
         }
         if Instant::now() >= deadline {
@@ -88,11 +93,12 @@ pub fn ensure_daemon(
     }
 }
 
-fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -> Result<()> {
-    // The pre-init `set rtp+=` below is not enough on its own: LazyVim (and any
-    // lazy.nvim config with the default `performance.rtp.reset = true`) rebuilds
-    // runtimepath from scratch during startup, dropping our appended path before
-    // VimEnter fires. So the VimEnter callback re-appends the plugin root to rtp
+fn spawn_daemon(socket: &Path, plugin_root: &Path, sidebar: &Sidebar, cwd: &Path) -> Result<()> {
+    // The pre-init `set rtp+=` below is not enough on its own: configs that
+    // rebuild runtimepath from scratch during startup (any plugin manager with
+    // an rtp reset, e.g. lazy.nvim's default `performance.rtp.reset = true`)
+    // drop our appended path before VimEnter fires. So the VimEnter callback
+    // re-appends the plugin root to rtp
     // *after* the user's config has loaded, then requires the plugin. The whole
     // thing stays wrapped in `pcall` so a missing/broken plugin never crashes
     // the daemon.
@@ -113,7 +119,7 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -
     // teardown can no longer reach it.
     use std::os::unix::process::CommandExt;
 
-    let mut command = nvim_cmd(nvim_bin);
+    let mut command = nvim_cmd(sidebar);
     command
         .arg("--headless")
         .arg("--listen")
@@ -153,14 +159,14 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, nvim_bin: &str, cwd: &Path) -
     Ok(())
 }
 
-fn daemon_healthy(socket: &Path, nvim_bin: &str) -> bool {
-    remote_expr(socket, "1+1", nvim_bin).as_deref() == Some("2")
+fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
+    remote_expr(socket, "1+1", sidebar).as_deref() == Some("2")
 }
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
 /// the trimmed stdout, or `None` if the daemon is unreachable.
-fn remote_expr(socket: &Path, expr: &str, nvim_bin: &str) -> Option<String> {
-    let output = nvim_cmd(nvim_bin)
+fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
+    let output = nvim_cmd(sidebar)
         .arg("--server")
         .arg(socket)
         .arg("--remote-expr")
@@ -216,7 +222,7 @@ pub fn sidebar_cmd() -> Result<()> {
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, Path::new(&cwd))?;
 
-    let error = nvim_cmd(&config.sidebar.nvim_bin)
+    let error = nvim_cmd(&config.sidebar)
         .arg("--server")
         .arg(&socket)
         .arg("--remote-ui")
@@ -247,12 +253,12 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
 pub fn gc_cmd() -> Result<()> {
     let mut herdr = CliHerdr;
     let config = crate::config::load();
-    gc(&mut herdr, &config.sidebar.nvim_bin)
+    gc(&mut herdr, &config.sidebar)
 }
 
 /// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
 /// on every toggle to reap stale per-tab daemons from closed tabs.
-pub(crate) fn gc(h: &mut dyn Herdr, nvim_bin: &str) -> Result<()> {
+pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
     let dir = socket_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -284,15 +290,15 @@ pub(crate) fn gc(h: &mut dyn Herdr, nvim_bin: &str) -> Result<()> {
         // `state::tab_key`), so it goes through `state::remove_key` rather
         // than `state::remove` -- that avoids sanitizing an already-sanitized
         // key a second time.
-        let _ = send_quit(&path, nvim_bin);
+        let _ = send_quit(&path, sidebar);
         remove_socket(&path)?;
         state::remove_key(tab_stem)?;
     }
     Ok(())
 }
 
-fn send_quit(socket: &Path, nvim_bin: &str) -> Result<()> {
-    nvim_cmd(nvim_bin)
+fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
+    nvim_cmd(sidebar)
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
@@ -395,9 +401,9 @@ mod tests {
 
     /// Best-effort daemon shutdown so no stray `nvim --headless` survives a test.
     fn stop_daemon(socket: &Path) {
-        let _ = send_quit(socket, "nvim");
+        let _ = send_quit(socket, &Sidebar::default());
         for _ in 0..50 {
-            if remote_expr(socket, "1+1", "nvim").is_none() {
+            if remote_expr(socket, "1+1", &Sidebar::default()).is_none() {
                 break;
             }
             sleep(Duration::from_millis(100));
@@ -434,15 +440,16 @@ mod tests {
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("first ensure_daemon");
         assert!(socket.exists(), "socket file should exist after spawn");
 
-        let pid1 = remote_expr(&socket, "getpid()", "nvim").expect("daemon should report a pid");
+        let pid1 =
+            remote_expr(&socket, "getpid()", &config.sidebar).expect("daemon should report a pid");
         assert!(!pid1.is_empty());
 
         let socket_again =
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("second ensure_daemon");
         assert_eq!(socket, socket_again);
 
-        let pid2 =
-            remote_expr(&socket, "getpid()", "nvim").expect("daemon should still report a pid");
+        let pid2 = remote_expr(&socket, "getpid()", &config.sidebar)
+            .expect("daemon should still report a pid");
         assert_eq!(
             pid1, pid2,
             "second ensure_daemon must reuse the daemon, not spawn a new one"
@@ -471,7 +478,7 @@ mod tests {
             list_tabs_results: VecDeque::from([Ok(vec!["wsKeep:t1".to_owned()])]),
             ..Default::default()
         };
-        gc(&mut herdr, "nvim").unwrap();
+        gc(&mut herdr, &Sidebar::default()).unwrap();
 
         assert!(socket_path("wsKeep:t1").exists(), "known tab kept");
         assert!(
@@ -484,5 +491,36 @@ mod tests {
             None => env::remove_var("HERDR_NVIM_STATE_DIR"),
         }
         drop(state_lock);
+    }
+
+    #[test]
+    fn nvim_cmd_applies_env_overrides_to_child() {
+        let sidebar = Sidebar::default();
+        let plain = nvim_cmd(&sidebar);
+        assert!(
+            plain.get_envs().all(|(key, _)| key != "NVIM_APPNAME"),
+            "default sidebar must not override the environment"
+        );
+
+        let sidebar = Sidebar {
+            nvim_env: vec![
+                "NVIM_APPNAME=myapp".to_owned(),
+                "HERDR_NVIM_EXTRA=1=2".to_owned(),
+                "garbage-entry".to_owned(), // malformed: filtered out by env_override
+            ],
+            ..Default::default()
+        };
+        let cmd = nvim_cmd(&sidebar);
+        let mut appname = None;
+        let mut extra = None;
+        for (key, value) in cmd.get_envs() {
+            match key.to_str() {
+                Some("NVIM_APPNAME") => appname = value.map(|v| v.to_string_lossy().into_owned()),
+                Some("HERDR_NVIM_EXTRA") => extra = value.map(|v| v.to_string_lossy().into_owned()),
+                _ => {}
+            }
+        }
+        assert_eq!(appname.as_deref(), Some("myapp"));
+        assert_eq!(extra.as_deref(), Some("1=2"), "value may contain an = sign");
     }
 }
