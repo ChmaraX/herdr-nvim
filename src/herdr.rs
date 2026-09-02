@@ -139,7 +139,13 @@ pub trait Herdr {
     /// Returns the new pane id. Non-interactive spawn means no shell echo of
     /// the command line in the pane (the whole reason this exists). `focus`
     /// requests the new pane be focused.
-    fn open_sidebar_pane(&mut self, anchor: &str, dir: Dir, cwd: &Path, focus: bool) -> Result<String>;
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String>;
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
@@ -296,7 +302,13 @@ impl Herdr for CliHerdr {
         Ok(string_at(&value, "/result/pane/pane_id")?.to_owned())
     }
 
-    fn open_sidebar_pane(&mut self, anchor: &str, dir: Dir, cwd: &Path, focus: bool) -> Result<String> {
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String> {
         // `herdr plugin pane open --entrypoint sidebar --placement split` runs
         // the manifest pane's command via `sh -c` (non-interactive) — no shell
         // prompt, no echoed command line. The sidebar reads its tab id from
@@ -534,7 +546,13 @@ impl Herdr for MockHerdr {
         Self::next(&mut self.split_pane_results, "split_pane")
     }
 
-    fn open_sidebar_pane(&mut self, anchor: &str, dir: Dir, cwd: &Path, focus: bool) -> Result<String> {
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String> {
         self.ops.push(format!(
             "open_sidebar {anchor} dir:{dir:?} cwd:{} focus:{focus}",
             cwd.display()
