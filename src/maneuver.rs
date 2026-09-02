@@ -73,7 +73,7 @@ fn cwd_from_context(context: &Value) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
+pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
     // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
     // closed tabs. Non-fatal -- a gc failure must never block a toggle.
     let config = crate::config::load();
@@ -93,7 +93,7 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<()> {
     }
 
     recover(h, &ctx.tab)?;
-    open(h, ctx, sidebar_cmd, config.sidebar.position)
+    open(h, ctx, config.sidebar.position)
 }
 
 /// The pane id of `tab`'s sidebar if state records it as fully Open and its
@@ -117,7 +117,7 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str, position: SidebarPosition) -> Result<()> {
+fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     let rects = h.pane_rects(&ctx.tab)?;
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
@@ -157,7 +157,10 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str, position: SidebarPositi
         SidebarPosition::Left | SidebarPosition::Right => Dir::Right,
         SidebarPosition::Top | SidebarPosition::Bottom => Dir::Down,
     };
-    let sidebar = h.split_pane(&plan.anchor, split_dir, 0.5, true)?;
+    // Note: unlike the old `split_pane(.., 0.5, ..)`, `plugin pane open` takes
+    // no ratio, so the sidebar opens at herdr's default split (~50%). If an
+    // exact width is ever required, follow this with a `pane resize`.
+    let sidebar = h.open_sidebar_pane(&plan.anchor, split_dir, &ctx.cwd, true)?;
     state_file.sidebar_pane = Some(sidebar.clone());
     state::save(&state_file)?;
 
@@ -188,7 +191,6 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str, position: SidebarPositi
         )?;
     }
 
-    h.run_in_pane(&sidebar, sidebar_cmd)?;
     for step in &plan.steps {
         h.move_pane(
             &step.pane,
@@ -249,8 +251,7 @@ pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
 pub fn toggle_cmd() -> Result<()> {
     let mut herdr = CliHerdr;
     let ctx = read_ctx(&mut herdr)?;
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
-    toggle(&mut herdr, &ctx, &sidebar_cmd)
+    toggle(&mut herdr, &ctx)
 }
 
 #[cfg(test)]
@@ -435,7 +436,7 @@ mod tests {
     fn open_on_multi_pane_tab_emits_validated_sequence() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), "exec sidebar", SidebarPosition::Right).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
             assert_eq!(
                 h.ops,
                 vec![
@@ -443,8 +444,7 @@ mod tests {
                     "create_tab wT",
                     "move wT:p2 -> tab:wT:t9 dir:Right target:- ratio:- focus:false",
                     "move wT:p3 -> tab:wT:t9 dir:Right target:- ratio:- focus:false",
-                    "split wT:p1 dir:Right ratio:0.5 focus:true",
-                    "run wT:p99 exec sidebar",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
                     "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false",
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                     "close wT:p90",
@@ -461,12 +461,12 @@ mod tests {
     fn open_on_single_pane_tab_skips_evacuation() {
         with_state_dir(|| {
             let mut h = mock_1pane();
-            open(&mut h, &ctx(), "exec sidebar", SidebarPosition::Right).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
             assert!(h.ops.iter().all(|op| !op.starts_with("create_tab")));
             assert!(h
                 .ops
                 .iter()
-                .any(|op| op.starts_with("split wT:p1") && op.ends_with("focus:true")));
+                .any(|op| op.starts_with("open_sidebar wT:p1") && op.ends_with("focus:true")));
         });
     }
 
@@ -476,22 +476,22 @@ mod tests {
             let cases = [
                 (
                     SidebarPosition::Left,
-                    "split wT:p1 dir:Right ratio:0.5 focus:true",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
                     Some("move wT:p1 -> tab:wT:t1 dir:Right target:wT:p99 ratio:0.5 focus:false"),
                 ),
                 (
                     SidebarPosition::Right,
-                    "split wT:p1 dir:Right ratio:0.5 focus:true",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
                     None,
                 ),
                 (
                     SidebarPosition::Top,
-                    "split wT:p1 dir:Down ratio:0.5 focus:true",
+                    "open_sidebar wT:p1 dir:Down cwd:/repo focus:true",
                     Some("move wT:p1 -> tab:wT:t1 dir:Down target:wT:p99 ratio:0.5 focus:false"),
                 ),
                 (
                     SidebarPosition::Bottom,
-                    "split wT:p1 dir:Down ratio:0.5 focus:true",
+                    "open_sidebar wT:p1 dir:Down cwd:/repo focus:true",
                     None,
                 ),
             ];
@@ -502,7 +502,7 @@ mod tests {
                     h.create_tab_results
                         .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                 }
-                open(&mut h, &ctx(), "exec sidebar", position).unwrap();
+                open(&mut h, &ctx(), position).unwrap();
                 assert!(
                     h.ops.iter().any(|op| op == split),
                     "{position:?}: {:?}",
@@ -538,7 +538,7 @@ mod tests {
         with_state_dir(|| {
             state::save(&open_state()).unwrap();
             let mut h = mock_with_alive_sidebar();
-            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+            toggle(&mut h, &ctx()).unwrap();
             assert_eq!(h.ops, vec!["alive wT:p99", "close wT:p99"]);
             assert!(state::load("wT:t1").unwrap().is_none());
         });
@@ -561,7 +561,7 @@ mod tests {
             let mut h = mock_3pane();
             h.pane_alive_results.push_back(Ok(true));
 
-            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+            toggle(&mut h, &ctx()).unwrap();
 
             assert_eq!(h.ops[0], "alive wT:p99");
             assert_eq!(h.ops[1], "close wT:p99");
@@ -596,7 +596,7 @@ mod tests {
             state::save(&open_state()).unwrap();
             let mut h = mock_3pane();
             h.pane_alive_results.push_front(Ok(false));
-            toggle(&mut h, &ctx(), "exec sidebar").unwrap();
+            toggle(&mut h, &ctx()).unwrap();
             assert_eq!(h.ops[0], "alive wT:p99");
             assert!(h.ops.iter().any(|op| op == "create_tab wT"));
             let state = state::load("wT:t1").unwrap().unwrap();

@@ -20,6 +20,18 @@ title = "open file"
 placement = "popup"
 command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
 
+# Full-height nvim sidebar pane. Opened programmatically by the `toggle` action
+# via `herdr plugin pane open --entrypoint sidebar --placement split`, which
+# spawns this command NON-INTERACTIVELY (sh -c, no interactive shell) so there
+# is no shell prompt/echo of the command line in the pane. The tab id comes
+# from herdr's HERDR_TAB_ID env (set for plugin panes); the cwd is the pane's
+# own cwd (set via --cwd). See daemon::sidebar_cmd.
+[[panes]]
+id = "sidebar"
+title = "nvim sidebar"
+placement = "split"
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" sidebar"]
+
 [[actions]]
 id = "pick-file"
 title = "nvim sidebar: open file from agent output"

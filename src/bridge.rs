@@ -259,8 +259,7 @@ pub(crate) fn open_in_sidebar(
     let config = config::load();
     let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
 
-    let sidebar_cmd = daemon::sidebar_shell_cmd(&ctx.tab, &ctx.cwd);
-    let sidebar = ensure_sidebar_open(h, ctx, &sidebar_cmd)?;
+    let sidebar = ensure_sidebar_open(h, ctx)?;
 
     open_in_nvim(&socket, path, line, &config.sidebar)?;
     focus_pane(&sidebar);
@@ -274,12 +273,12 @@ pub(crate) fn open_in_sidebar(
 /// Otherwise (no state, a dead sidebar, or a mid-open checkpoint) delegate to
 /// `maneuver::toggle`, which follows its own open/recover semantics and leaves
 /// a fresh sidebar in `ctx.tab`.
-fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx, sidebar_cmd: &str) -> Result<String> {
+fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx) -> Result<String> {
     if let Some(sidebar) = maneuver::live_open_sidebar(h, &ctx.tab)? {
         return Ok(sidebar);
     }
 
-    maneuver::toggle(h, ctx, sidebar_cmd)?;
+    maneuver::toggle(h, ctx)?;
     let opened = state::load(&ctx.tab)?
         .context("sidebar state missing after opening")?
         .sidebar_pane

@@ -182,45 +182,29 @@ fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
 }
 
 /// Quote `s` with single quotes, escaping any single quotes it already
-/// contains (`'` -> `'\''`) -- shared by the binary path and cwd positional
-/// args in `sidebar_shell_cmd`. `s` is always quoted unconditionally since the
-/// result is executed by a shell (`pane run`), not just displayed.
+/// contains (`'` -> `'\''`) -- used where a value is spliced into a command
+/// executed by a shell (e.g. the nvim bin in doctor's `pane run` probe), not
+/// just displayed, so it is always quoted unconditionally.
 pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Shell command a sidebar pane runs to become the nvim UI: it re-executes this
-/// binary in `sidebar` mode (see `sidebar_cmd`), passing the tab id and the
-/// workspace's cwd as positional args so the sidebar pane knows which daemon
-/// to attach to and where to spawn it (it can't rely on env, since herdr may
-/// not export either into the pane).
-pub fn sidebar_shell_cmd(tab: &str, cwd: &Path) -> String {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.into_os_string().into_string().ok())
-        .unwrap_or_else(|| "herdr-nvim".to_owned());
-    let path = shell_quote(&path);
-    let cwd = shell_quote(&cwd.display().to_string());
-    format!("exec {path} sidebar {tab} {cwd}")
-}
-
 /// Runs inside the sidebar pane: ensure the tab's daemon is up, then replace
 /// this process with `nvim --remote-ui` attached to it.
+///
+/// The pane is spawned by herdr via `plugin pane open --entrypoint sidebar`
+/// (non-interactive, no shell echo). herdr sets `HERDR_TAB_ID` for the pane so
+/// it knows which tab's daemon to attach to, and the pane's own cwd (set via
+/// `--cwd`) is where the daemon spawns.
 pub fn sidebar_cmd() -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // Positional args from `sidebar_shell_cmd` (`sidebar <tab> <cwd>`). This
-    // binary generates and consumes both ends of this invocation itself, so
-    // both are required -- no env-var fallback.
-    let tab = env::args()
-        .nth(2)
-        .context("herdr-nvim sidebar requires a tab id argument")?;
-    let cwd = env::args()
-        .nth(3)
-        .context("herdr-nvim sidebar requires a cwd argument")?;
+    let tab = env::var("HERDR_TAB_ID")
+        .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
+    let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
-    let socket = ensure_daemon(&tab, &plugin_root, &config, Path::new(&cwd))?;
+    let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
 
     let error = nvim_cmd(&config.sidebar)
         .arg("--server")

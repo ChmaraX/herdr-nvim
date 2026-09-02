@@ -1,9 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The plugin id, used for `herdr plugin pane open --entrypoint sidebar`.
+const PLUGIN_ID: &str = "chmarax.herdr-nvim";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneRect {
@@ -131,6 +134,18 @@ pub trait Herdr {
         focus: bool,
     ) -> Result<()>;
     fn split_pane(&mut self, pane: &str, dir: Dir, ratio: f64, focus: bool) -> Result<String>;
+    /// Open the sidebar as a non-interactive plugin pane split off `pane`
+    /// (`herdr plugin pane open --entrypoint sidebar --placement split`).
+    /// Returns the new pane id. Non-interactive spawn means no shell echo of
+    /// the command line in the pane (the whole reason this exists). `focus`
+    /// requests the new pane be focused.
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String>;
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
@@ -285,6 +300,39 @@ impl Herdr for CliHerdr {
             if focus { "--focus" } else { "--no-focus" },
         ]))?;
         Ok(string_at(&value, "/result/pane/pane_id")?.to_owned())
+    }
+
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String> {
+        // `herdr plugin pane open --entrypoint sidebar --placement split` runs
+        // the manifest pane's command via `sh -c` (non-interactive) — no shell
+        // prompt, no echoed command line. The sidebar reads its tab id from
+        // HERDR_TAB_ID (set by herdr for plugin panes) and its cwd from this
+        // --cwd, so no positional argv is needed.
+        let value = Self::run(&args(&[
+            "plugin",
+            "pane",
+            "open",
+            "--plugin",
+            PLUGIN_ID,
+            "--entrypoint",
+            "sidebar",
+            "--placement",
+            "split",
+            "--target-pane",
+            anchor,
+            "--direction",
+            dir.as_cli_arg(),
+            "--cwd",
+            &cwd.display().to_string(),
+            if focus { "--focus" } else { "--no-focus" },
+        ]))?;
+        Ok(string_at(&value, "/result/plugin_pane/pane/pane_id")?.to_owned())
     }
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
@@ -496,6 +544,20 @@ impl Herdr for MockHerdr {
             "split {pane} dir:{dir:?} ratio:{ratio} focus:{focus}"
         ));
         Self::next(&mut self.split_pane_results, "split_pane")
+    }
+
+    fn open_sidebar_pane(
+        &mut self,
+        anchor: &str,
+        dir: Dir,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<String> {
+        self.ops.push(format!(
+            "open_sidebar {anchor} dir:{dir:?} cwd:{} focus:{focus}",
+            cwd.display()
+        ));
+        Self::next(&mut self.split_pane_results, "open_sidebar_pane")
     }
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
