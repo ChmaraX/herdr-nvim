@@ -40,6 +40,13 @@ pub fn socket_path(tab: &str) -> PathBuf {
     socket_dir().join(format!("{}.sock", tab_key(tab)))
 }
 
+/// The workspace id embedded in a tab id. Tab ids are `<workspace>:<tab>`, so
+/// the workspace is the prefix before the first `:`. A tab id without a `:`
+/// (never expected in practice) is returned unchanged rather than panicking.
+fn workspace_of_tab(tab: &str) -> &str {
+    tab.split_once(':').map_or(tab, |(workspace, _)| workspace)
+}
+
 /// Build a `Command` invoking the configured nvim binary with the configured
 /// environment overrides. Shared by every call site that talks to a daemon
 /// (health checks, `--remote-ui` attach, `--remote-send` quit, `--remote`
@@ -76,7 +83,7 @@ pub fn ensure_daemon(
     // only get here after the health check failed, so any file present is dead.
     remove_socket(&socket)?;
 
-    spawn_daemon(&socket, plugin_root, &config.sidebar, cwd)?;
+    spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
@@ -93,7 +100,13 @@ pub fn ensure_daemon(
     }
 }
 
-fn spawn_daemon(socket: &Path, plugin_root: &Path, sidebar: &Sidebar, cwd: &Path) -> Result<()> {
+fn spawn_daemon(
+    tab: &str,
+    socket: &Path,
+    plugin_root: &Path,
+    sidebar: &Sidebar,
+    cwd: &Path,
+) -> Result<()> {
     // The pre-init `set rtp+=` below is not enough on its own: configs that
     // rebuild runtimepath from scratch during startup (any plugin manager with
     // an rtp reset, e.g. lazy.nvim's default `performance.rtp.reset = true`)
@@ -119,6 +132,17 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, sidebar: &Sidebar, cwd: &Path
     // teardown can no longer reach it.
     use std::os::unix::process::CommandExt;
 
+    // Plumb the tab's identity into the daemon explicitly. The daemon is
+    // per-tab and persistent, and it may be spawned through a plugin pane (the
+    // `pick-file` picker) whose only context is `HERDR_PLUGIN_CONTEXT_JSON` --
+    // herdr does not export the flat `HERDR_WORKSPACE_ID`/`HERDR_TAB_ID` into a
+    // plugin pane. Relying on inherited env therefore leaves the daemon (and
+    // thus `agents.lua`) with no workspace/tab scope on that path, so the agent
+    // picker opens even for an unambiguous target (issue #20). Setting them here
+    // from the tab id we already have makes scoping deterministic regardless of
+    // which pane first spawned the daemon.
+    let workspace = workspace_of_tab(tab);
+
     let mut command = nvim_cmd(sidebar);
     command
         .arg("--headless")
@@ -128,6 +152,8 @@ fn spawn_daemon(socket: &Path, plugin_root: &Path, sidebar: &Sidebar, cwd: &Path
         .arg(format!("set rtp+={}", plugin_root.display()))
         .arg("--cmd")
         .arg(&vim_enter)
+        .env("HERDR_WORKSPACE_ID", workspace)
+        .env("HERDR_TAB_ID", tab)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -405,6 +431,62 @@ mod tests {
     fn socket_path_sanitizes_colon_in_tab_id() {
         let guard = RuntimeEnvGuard::new();
         assert_eq!(socket_path("wX:t1"), guard.dir.join("wX_t1.sock"));
+    }
+
+    #[test]
+    fn workspace_of_tab_takes_the_prefix_before_the_colon() {
+        assert_eq!(workspace_of_tab("w39:t1"), "w39");
+        // Only the first colon splits; the rest belongs to the tab segment.
+        assert_eq!(workspace_of_tab("w39:t1:x"), "w39");
+        // No colon / empty: return the input unchanged rather than panicking.
+        assert_eq!(workspace_of_tab("w39"), "w39");
+        assert_eq!(workspace_of_tab(""), "");
+    }
+
+    // Regression test for issue #20: a daemon spawned through the pick-file
+    // picker inherits only HERDR_PLUGIN_CONTEXT_JSON (plugin panes get no flat
+    // vars). The daemon must still end up with HERDR_WORKSPACE_ID/HERDR_TAB_ID
+    // set from its tab id, so agents.lua can scope M.list()/resolve() and skip
+    // the picker for an unambiguous target.
+    #[test]
+    fn daemon_gets_flat_identity_even_without_inherited_flat_vars() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _guard = RuntimeEnvGuard::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
+
+        // Mimic the picker/finisher parent env: JSON blob present, flat vars
+        // absent -- exactly what the plugin pane hands down.
+        env::remove_var("HERDR_WORKSPACE_ID");
+        env::remove_var("HERDR_TAB_ID");
+        env::set_var(
+            "HERDR_PLUGIN_CONTEXT_JSON",
+            r#"{"workspace_id":"w39","tab_id":"w39:t1"}"#,
+        );
+
+        let socket =
+            ensure_daemon("w39:t1", &plugin_root, &config, &plugin_root).expect("ensure_daemon");
+
+        // What agents.lua reads inside the daemon must now be populated.
+        let ws = remote_expr(&socket, "$HERDR_WORKSPACE_ID", &config.sidebar);
+        let tab = remote_expr(&socket, "$HERDR_TAB_ID", &config.sidebar);
+
+        env::remove_var("HERDR_PLUGIN_CONTEXT_JSON");
+        stop_daemon(&socket);
+
+        assert_eq!(
+            ws.as_deref(),
+            Some("w39"),
+            "daemon must have HERDR_WORKSPACE_ID"
+        );
+        assert_eq!(
+            tab.as_deref(),
+            Some("w39:t1"),
+            "daemon must have HERDR_TAB_ID"
+        );
     }
 
     #[test]
