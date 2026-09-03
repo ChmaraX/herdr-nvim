@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0](https://github.com/ChmaraX/herdr-nvim/compare/v0.3.0...v1.0.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **picker:** use fff-search as the default fuzzy engine ([#26](https://github.com/ChmaraX/herdr-nvim/issues/26))
+
+### Features
+
+* **config:** support nvim_env overrides for the sidebar nvim ([#5](https://github.com/ChmaraX/herdr-nvim/issues/5)) ([b67f622](https://github.com/ChmaraX/herdr-nvim/commit/b67f622d674218d5601895f38872b4f8088d16e2))
+* **lua:** add :Herdr command + Lua API for annotations (non-breaking) ([#28](https://github.com/ChmaraX/herdr-nvim/issues/28)) ([db5caf9](https://github.com/ChmaraX/herdr-nvim/commit/db5caf93f44d38c684431c3bf90442ae5b9bc639))
+* **picker:** use fff-search as the default fuzzy engine ([#26](https://github.com/ChmaraX/herdr-nvim/issues/26)) ([58bad7c](https://github.com/ChmaraX/herdr-nvim/commit/58bad7c02713f28b3ddb496449007d3444d5cdf6))
+
+
+### Bug Fixes
+
+* open sidebar without shell command echo ([#19](https://github.com/ChmaraX/herdr-nvim/issues/19)) ([c851bc4](https://github.com/ChmaraX/herdr-nvim/commit/c851bc48ab497929eefec805258a887ddd3e2172))
+* plumb workspace/tab identity into the nvim daemon ([#29](https://github.com/ChmaraX/herdr-nvim/issues/29)) ([0f43813](https://github.com/ChmaraX/herdr-nvim/commit/0f438138ac1f15da359df669b68207bb0fd88fda))
+* support agent_session with kind 'id', fix relative path resolution, and add Antigravity dialect ([#22](https://github.com/ChmaraX/herdr-nvim/issues/22)) ([5e20a40](https://github.com/ChmaraX/herdr-nvim/commit/5e20a4048a461457df995cf121c1a6c39990e95b))
+
 ## [0.3.0](https://github.com/ChmaraX/herdr-nvim/compare/v0.2.1...v0.3.0) (2026-08-25)
 
 
