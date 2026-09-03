@@ -96,12 +96,27 @@ uncapped.
 
 ## Annotations
 
-| Mapping | Action |
-| --- | --- |
-| `<leader>ac` | comment the current line / visual selection |
-| `<leader>al` | list comments (float): hover to jump, `⏎` edit, `d` delete |
-| `<leader>as` | paste all comments into the agent's input |
-| `<leader>aS` | send all comments to the agent (auto-submits) |
+Each action has a default keymap and a `:Herdr` subcommand (subcommands
+tab-complete):
+
+| Keymap | Command | Action |
+| --- | --- | --- |
+| `<leader>ac` | `:Herdr comment` | comment the current line / selection (the command also takes a range: `:5,10Herdr comment`) |
+| `<leader>al` | `:Herdr list` | list comments (float): hover to jump, `⏎` edit, `d` delete |
+| `<leader>as` | `:Herdr send` | paste all comments into the agent's input |
+| `<leader>aS` | `:Herdr submit` | send all comments to the agent (auto-submits) |
+
+Keymaps are on by default (prefix `<leader>a`) and never override a map you
+already set. To bind your own, set `keymaps = false` and map the command:
+
+```lua
+require("herdr-nvim").setup({ keymaps = false })
+vim.keymap.set({ "n", "x" }, "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "Comment" })
+```
+
+Or call the Lua API directly (`comment_line`, `comment_selection`,
+`comment_range(s, e)`, `list_comments`, `send_all{ submit = false|true }`).
+See `:help herdr-nvim` for the full reference.
 
 Sending skips the picker when the target is obvious: the lone agent in the
 workspace, or the single agent sharing this tab (the sibling pane). The picker
@@ -112,8 +127,7 @@ your edits), cleared after a successful send. The sent prompt includes each
 comment's file:line plus the repo and branch, so the agent has context.
 
 For a pending-comment indicator (`● 3`) in your statusline:
-`require("herdr-nvim").statusline()` — it returns `""` when nothing is
-pending.
+`require("herdr-nvim").statusline()`.
 
 ## Config
 

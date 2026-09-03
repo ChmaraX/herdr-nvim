@@ -26,6 +26,38 @@ T.test("init: comment_line adds a decorated comment via stubbed input", function
   T.eq({ l[1].start_line, l[1].text }, { 2, "stub comment" })
 end)
 
+T.test("init: comment_selection uses the visual marks", function()
+  comments.clear()
+  local ui = require("herdr-nvim.ui")
+  local orig = ui.input_comment
+  ui.input_comment = function(cb) cb("stub sel") end
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a", "b", "c", "d" })
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_mark(b, "<", 2, 0, {})
+  vim.api.nvim_buf_set_mark(b, ">", 4, 0, {})
+  hn.comment_selection()
+  ui.input_comment = orig
+  local list = comments.list()
+  T.eq({ list[1].start_line, list[1].end_line }, { 2, 4 })
+end)
+
+T.test("init: comment_selection normalizes reversed marks", function()
+  comments.clear()
+  local ui = require("herdr-nvim.ui")
+  local orig = ui.input_comment
+  ui.input_comment = function(cb) cb("stub sel") end
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a", "b", "c", "d" })
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_mark(b, "<", 4, 0, {})
+  vim.api.nvim_buf_set_mark(b, ">", 2, 0, {})
+  hn.comment_selection()
+  ui.input_comment = orig
+  local list = comments.list()
+  T.eq({ list[1].start_line, list[1].end_line }, { 2, 4 })
+end)
+
 T.test("init: edit_comment updates text and refreshes its callout", function()
   comments.clear()
   local ui = require("herdr-nvim.ui")

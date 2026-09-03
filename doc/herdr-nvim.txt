@@ -1,0 +1,263 @@
+INTRODUCTION                                                        *herdr-nvim*
+
+herdr-nvim adds code annotations that you send to herdr agents (pi, claude,
+codex). Comment a line or a selection like a code review, list pending
+comments, then send them all to any agent in your workspace — with file:line
+and git context. The plugin is the nvim half of the herdr workspace plugin;
+the sidebar itself is provided by the herdr side.
+
+Links:
+- Repository: https://github.com/ChmaraX/herdr-nvim
+- herdr: https://herdr.dev
+
+Table of contents:
+
+1. FEATURES: What this plugin provides.                    |herdr-nvim-features|
+2. REQUIREMENTS: Plugin dependencies and setup.        |herdr-nvim-requirements|
+3. INSTALLATION: How to install the plugin.            |herdr-nvim-installation|
+4. CONFIGURATION: Options and suggested keymaps.             |herdr-nvim-config|
+5. COMMANDS: The :Herdr user command.                  |herdr-nvim-commands|
+6. HIGHLIGHTS: Highlight groups.                         |herdr-nvim-highlights|
+7. API: Public Lua functions.                                   |herdr-nvim-api|
+8. EXAMPLES: Statusline and plugin-manager setup.          |herdr-nvim-examples|
+9. DEVELOPMENT: Building and testing.                   |herdr-nvim-development|
+10. TROUBLESHOOTING: Common issues and solutions.   |herdr-nvim-troubleshooting|
+================================================================================
+FEATURES                                                   *herdr-nvim-features*
+
+An annotated block is drawn as three layers:
+
+- a solid amber rail in the sign column, one cell per line of the block
+- a subtle full-width background tint over those same lines
+- a callout above the first line naming the comment
+
+Comments are tracked with extmarks, so they follow your edits. They are
+ephemeral by design: in-memory only, cleared after a successful send.
+
+A pending-comment indicator for your statusline is provided by
+|herdr-nvim.statusline()|.
+================================================================================
+REQUIREMENTS                                           *herdr-nvim-requirements*
+
+- Neovim >= 0.10
+- herdr >= 0.7.4, running inside a herdr session
+- The `herdr` CLI available on PATH (lists agents, sends comments)
+================================================================================
+INSTALLATION                                           *herdr-nvim-installation*
+
+Install the herdr plugin for the sidebar (see the plugin README), and the
+nvim plugin with your plugin manager. With lazy.nvim:
+
+>lua
+  { "ChmaraX/herdr-nvim", opts = {} }
+<
+
+The plugin registers the |herdr-nvim-commands| command when it loads, so
+lazy.nvim can lazy-load it and declare the keymaps in the spec:
+
+>lua
+  {
+    "ChmaraX/herdr-nvim",
+    cmd = { "Herdr" },
+    keys = {
+      { "<leader>a", "", desc = "+AI", mode = { "n", "x" } },
+      { "<leader>ac", "<CMD>Herdr comment<CR>", desc = "Comment" },
+      { "<leader>ac", "<CMD>Herdr comment<CR>", mode = "x" },
+      { "<leader>al", "<CMD>Herdr list<CR>", desc = "List comments" },
+      { "<leader>as", "<CMD>Herdr send<CR>", desc = "Send to agent" },
+      { "<leader>aS", "<CMD>Herdr submit<CR>", desc = "Submit to agent" },
+    },
+    opts = {},
+  }
+<
+
+The leader-only `+AI` entry creates a which-key group; the `mode = "x"`
+`comment` entry shares one key across normal and visual mode.
+
+No plugin manager? It still works in vanilla nvim and in the herdr sidebar
+nvim, whose runtimepath the daemon injects: registration happens both from
+the runtimepath plugin script and from |herdr-nvim.setup()|.
+================================================================================
+CONFIGURATION                                                *herdr-nvim-config*
+
+Default keymaps are on. They use the `prefix` option (default `<leader>a`)
+and never override a map you already set. To bind your own instead, set
+`keymaps = false` and use the Lua API (|herdr-nvim-api|) or the user command
+(|herdr-nvim-commands|).
+
+herdr-nvim.setup({opts}) ~
+  Configure the plugin. Optional — the defaults apply without calling it.
+
+>lua
+  require("herdr-nvim").setup({
+    prefix = "<leader>a",     -- prefix for the default keymaps
+    keymaps = true,           -- set false to bind your own
+    clear_after_send = true,  -- clear comments after a successful send
+  })
+<
+
+Suggested keymaps: ~
+
+Copy-paste these into your config and adjust to taste — either bind the API
+functions directly, or bind through the command:
+
+>lua
+  local hn = require("herdr-nvim")
+  vim.keymap.set("n", "<leader>ac", function() hn.comment_line() end)
+  vim.keymap.set("x", "<leader>ac", function() hn.comment_selection() end)
+  vim.keymap.set("n", "<leader>al", function() hn.list_comments() end)
+  vim.keymap.set("n", "<leader>as", "<Cmd>Herdr send<CR>")
+  vim.keymap.set("n", "<leader>aS", "<Cmd>Herdr submit<CR>")
+<
+
+Prefer declaring keymaps in your plugin-manager spec? A lazy.nvim example
+with a which-key group lives in |herdr-nvim-installation|.
+================================================================================
+COMMANDS                                                   *herdr-nvim-commands*
+
+:Herdr {comment, list, send, submit} ~
+  Scoped command for the annotation actions, with subcommand completion.
+  The command is registered when the plugin loads; registration is
+  idempotent and happens both from the runtimepath plugin script and from
+  |herdr-nvim.setup()|, so it works under lazy.nvim, vanilla nvim, and the
+  herdr daemon's injected-runtimepath install alike.
+
+  - `comment`: Add a comment over the command range. :Herdr comment
+    targets the cursor line; :'<,'>Herdr comment targets the visual
+    selection; an explicit range like :5,10Herdr comment is honored.
+  - `list`: Open the comment list (a float). Hover jumps to the comment,
+    `⏎` edits, `d` deletes, `q`/<Esc> closes.
+  - `send`: Paste all comments into a chosen agent's input (no submit).
+  - `submit`: Paste all comments into a chosen agent's input and submit.
+
+Run :Herdr with no subcommand (or an unknown one) for an error listing
+the valid subcommands.
+================================================================================
+HIGHLIGHTS                                               *herdr-nvim-highlights*
+
+Set with `default = true`, so colourschemes may override them.
+
+                                               *herdr-nvim-HerdrNvimCommentSign*
+HerdrNvimCommentSign ~
+  The amber rail in the sign column and the callout corner. Default: bold
+  amber. Override to retheme.
+
+                                               *herdr-nvim-HerdrNvimCommentText*
+HerdrNvimCommentText ~
+  The callout text. Default: amber. Override to retheme.
+
+                                               *herdr-nvim-HerdrNvimCommentLine*
+HerdrNvimCommentLine ~
+  The background tint under an annotated block. Linked to CursorLine so it
+  tracks the active colourscheme; do not override with a fixed color.
+================================================================================
+API                                                             *herdr-nvim-api*
+
+The public API is the module returned by `require("herdr-nvim")`. All
+other modules in the plugin are private and may change.
+
+                                                            *herdr-nvim.setup()*
+herdr-nvim.setup({opts}) ~
+  Set plugin options. Optional; the defaults apply without it. Options are
+  documented in |herdr-nvim-config|. Ensures the |herdr-nvim-commands|
+  command is registered.
+  Parameters: ~
+    {opts} (`table`) Options. See |herdr-nvim-config|.
+
+                                                    *herdr-nvim.comment_range()*
+herdr-nvim.comment_range({start_line}, {end_line}) ~
+  Add a comment over a 1-indexed, inclusive line range in the current
+  buffer. Prompts for the comment text via vim.ui.input.
+  Parameters: ~
+    {start_line} (`integer`) First line of the range.
+    {end_line} (`integer`) Last line of the range (inclusive).
+
+                                                     *herdr-nvim.comment_line()*
+herdr-nvim.comment_line() ~
+  Add a comment on the current line. Equivalent to
+  |herdr-nvim.comment_range()| with the cursor line.
+
+                                                *herdr-nvim.comment_selection()*
+herdr-nvim.comment_selection() ~
+  Add a comment over the current visual selection.
+
+                                                    *herdr-nvim.list_comments()*
+herdr-nvim.list_comments() ~
+  Open the interactive comment list as a floating window. Cursor movement
+  previews (jumps the code window to) each comment; `⏎` edits, `d` deletes,
+  `q`/<Esc> closes.
+
+                                                     *herdr-nvim.edit_comment()*
+herdr-nvim.edit_comment({comment}, {on_done}) ~
+  Edit a comment's text in place and refresh its decoration. The comment
+  is briefly undecorated while editing, then re-decorated with the new text.
+  Parameters: ~
+    {comment} (`herdr.Comment`) The comment to edit.
+    {on_done} (`function|nil`) Optional callback fired when the input closes.
+
+                                                   *herdr-nvim.delete_comment()*
+herdr-nvim.delete_comment({comment}) ~
+  Remove a comment and its decoration.
+  Parameters: ~
+    {comment} (`herdr.Comment`) The comment to remove.
+
+                                                         *herdr-nvim.send_all()*
+herdr-nvim.send_all({opts}) ~
+  Send all pending comments to a chosen agent (picked via vim.ui.select),
+  preceded by the formatted prompt with file:line and git context.
+  Parameters: ~
+    {opts} (`table`) Options:
+    - `submit` (`boolean`, default false): when true, auto-submits the text
+      into the agent's input instead of just pasting it.
+
+  When |herdr-nvim.setup()| opts `clear_after_send` is true (the default),
+  comments are cleared after a successful send.
+
+                                                       *herdr-nvim.statusline()*
+herdr-nvim.statusline() ~
+  Statusline indicator for pending comments.
+  Return: ~
+    `string` `"● N"` when N comments are pending, or `""` when none.
+================================================================================
+EXAMPLES                                                   *herdr-nvim-examples*
+
+A pending-comment indicator in your statusline: ~
+
+>lua
+  -- inside your statusline component
+  { function() return require("herdr-nvim").statusline() end },
+<
+================================================================================
+DEVELOPMENT                                             *herdr-nvim-development*
+
+The nvim plugin lives under `lua/` and `plugin/`; the herdr daemon and its
+CLI under `src/`.
+
+Run the checks (Rust + headless Lua suite):
+
+>bash
+  just ci
+<
+================================================================================
+TROUBLESHOOTING                                     *herdr-nvim-troubleshooting*
+
+Run the health checks first:
+
+>vim
+  :checkhealth herdr-nvim
+<
+
+Common Issues: ~
+
+Issue: :Herdr is not recognized ~
+- For lazy-loaded installs, the command is registered when the plugin loads
+  (first keypress, or the first :Herdr with `cmd = { "Herdr" }`).
+- If a plugin manager resets 'runtimepath' and the plugin is not installed
+  in your nvim config, :Herdr exists only in the herdr sidebar nvim
+  (whose runtimepath the daemon injects).
+
+Issue: The sidebar daemon does not start ~
+- Make sure `sidebar.nvim_bin` points at a working nvim >= 0.10 (see the
+  plugin README for the herdr-side config).
+
+vim:tw=78:ts=8:et:ft=help:norl:
