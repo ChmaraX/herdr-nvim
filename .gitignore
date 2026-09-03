@@ -7,3 +7,4 @@ docs/
 /bin/
 /target/
 nvim.log
+doc/tags

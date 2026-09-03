@@ -17,6 +17,11 @@ end
 
 function M.setup(config)
   M.config = vim.tbl_deep_extend("force", M.config, config or {})
+  -- Ensure :Herdr is registered (also done from plugin/herdr-nvim.lua).
+  require("herdr-nvim.commands").register()
+  -- Default keymaps stay opt-out (keymaps = true) for backward compatibility.
+  -- Prefer the :Herdr command or the Lua API and set keymaps = false to bind
+  -- your own; see :help herdr-nvim.
   if M.config.keymaps then
     local p = M.config.prefix
     map("x", p .. "c", function() M.comment_selection() end, "herdr-nvim: comment selection")
@@ -27,7 +32,8 @@ function M.setup(config)
   end
 end
 
-local function add_comment(start_line, end_line)
+-- Range primitive behind comment_line(), comment_selection(), and :Herdr comment.
+function M.comment_range(start_line, end_line)
   local bufnr = vim.api.nvim_get_current_buf()
   ui.input_comment(function(text)
     local id = comments.add(bufnr, start_line, end_line, text)
@@ -38,12 +44,12 @@ end
 function M.comment_selection()
   vim.cmd([[execute "normal! \<esc>"]]) -- materialize '< '> marks
   local s, e = ui.visual_range()
-  add_comment(s, e)
+  M.comment_range(s, e)
 end
 
 function M.comment_line()
   local l = vim.api.nvim_win_get_cursor(0)[1]
-  add_comment(l, l)
+  M.comment_range(l, l)
 end
 
 -- Edit a comment's text in place (undecorate → edit → re-decorate so the callout
