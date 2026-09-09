@@ -308,6 +308,7 @@ fn open_in_nvim(
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
     let status = daemon::nvim_cmd(sidebar)
+        .arg("--headless")
         .arg("--server")
         .arg(socket)
         .arg("--remote")
@@ -320,6 +321,7 @@ fn open_in_nvim(
     // Jump to the line, if known.
     if let Some(line) = line {
         let status = daemon::nvim_cmd(sidebar)
+            .arg("--headless")
             .arg("--server")
             .arg(socket)
             .arg("--remote-expr")

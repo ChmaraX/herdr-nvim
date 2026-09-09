@@ -65,6 +65,12 @@ fn strip_file_url(clicked: &str) -> Option<String> {
         let slash = rest.find('/')?;
         &rest[slash..]
     };
+    #[cfg(windows)]
+    let path_part = if path_part.len() >= 3 && path_part.as_bytes()[2] == b':' {
+        &path_part[1..]
+    } else {
+        path_part
+    };
     Some(percent_decode(path_part))
 }
 
@@ -98,7 +104,7 @@ pub(crate) fn resolve_click(
     if exists(&direct) {
         return Some(direct);
     }
-    if path.starts_with('/') || path.starts_with('~') {
+    if Path::new(path).is_absolute() || path.starts_with('/') || path.starts_with('~') {
         // extract::resolve ignores cwd for absolute/~ input, so retrying
         // against the toplevel would resolve to this exact same (already
         // failed) path — skip the wasted git shell-out.

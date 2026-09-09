@@ -2,14 +2,14 @@ id = "chmarax.herdr-nvim"
 name = "herdr-nvim"
 version = "1.0.0"
 min_herdr_version = "0.7.4"
-platforms = ["macos", "linux"]
+platforms = ["macos", "linux", "windows"]
 description = "Full-height nvim sidebar with agent annotations: toggle with one key, comment code, send to any agent."
 
 [[actions]]
 id = "toggle"
 title = "nvim sidebar: toggle"
 contexts = ["pane", "workspace"]
-command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
+command = ["bin/herdr-nvim", "toggle"]
 
 # Overlay pane that renders the file picker. Opened programmatically by the
 # `pick-file` action (via `herdr plugin pane open --entrypoint picker`), which
@@ -18,7 +18,7 @@ command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 id = "picker"
 title = "open file"
 placement = "popup"
-command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
+command = ["bin/herdr-nvim", "picker"]
 
 # Full-height nvim sidebar pane. Opened programmatically by the `toggle` action
 # via `herdr plugin pane open --entrypoint sidebar --placement split`, which
@@ -30,20 +30,20 @@ command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" picker"]
 id = "sidebar"
 title = "nvim sidebar"
 placement = "split"
-command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" sidebar"]
+command = ["bin/herdr-nvim", "sidebar"]
 
 [[actions]]
 id = "pick-file"
 title = "nvim sidebar: open file from agent output"
 contexts = ["pane"]
-command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" pick-file"]
+command = ["bin/herdr-nvim", "pick-file"]
 
 # Invoked by herdr on Ctrl+click of a link_handlers match below — never bound
 # to a key or palette entry directly.
 [[actions]]
 id = "open-link"
 title = "nvim sidebar: open clicked file"
-command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open-link"]
+command = ["bin/herdr-nvim", "open-link"]
 
 # Linkify plain-text file paths in every pane's output. Conservative: requires
 # a directory segment + extension (bare `README.md` stays unlinkified to avoid
@@ -52,7 +52,7 @@ command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" open-link"
 [[link_handlers]]
 id = "file-path"
 title = "Open in nvim sidebar"
-pattern = '^~?[\w.@/()\[\]+-]+/[\w.@()\[\]+-]+\.[A-Za-z]\w*(?::\d+){0,2}$'
+pattern = '^~?[\w.@/()\[\]\\:+-]+[\\/][\w.@()\[\]\\:+-]+\.[A-Za-z]\w*(?::\d+){0,2}$'
 action = "open-link"
 
 # Agents' own OSC 8 file:// links (e.g. Claude Code's) — otherwise herdr would
@@ -65,3 +65,8 @@ action = "open-link"
 
 [[build]]
 command = ["bash", "herdr/install.sh"]
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "herdr/install.ps1"]
+platforms = ["windows"]

@@ -1,21 +1,24 @@
 use std::{
     env,
-    ffi::OsStr,
-    fs,
-    io::ErrorKind,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread::sleep,
     time::{Duration, Instant},
 };
 
+#[cfg(not(windows))]
+use std::{ffi::OsStr, fs, io::ErrorKind};
+
 use anyhow::{bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
     herdr::{CliHerdr, Herdr},
-    state::{self, tab_key},
+    state::tab_key,
 };
+
+#[cfg(not(windows))]
+use crate::state;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,7 +29,10 @@ pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Directory that holds one `<tab>.sock` per running daemon, one per tab.
 ///
 /// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
-/// XDG runtime dir, falling back to the platform temp dir.
+/// XDG runtime dir, falling back to the platform temp dir. Windows uses named
+/// pipes instead of filesystem sockets, so this directory is only used by the
+/// Unix implementation.
+#[cfg(not(windows))]
 fn socket_dir() -> PathBuf {
     env::var_os("HERDR_NVIM_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -37,7 +43,14 @@ fn socket_dir() -> PathBuf {
 }
 
 pub fn socket_path(tab: &str) -> PathBuf {
-    socket_dir().join(format!("{}.sock", tab_key(tab)))
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{}", tab_key(tab)))
+    }
+    #[cfg(not(windows))]
+    {
+        socket_dir().join(format!("{}.sock", tab_key(tab)))
+    }
 }
 
 /// The workspace id embedded in a tab id. Tab ids are `<workspace>:<tab>`, so
@@ -74,14 +87,20 @@ pub fn ensure_daemon(
         return Ok(socket);
     }
 
-    let dir = socket
-        .parent()
-        .with_context(|| format!("socket path has no parent: {}", socket.display()))?;
-    fs::create_dir_all(dir)
-        .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
-    // A stale (dead) socket file would make `nvim --listen` fail to bind. We
-    // only get here after the health check failed, so any file present is dead.
-    remove_socket(&socket)?;
+    #[cfg(not(windows))]
+    {
+        let dir = socket
+            .parent()
+            .with_context(|| format!("socket path has no parent: {}", socket.display()))?;
+        fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
+        // A stale (dead) socket file would make `nvim --listen` fail to bind.
+        // We only get here after the health check failed, so any file present
+        // is dead.
+        remove_socket(&socket)?;
+    }
+    #[cfg(windows)]
+    let _ = socket;
 
     spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
 
@@ -120,18 +139,6 @@ fn spawn_daemon(
          pcall(function() vim.opt.rtp:append({root:?}); require('herdr-nvim').setup() end) end}})",
         root = plugin_root.display().to_string()
     );
-    // The daemon must outlive the sidebar pane that spawns it (that is the whole
-    // point of a persistent per-workspace daemon). It is spawned from inside the
-    // sidebar pane's process, and when herdr closes that pane it tears down the
-    // pane's SESSION -- every process sharing the pane's controlling terminal is
-    // killed, regardless of process group or where it sits in the ppid tree
-    // (verified live: a bare child, a child in its own process group, and even a
-    // child reparented to init all die; only a process in its OWN session
-    // survives). So put the daemon in a fresh session via setsid(2) before exec,
-    // detaching it from the pane's controlling terminal so the pane-close
-    // teardown can no longer reach it.
-    use std::os::unix::process::CommandExt;
-
     // Plumb the tab's identity into the daemon explicitly. The daemon is
     // per-tab and persistent, and it may be spawned through a plugin pane (the
     // `pick-file` picker) whose only context is `HERDR_PLUGIN_CONTEXT_JSON` --
@@ -158,21 +165,7 @@ fn spawn_daemon(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: the pre_exec closure runs in the forked child after fork() and
-    // before exec(). It only calls setsid(2), which is async-signal-safe and
-    // touches no memory shared with the parent, so it is safe in this context.
-    // setsid returns -1 if the caller is already a process-group leader; a fresh
-    // fork never is, so it succeeds, but we ignore the result either way because
-    // a failure here must not abort the (otherwise valid) exec.
-    unsafe {
-        command.pre_exec(|| {
-            extern "C" {
-                fn setsid() -> i32;
-            }
-            setsid();
-            Ok(())
-        });
-    }
+    detach_command(&mut command);
     let child = command
         .spawn()
         .context("failed to spawn nvim daemon (is nvim installed?)")?;
@@ -185,6 +178,38 @@ fn spawn_daemon(
     Ok(())
 }
 
+/// Detach a child that must survive the pane process which launched it.
+pub(crate) fn detach_command(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // SAFETY: the pre_exec closure only calls setsid(2), which is
+        // async-signal-safe and does not touch shared parent state.
+        unsafe {
+            command.pre_exec(|| {
+                extern "C" {
+                    fn setsid() -> i32;
+                }
+                setsid();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // CREATE_NO_WINDOW keeps the headless daemon out of the user's console,
+        // while CREATE_NEW_PROCESS_GROUP keeps it independent from the pane's
+        // console process group. Unlike DETACHED_PROCESS, it still permits the
+        // redirected standard handles used above.
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
 fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
     remote_expr(socket, "1+1", sidebar).as_deref() == Some("2")
 }
@@ -193,6 +218,7 @@ fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
 /// the trimmed stdout, or `None` if the daemon is unreachable.
 fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
     let output = nvim_cmd(sidebar)
+        .arg("--headless")
         .arg("--server")
         .arg(socket)
         .arg("--remote-expr")
@@ -223,8 +249,6 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// it knows which tab's daemon to attach to, and the pane's own cwd (set via
 /// `--cwd`) is where the daemon spawns.
 pub fn sidebar_cmd() -> Result<()> {
-    use std::os::unix::process::CommandExt;
-
     let tab = env::var("HERDR_TAB_ID")
         .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
     let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
@@ -232,12 +256,33 @@ pub fn sidebar_cmd() -> Result<()> {
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
 
-    let error = nvim_cmd(&config.sidebar)
+    attach_remote_ui(&socket, &config.sidebar)
+}
+
+#[cfg(unix)]
+fn attach_remote_ui(socket: &Path, sidebar: &Sidebar) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let error = nvim_cmd(sidebar)
         .arg("--server")
-        .arg(&socket)
+        .arg(socket)
         .arg("--remote-ui")
         .exec();
     Err(error).context("failed to exec nvim --remote-ui")
+}
+
+#[cfg(windows)]
+fn attach_remote_ui(socket: &Path, sidebar: &Sidebar) -> Result<()> {
+    let status = nvim_cmd(sidebar)
+        .arg("--server")
+        .arg(socket)
+        .arg("--remote-ui")
+        .status()
+        .context("failed to run nvim --remote-ui")?;
+    if !status.success() {
+        bail!("nvim --remote-ui failed (exit {status})");
+    }
+    Ok(())
 }
 
 /// Locate the plugin root (the directory containing `lua/herdr-nvim`) so the
@@ -269,46 +314,59 @@ pub fn gc_cmd() -> Result<()> {
 /// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
 /// on every toggle to reap stale per-tab daemons from closed tabs.
 pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
-    let dir = socket_dir();
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err)
-                .with_context(|| format!("failed to read runtime directory {}", dir.display()))
-        }
-    };
-
-    let tabs = h.list_tabs()?;
-    let known: Vec<String> = tabs.iter().map(|tab| tab_key(tab)).collect();
-    for entry in entries {
-        let path = entry
-            .with_context(|| format!("failed to read entry in {}", dir.display()))?
-            .path();
-        if path.extension().and_then(OsStr::to_str) != Some("sock") {
-            continue;
-        }
-        let Some(tab_stem) = path.file_stem().and_then(OsStr::to_str) else {
-            continue;
-        };
-        if known.iter().any(|known_tab| known_tab == tab_stem) {
-            continue;
-        }
-
-        // Orphaned: ask the daemon (if any) to quit, then unlink socket +
-        // state. `tab_stem` is a filename component, already sanitized (see
-        // `state::tab_key`), so it goes through `state::remove_key` rather
-        // than `state::remove` -- that avoids sanitizing an already-sanitized
-        // key a second time.
-        let _ = send_quit(&path, sidebar);
-        remove_socket(&path)?;
-        state::remove_key(tab_stem)?;
+    #[cfg(windows)]
+    {
+        // Windows named pipes cannot be enumerated through read_dir. The pipe
+        // disappears with its daemon, so there is no socket cleanup to do.
+        let _ = (h, sidebar);
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(windows))]
+    {
+        let dir = socket_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to read runtime directory {}", dir.display()))
+            }
+        };
+
+        let tabs = h.list_tabs()?;
+        let known: Vec<String> = tabs.iter().map(|tab| tab_key(tab)).collect();
+        for entry in entries {
+            let path = entry
+                .with_context(|| format!("failed to read entry in {}", dir.display()))?
+                .path();
+            if path.extension().and_then(OsStr::to_str) != Some("sock") {
+                continue;
+            }
+            let Some(tab_stem) = path.file_stem().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if known.iter().any(|known_tab| known_tab == tab_stem) {
+                continue;
+            }
+
+            // Orphaned: ask the daemon (if any) to quit, then unlink socket +
+            // state. `tab_stem` is a filename component, already sanitized (see
+            // `state::tab_key`), so it goes through `state::remove_key` rather
+            // than `state::remove` -- that avoids sanitizing an already-sanitized
+            // key a second time.
+            let _ = send_quit(&path, sidebar);
+            remove_socket(&path)?;
+            state::remove_key(tab_stem)?;
+        }
+        Ok(())
+    }
 }
 
+#[cfg(any(not(windows), test))]
 fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
     nvim_cmd(sidebar)
+        .arg("--headless")
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
@@ -323,6 +381,7 @@ fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn remove_socket(socket: &Path) -> Result<()> {
     match fs::remove_file(socket) {
         Ok(()) => Ok(()),
@@ -333,11 +392,17 @@ fn remove_socket(socket: &Path) -> Result<()> {
     }
 }
 
+#[cfg(all(windows, test))]
+fn remove_socket(_socket: &Path) -> Result<()> {
+    // Named pipes are kernel objects and are removed when their owner exits.
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
         ffi::OsString,
+        fs,
         sync::{
             atomic::{AtomicUsize, Ordering},
             MutexGuard,
@@ -345,7 +410,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::herdr::MockHerdr;
+
+    #[cfg(not(windows))]
+    use crate::{herdr::MockHerdr, state};
+    #[cfg(not(windows))]
+    use std::collections::VecDeque;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -402,11 +471,23 @@ mod tests {
     }
 
     fn nvim_available() -> bool {
-        Command::new("which")
-            .arg("nvim")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        #[cfg(not(windows))]
+        {
+            return Command::new("which")
+                .arg("nvim")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false);
+        }
+
+        #[cfg(windows)]
+        {
+            return Command::new("where.exe")
+                .arg("nvim")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false);
+        }
     }
 
     /// Best-effort daemon shutdown so no stray `nvim --headless` survives a test.
@@ -423,14 +504,26 @@ mod tests {
 
     #[test]
     fn socket_path_respects_runtime_dir_override() {
-        let guard = RuntimeEnvGuard::new();
-        assert_eq!(socket_path("wsX"), guard.dir.join("wsX.sock"));
+        let _guard = RuntimeEnvGuard::new();
+        #[cfg(not(windows))]
+        assert_eq!(socket_path("wsX"), _guard.dir.join("wsX.sock"));
+        #[cfg(windows)]
+        assert_eq!(
+            socket_path("wsX"),
+            PathBuf::from(r"\\.\pipe\herdr-nvim-wsX")
+        );
     }
 
     #[test]
     fn socket_path_sanitizes_colon_in_tab_id() {
-        let guard = RuntimeEnvGuard::new();
-        assert_eq!(socket_path("wX:t1"), guard.dir.join("wX_t1.sock"));
+        let _guard = RuntimeEnvGuard::new();
+        #[cfg(not(windows))]
+        assert_eq!(socket_path("wX:t1"), _guard.dir.join("wX_t1.sock"));
+        #[cfg(windows)]
+        assert_eq!(
+            socket_path("wX:t1"),
+            PathBuf::from(r"\\.\pipe\herdr-nvim-wX_t1")
+        );
     }
 
     #[test]
@@ -504,7 +597,10 @@ mod tests {
         // too -- no need for a second temp dir just for this.
         let socket =
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("first ensure_daemon");
+        #[cfg(not(windows))]
         assert!(socket.exists(), "socket file should exist after spawn");
+        #[cfg(windows)]
+        assert!(remote_expr(&socket, "1+1", &config.sidebar).is_some());
 
         let pid1 =
             remote_expr(&socket, "getpid()", &config.sidebar).expect("daemon should report a pid");
@@ -524,6 +620,7 @@ mod tests {
         stop_daemon(&socket);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn gc_removes_orphan_sockets_and_keeps_known_tabs() {
         let guard = RuntimeEnvGuard::new();

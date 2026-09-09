@@ -751,8 +751,6 @@ fn draw_spans(
 
 /// Spawn the detached finisher that acts on the written selection.
 fn spawn_finish(handoff_path: &str) -> Result<()> {
-    use std::os::unix::process::CommandExt;
-
     let exe = std::env::current_exe().context("resolving current executable")?;
     let mut command = Command::new(exe);
     command
@@ -762,17 +760,7 @@ fn spawn_finish(handoff_path: &str) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: the pre_exec closure runs post-fork/pre-exec in the child. It only
-    // calls setsid(2), which is async-signal-safe and touches no shared memory.
-    unsafe {
-        command.pre_exec(|| {
-            extern "C" {
-                fn setsid() -> i32;
-            }
-            setsid();
-            Ok(())
-        });
-    }
+    crate::daemon::detach_command(&mut command);
     command.spawn().context("spawning finisher")?;
     Ok(())
 }

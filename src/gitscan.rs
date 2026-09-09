@@ -9,6 +9,18 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+fn absolute_git_path(toplevel: &Path, path: &str) -> String {
+    let joined = toplevel.join(path);
+    #[cfg(windows)]
+    {
+        joined.to_string_lossy().replace('/', "\\")
+    }
+    #[cfg(not(windows))]
+    {
+        joined.to_string_lossy().into_owned()
+    }
+}
+
 /// Shell out to `git -C <cwd> rev-parse --show-toplevel`. `None` if `git`
 /// fails or isn't on PATH (e.g. `cwd` isn't inside a repo).
 pub(crate) fn toplevel(cwd: &Path) -> Option<PathBuf> {
@@ -78,7 +90,7 @@ pub(crate) fn parse_ls_files_z(output: &str, toplevel: &Path) -> Vec<String> {
     output
         .split('\0')
         .filter(|entry| !entry.is_empty())
-        .map(|entry| toplevel.join(entry).to_string_lossy().into_owned())
+        .map(|entry| absolute_git_path(toplevel, entry))
         .collect()
 }
 
@@ -91,7 +103,7 @@ pub(crate) fn parse_status_porcelain(output: &str, toplevel: &Path) -> HashSet<S
         .map(|line| {
             let rest = &line[3..];
             let path = rest.rsplit(" -> ").next().unwrap_or(rest);
-            toplevel.join(path).to_string_lossy().into_owned()
+            absolute_git_path(toplevel, path)
         })
         .collect()
 }
@@ -133,7 +145,7 @@ pub(crate) fn parse_log_name_only(output: &str, toplevel: &Path) -> HashSet<Stri
                 && !line.starts_with("Date:")
                 && !line.starts_with("    ")
         })
-        .map(|line| toplevel.join(line).to_string_lossy().into_owned())
+        .map(|line| absolute_git_path(toplevel, line))
         .collect()
 }
 
@@ -198,10 +210,7 @@ pub(crate) fn parse_diff_numstat_map(output: &str, toplevel: &Path) -> HashMap<S
             let path = parts.next()?;
             let added: u32 = added_str.parse().unwrap_or(0);
             let removed: u32 = removed_str.parse().unwrap_or(0);
-            Some((
-                toplevel.join(path).to_string_lossy().into_owned(),
-                (added, removed),
-            ))
+            Some((absolute_git_path(toplevel, path), (added, removed)))
         })
         .collect()
 }
@@ -210,6 +219,14 @@ pub(crate) fn parse_diff_numstat_map(output: &str, toplevel: &Path) -> HashMap<S
 mod tests {
     use super::*;
     use std::path::Path;
+
+    fn rooted(path: &str) -> String {
+        #[cfg(windows)]
+        let path = path.replace('/', "\\");
+        #[cfg(not(windows))]
+        let path = path.to_owned();
+        Path::new(&path).to_string_lossy().into_owned()
+    }
 
     #[test]
     fn parses_modified_added_and_renamed_entries() {
@@ -221,10 +238,10 @@ mod tests {
         assert_eq!(
             paths,
             std::collections::HashSet::from([
-                "/repo/src/main.rs".to_owned(),
-                "/repo/src/new.rs".to_owned(),
-                "/repo/untracked.txt".to_owned(),
-                "/repo/src/renamed.rs".to_owned(),
+                rooted("/repo/src/main.rs"),
+                rooted("/repo/src/new.rs"),
+                rooted("/repo/untracked.txt"),
+                rooted("/repo/src/renamed.rs"),
             ])
         );
     }
@@ -237,9 +254,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "/repo/src/main.rs".to_owned(),
-                "/repo/lua/foo.lua".to_owned(),
-                "/repo/a file with spaces.txt".to_owned(),
+                rooted("/repo/src/main.rs"),
+                rooted("/repo/lua/foo.lua"),
+                rooted("/repo/a file with spaces.txt"),
             ]
         );
     }
@@ -274,9 +291,9 @@ src/c.rs
         assert_eq!(
             paths,
             HashSet::from([
-                "/repo/src/a.rs".to_owned(),
-                "/repo/src/b.rs".to_owned(),
-                "/repo/src/c.rs".to_owned(),
+                rooted("/repo/src/a.rs"),
+                rooted("/repo/src/b.rs"),
+                rooted("/repo/src/c.rs"),
             ])
         );
     }
@@ -306,9 +323,9 @@ src/c.rs
         let output = "3\t1\tsrc/a.rs\n0\t5\tsrc/b.rs\n-\t-\tassets/image.png\n";
         let map = parse_diff_numstat_map(output, Path::new("/repo"));
         assert_eq!(map.len(), 3);
-        assert_eq!(map.get("/repo/src/a.rs"), Some(&(3, 1)));
-        assert_eq!(map.get("/repo/src/b.rs"), Some(&(0, 5)));
-        assert_eq!(map.get("/repo/assets/image.png"), Some(&(0, 0)));
+        assert_eq!(map.get(&rooted("/repo/src/a.rs")), Some(&(3, 1)));
+        assert_eq!(map.get(&rooted("/repo/src/b.rs")), Some(&(0, 5)));
+        assert_eq!(map.get(&rooted("/repo/assets/image.png")), Some(&(0, 0)));
     }
 
     #[test]
