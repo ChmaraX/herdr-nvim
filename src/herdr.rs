@@ -138,14 +138,22 @@ pub trait Herdr {
     /// (`herdr plugin pane open --entrypoint sidebar --placement split`).
     /// Returns the new pane id. Non-interactive spawn means no shell echo of
     /// the command line in the pane (the whole reason this exists). `focus`
-    /// requests the new pane be focused.
+    /// requests the new pane be focused. `ready_marker` is passed to the pane
+    /// via `--env HERDR_NVIM_READY_MARKER=...` for `daemon::sidebar_cmd`'s
+    /// settle poll.
     fn open_sidebar_pane(
         &mut self,
         anchor: &str,
         dir: Dir,
         cwd: &Path,
         focus: bool,
+        ready_marker: &Path,
     ) -> Result<String>;
+    /// Re-pushes every pane's rect into its pty as a `TIOCSWINSZ` (and the
+    /// SIGWINCH that follows) via a no-op `pane resize --amount 0`, without
+    /// moving the layout: `herdr plugin pane open --placement split` inserts
+    /// the new pane but does not resync pty winsizes for it or its sibling.
+    fn sync_pane_sizes(&mut self, pane: &str) -> Result<()>;
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
@@ -308,6 +316,7 @@ impl Herdr for CliHerdr {
         dir: Dir,
         cwd: &Path,
         focus: bool,
+        ready_marker: &Path,
     ) -> Result<String> {
         // `herdr plugin pane open --entrypoint sidebar --placement split` runs
         // the manifest pane's command via `sh -c` (non-interactive) — no shell
@@ -330,9 +339,25 @@ impl Herdr for CliHerdr {
             dir.as_cli_arg(),
             "--cwd",
             &cwd.display().to_string(),
+            "--env",
+            &format!("HERDR_NVIM_READY_MARKER={}", ready_marker.display()),
             if focus { "--focus" } else { "--no-focus" },
         ]))?;
         Ok(string_at(&value, "/result/plugin_pane/pane/pane_id")?.to_owned())
+    }
+
+    fn sync_pane_sizes(&mut self, pane: &str) -> Result<()> {
+        Self::run(&args(&[
+            "pane",
+            "resize",
+            "--pane",
+            pane,
+            "--direction",
+            "left",
+            "--amount",
+            "0",
+        ]))?;
+        Ok(())
     }
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
@@ -494,6 +519,10 @@ pub struct MockHerdr {
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
     pub pane_snapshot_results: VecDeque<Result<PaneSnapshot>>,
+    /// The `ready_marker` path most recently passed to `open_sidebar_pane`,
+    /// if any; used to probe on-disk marker existence from `close_pane` and
+    /// `sync_pane_sizes`.
+    pub(crate) ready_marker_seen: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -552,12 +581,26 @@ impl Herdr for MockHerdr {
         dir: Dir,
         cwd: &Path,
         focus: bool,
+        ready_marker: &Path,
     ) -> Result<String> {
         self.ops.push(format!(
-            "open_sidebar {anchor} dir:{dir:?} cwd:{} focus:{focus}",
-            cwd.display()
+            "open_sidebar {anchor} dir:{dir:?} cwd:{} marker:{} focus:{focus}",
+            cwd.display(),
+            ready_marker.display()
         ));
+        self.ready_marker_seen = Some(ready_marker.to_path_buf());
         Self::next(&mut self.split_pane_results, "open_sidebar_pane")
+    }
+
+    fn sync_pane_sizes(&mut self, pane: &str) -> Result<()> {
+        self.ops.push(format!("sync_sizes {pane}"));
+        // The winsize resync is a geometry-affecting op, so it too must land
+        // before the ready marker (see `close_pane`).
+        if let Some(marker) = &self.ready_marker_seen {
+            self.ops
+                .push(format!("marker_exists_at_sync:{}", marker.exists()));
+        }
+        Ok(())
     }
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
@@ -567,6 +610,11 @@ impl Herdr for MockHerdr {
 
     fn close_pane(&mut self, pane: &str) -> Result<()> {
         self.ops.push(format!("close {pane}"));
+        // `maneuver::open` must write the ready marker only after every
+        // geometry-affecting op, including this close.
+        if let Some(marker) = &self.ready_marker_seen {
+            self.ops.push(format!("marker_exists_at_close:{}", marker.exists()));
+        }
         Ok(())
     }
 

@@ -1,4 +1,8 @@
-use std::{env, path::PathBuf};
+use std::{
+    env, fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -118,6 +122,10 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
 }
 
 fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
+    // Best-effort: clear out ready markers abandoned by earlier opens (see
+    // `sweep_stale_markers`) before this open adds its own.
+    state::sweep_stale_markers();
+
     let rects = h.pane_rects(&ctx.tab)?;
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
@@ -160,7 +168,22 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     // Note: unlike the old `split_pane(.., 0.5, ..)`, `plugin pane open` takes
     // no ratio, so the sidebar opens at herdr's default split (~50%). If an
     // exact width is ever required, follow this with a `pane resize`.
-    let sidebar = h.open_sidebar_pane(&plan.anchor, split_dir, &ctx.cwd, true)?;
+    //
+    // `sidebar_cmd` execs `nvim --remote-ui` as soon as its pane opens and
+    // reads its UI size from the pty at attach time, but the layout moves
+    // below still have to run after the pane exists. `ready_marker` is a
+    // nonced marker file `sidebar_cmd` polls for (with a timeout fallback),
+    // touched below once every move is done.
+    // The pid is folded into the low bits so a clock error (`unwrap_or_default`
+    // collapsing the nanos to 0) still can't collide between two opens
+    // racing on the same tab.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let nonce = (nanos << 32) | u128::from(std::process::id());
+    let ready_marker = state::ready_marker_path(&ctx.tab, nonce);
+    let sidebar = h.open_sidebar_pane(&plan.anchor, split_dir, &ctx.cwd, true, &ready_marker)?;
     state_file.sidebar_pane = Some(sidebar.clone());
     state::save(&state_file)?;
 
@@ -204,6 +227,20 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     if let Some((_, placeholder)) = parking {
         h.close_pane(&placeholder)?;
     }
+    // Every branch must end with an explicit winsize resync (see
+    // `Herdr::sync_pane_sizes`): on a single-pane tab with a Right/Bottom
+    // sidebar, `open_sidebar_pane` is the only layout-touching call, so
+    // nothing else would push a winsize. Best-effort: panes are already in
+    // their final position, so failing here must not abort before
+    // `Phase::Open` is recorded and strand a good sidebar in `recover()`.
+    let _ = h.sync_pane_sizes(&sidebar);
+    // Signal `sidebar_cmd`'s poll. Must come after every geometry-affecting
+    // step, including the placeholder close above, or the sidebar could
+    // attach before the layout is final. Best-effort: this is an advisory
+    // signal with a timeout fallback on the consumer side, so it must not
+    // abort the maneuver with the panes already moved and the placeholder
+    // never closed.
+    let _ = fs::write(&ready_marker, b"");
 
     state_file.phase = Phase::Open;
     state_file.parking_tab = None;
@@ -334,6 +371,19 @@ mod tests {
         }
     }
 
+    /// Replaces the marker path segment in mocked `open_sidebar` ops with a
+    /// fixed placeholder, since the nonce is time-seeded and unpredictable.
+    fn normalize_marker(ops: &[String]) -> Vec<String> {
+        ops.iter()
+            .map(|op| match (op.find("marker:"), op.find(" focus:")) {
+                (Some(start), Some(end)) if start < end => {
+                    format!("{}marker:<M>{}", &op[..start], &op[end..])
+                }
+                _ => op.clone(),
+            })
+            .collect()
+    }
+
     fn open_state() -> StateFile {
         StateFile {
             phase: Phase::Open,
@@ -438,22 +488,60 @@ mod tests {
             let mut h = mock_3pane();
             open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
             assert_eq!(
-                h.ops,
+                normalize_marker(&h.ops),
                 vec![
                     "rects wT:t1",
                     "create_tab wT",
                     "move wT:p2 -> tab:wT:t9 dir:Right target:- ratio:- focus:false",
                     "move wT:p3 -> tab:wT:t9 dir:Right target:- ratio:- focus:false",
-                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo marker:<M> focus:true",
                     "move wT:p2 -> tab:wT:t1 dir:Right target:wT:p1 ratio:0.4 focus:false",
                     "move wT:p3 -> tab:wT:t1 dir:Down target:wT:p2 ratio:0.3 focus:false",
                     "close wT:p90",
+                    "marker_exists_at_close:false",
+                    "sync_sizes wT:p99",
+                    "marker_exists_at_sync:false",
                 ]
             );
             let state = state::load("wT:t1").unwrap().unwrap();
             assert!(matches!(state.phase, Phase::Open));
             assert!(state.parked.is_empty());
             assert_eq!(state.sidebar_pane.as_deref(), Some("wT:p99"));
+        });
+    }
+
+    #[test]
+    fn open_writes_ready_marker_only_after_placeholder_close() {
+        with_state_dir(|| {
+            let mut h = mock_3pane();
+            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
+
+            // `close_pane` records this synthetic op itself (see MockHerdr) by
+            // checking on-disk marker existence at the moment it's called.
+            let close = h
+                .ops
+                .iter()
+                .position(|op| op == "close wT:p90")
+                .expect("placeholder must be closed");
+            assert_eq!(
+                h.ops.get(close + 1).map(String::as_str),
+                Some("marker_exists_at_close:false"),
+                "marker must not exist yet when the placeholder closes: {:?}",
+                h.ops
+            );
+
+            // The marker must exist by the time open() returns (nothing in
+            // this test consumes it).
+            let marker = h
+                .ops
+                .iter()
+                .find_map(|op| op.strip_prefix("open_sidebar wT:p1 dir:Right cwd:/repo marker:"))
+                .and_then(|rest| rest.split(' ').next())
+                .expect("open_sidebar op must record the marker path");
+            assert!(
+                PathBuf::from(marker).exists(),
+                "ready marker must exist once open() has settled the layout"
+            );
         });
     }
 
@@ -470,28 +558,91 @@ mod tests {
         });
     }
 
+    /// Every branch of `open` must end with an explicit winsize resync before
+    /// the ready marker, since a single-pane tab with a Right/Bottom sidebar
+    /// has no other layout-touching call to push one.
+    #[test]
+    fn open_syncs_pane_sizes_on_every_branch_before_the_ready_marker() {
+        for position in [
+            SidebarPosition::Left,
+            SidebarPosition::Right,
+            SidebarPosition::Top,
+            SidebarPosition::Bottom,
+        ] {
+            for panes in ["1pane", "3pane"] {
+                with_state_dir(|| {
+                    let mut h = if panes == "1pane" {
+                        mock_1pane()
+                    } else {
+                        mock_3pane()
+                    };
+                    // Left/Top round-trip the anchor through a parking tab, so
+                    // the single-pane mock needs one scripted `create_tab`.
+                    if panes == "1pane"
+                        && matches!(position, SidebarPosition::Left | SidebarPosition::Top)
+                    {
+                        h.create_tab_results
+                            .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
+                    }
+                    open(&mut h, &ctx(), position).unwrap();
+
+                    // The resync happens, on the sidebar pane, exactly once.
+                    let sync = h
+                        .ops
+                        .iter()
+                        .position(|op| op == "sync_sizes wT:p99")
+                        .unwrap_or_else(|| {
+                            panic!("{position:?}/{panes}: no winsize resync: {:?}", h.ops)
+                        });
+                    assert_eq!(
+                        h.ops.iter().filter(|op| op.starts_with("sync_sizes")).count(),
+                        1,
+                        "{position:?}/{panes}: {:?}",
+                        h.ops
+                    );
+
+                    // It is the LAST layout-affecting op...
+                    assert_eq!(
+                        sync + 2,
+                        h.ops.len(),
+                        "{position:?}/{panes}: resync must be the final op: {:?}",
+                        h.ops
+                    );
+                    // ...and the marker is not on disk yet when it runs, so
+                    // the sidebar cannot attach to the un-resized pty.
+                    assert_eq!(
+                        h.ops.get(sync + 1).map(String::as_str),
+                        Some("marker_exists_at_sync:false"),
+                        "{position:?}/{panes}: {:?}",
+                        h.ops
+                    );
+                });
+            }
+        }
+    }
+
     #[test]
     fn sidebar_position_controls_split_direction() {
         with_state_dir(|| {
             let cases = [
                 (
                     SidebarPosition::Left,
-                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo",
                     Some("move wT:p1 -> tab:wT:t1 dir:Right target:wT:p99 ratio:0.5 focus:false"),
                 ),
                 (
                     SidebarPosition::Right,
-                    "open_sidebar wT:p1 dir:Right cwd:/repo focus:true",
+                    "open_sidebar wT:p1 dir:Right cwd:/repo",
                     None,
                 ),
                 (
                     SidebarPosition::Top,
-                    "open_sidebar wT:p1 dir:Down cwd:/repo focus:true",
+                    "open_sidebar wT:p1 dir:Down cwd:/repo",
                     Some("move wT:p1 -> tab:wT:t1 dir:Down target:wT:p99 ratio:0.5 focus:false"),
                 ),
                 (
                     SidebarPosition::Bottom,
-                    "open_sidebar wT:p1 dir:Down cwd:/repo focus:true",
+                    "open_sidebar wT:p1 dir:Down cwd:/repo",
                     None,
                 ),
             ];
@@ -504,7 +655,9 @@ mod tests {
                 }
                 open(&mut h, &ctx(), position).unwrap();
                 assert!(
-                    h.ops.iter().any(|op| op == split),
+                    h.ops
+                        .iter()
+                        .any(|op| op.starts_with(split) && op.ends_with("focus:true")),
                     "{position:?}: {:?}",
                     h.ops
                 );

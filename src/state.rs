@@ -1,4 +1,9 @@
-use std::{env, fs, io::ErrorKind, path::PathBuf};
+use std::{
+    env, fs,
+    io::ErrorKind,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -50,6 +55,43 @@ fn path_for_key(key: &str) -> PathBuf {
 
 pub fn state_path(tab: &str) -> PathBuf {
     path_for_key(&tab_key(tab))
+}
+
+/// Path for the settle-handshake marker `maneuver::open` touches once layout
+/// moves are complete and `daemon::sidebar_cmd` polls for before attaching
+/// nvim's UI. `nonce` must be caller-unique per open so a marker left by an
+/// earlier, aborted open can never be mistaken for the new one's signal.
+pub fn ready_marker_path(tab: &str, nonce: u128) -> PathBuf {
+    state_dir().join(format!("{}.{nonce}.ready", tab_key(tab)))
+}
+
+/// Markers older than this are assumed abandoned: nothing was left to
+/// consume and remove them, whether `open()` crashed or the consumer's
+/// timeout path gave up before seeing them.
+const STALE_MARKER_AGE: Duration = Duration::from_secs(60);
+
+/// Best-effort removal of `*.ready` marker files older than
+/// `STALE_MARKER_AGE`, so leaked markers don't accumulate in the state dir.
+pub fn sweep_stale_markers() {
+    let Ok(entries) = fs::read_dir(state_dir()) else {
+        return;
+    };
+    let Some(cutoff) = SystemTime::now().checked_sub(STALE_MARKER_AGE) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("ready") {
+            continue;
+        }
+        let is_stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if is_stale {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 pub fn load(tab: &str) -> Result<Option<StateFile>> {
@@ -183,6 +225,30 @@ mod tests {
         with_state_dir(|| {
             let path = state_path("wX:t1");
             assert_eq!(path.file_name().unwrap(), "wX_t1.json");
+        });
+    }
+
+    #[test]
+    fn sweep_stale_markers_removes_old_but_keeps_fresh() {
+        with_state_dir(|| {
+            let stale = ready_marker_path("wT:t1", 1);
+            let fresh = ready_marker_path("wT:t1", 2);
+            fs::create_dir_all(stale.parent().unwrap()).unwrap();
+            fs::write(&stale, b"").unwrap();
+            fs::write(&fresh, b"").unwrap();
+            let old_time =
+                std::time::SystemTime::now() - (STALE_MARKER_AGE + Duration::from_secs(1));
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&stale)
+                .unwrap()
+                .set_modified(old_time)
+                .unwrap();
+
+            sweep_stale_markers();
+
+            assert!(!stale.exists(), "stale marker should have been swept");
+            assert!(fresh.exists(), "fresh marker should have been kept");
         });
     }
 }
