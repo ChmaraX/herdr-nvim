@@ -10,11 +10,17 @@ mod herdr;
 mod layout;
 mod maneuver;
 mod openlink;
+mod path;
 mod picker;
 mod sessions;
 mod state;
 
 fn main() {
+    // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
+    // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
+    // Must happen before anything spawns a child or a thread.
+    path::augment_path();
+
     let mode = std::env::args().nth(1).unwrap_or_default();
     let code = match mode.as_str() {
         "toggle" => run(maneuver::toggle_cmd),

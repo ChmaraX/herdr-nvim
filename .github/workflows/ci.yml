@@ -16,3 +16,30 @@ jobs:
           version: stable
       - uses: extractions/setup-just@v2
       - run: just ci
+
+  # Windows uses named pipes instead of filesystem sockets and a different
+  # process-detach path, so it needs its own job. Crucially, `cargo test` here
+  # runs `ensure_daemon_spawns_then_is_idempotent_against_real_nvim`, which
+  # spawns a real headless nvim daemon over a `\\.\pipe\...` named pipe and
+  # health-checks it — the runtime smoke test for the Windows daemon path.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      # Runs the whole suite, including the #[cfg(windows)] unit tests
+      # (named-pipe socket_path, Windows drive-path extraction) and the real
+      # nvim named-pipe daemon health check.
+      - name: cargo test
+        run: cargo test
+      # Same Lua test surface the Linux job exercises, on Windows nvim.
+      - name: lua tests
+        run: nvim --headless --noplugin -u NONE -l tests/run.lua
