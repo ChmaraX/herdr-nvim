@@ -76,33 +76,43 @@ fn trim_edges(s: &str) -> &str {
     s.trim_matches(|c: char| !is_path_char(c))
 }
 
+/// Peel one trailing `:<digits>` group off `s`, returning the remainder and the
+/// parsed number, or `None` if the tail after the last `:` is not all digits.
+fn strip_trailing_number(s: &str) -> Option<(&str, u32)> {
+    let colon = s.rfind(':')?;
+    let tail = &s[colon + 1..];
+    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((&s[..colon], tail.parse().ok()?))
+}
+
 /// Decide whether `tok` is path-shaped and split off any trailing line number.
 ///
 /// Returns `(path, line)` on success. Applies an extension-or-slash heuristic so
 /// prose like `and/or` is ignored while `src/main.rs` is kept.
 pub(crate) fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
-    // Parse numeric suffixes from the right so a Windows drive prefix such as
-    // `C:` is not mistaken for a line separator.
-    let (path, line) = if let Some(last_colon) = tok.rfind(':') {
-        let line_or_col = &tok[last_colon + 1..];
-        if line_or_col.bytes().all(|b| b.is_ascii_digit()) && !line_or_col.is_empty() {
-            let before_last = &tok[..last_colon];
-            if let Some(line_colon) = before_last.rfind(':') {
-                let line_text = &before_last[line_colon + 1..];
-                if line_text.bytes().all(|b| b.is_ascii_digit()) && !line_text.is_empty() {
-                    (&before_last[..line_colon], line_text.parse::<u32>().ok())
-                } else {
-                    (before_last, line_or_col.parse::<u32>().ok())
-                }
-            } else {
-                (before_last, line_or_col.parse::<u32>().ok())
-            }
+    // A `scheme://` token is a URL, not a file path (`file://` links are handled
+    // by the open-link handler, other URLs go to the browser). The old
+    // split-on-first-colon parse rejected these implicitly; the right-to-left
+    // parse below would otherwise accept `http://host/x.rs` as a path.
+    if tok.contains("://") {
+        return None;
+    }
+    // Peel numeric suffixes from the right (`path:line:col` -> `path`, line) so a
+    // Windows drive prefix such as `C:` is never mistaken for a line separator.
+    let (mut path, mut line) = (tok, None);
+    if let Some((rest, first)) = strip_trailing_number(path) {
+        if let Some((rest2, real_line)) = strip_trailing_number(rest) {
+            // `path:line:col` — `first` was the column, keep the line.
+            path = rest2;
+            line = Some(real_line);
         } else {
-            (tok, None)
+            // `path:line` — `first` was the line.
+            path = rest;
+            line = Some(first);
         }
-    } else {
-        (tok, None)
-    };
+    }
 
     // Must look like a path: contain a separator and either be absolute /
     // home-relative, an explicit `./`|`../` reference, or carry a file
@@ -216,6 +226,24 @@ mod tests {
     fn drops_nonexistent() {
         let c = extract("/tmp/ghost.rs", Path::new("/"), &|_| false);
         assert!(c.is_empty());
+    }
+
+    #[test]
+    fn ignores_scheme_urls() {
+        // A bare http(s) URL is not a file path candidate, even though its final
+        // segment carries an extension.
+        assert_eq!(parse_token("http://foo/bar.rs"), None);
+        assert_eq!(parse_token("https://example.com/a/b.py:12"), None);
+        // A real path is still parsed, including line:col.
+        assert_eq!(
+            parse_token("src/main.rs:42:7"),
+            Some(("src/main.rs", Some(42)))
+        );
+        assert_eq!(
+            parse_token("src/main.rs:42"),
+            Some(("src/main.rs", Some(42)))
+        );
+        assert_eq!(parse_token("src/main.rs"), Some(("src/main.rs", None)));
     }
 
     #[test]
