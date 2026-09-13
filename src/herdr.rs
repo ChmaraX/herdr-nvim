@@ -347,6 +347,15 @@ impl Herdr for CliHerdr {
     }
 
     fn sync_pane_sizes(&mut self, pane: &str) -> Result<()> {
+        // The load-bearing effect here is the `TIOCSWINSZ` herdr re-pushes for
+        // the resized pane and its sibling, not the SIGWINCH that follows it:
+        // with the ready-marker handshake, nvim attaches only after this call,
+        // so the size is already correct at attach time and the signal is a
+        // happy-path no-op. Do not "simplify" by dropping the resize.
+        //
+        // `--direction`/`--amount` are arbitrary under `--amount 0`: the resize
+        // moves no border (herdr reports `changed:false`), so `left` is just a
+        // required-arg placeholder and the pane argument is what matters.
         Self::run(&args(&[
             "pane",
             "resize",
@@ -532,6 +541,15 @@ impl MockHerdr {
             .pop_front()
             .unwrap_or_else(|| Err(anyhow!("no scripted response for {operation}")))
     }
+
+    /// Records `{label}:{exists}` for the most recent ready marker, so tests
+    /// can assert `maneuver::open` writes it only after every geometry op.
+    /// No-op until `open_sidebar_pane` has recorded a marker path.
+    fn probe_marker(&mut self, label: &str) {
+        if let Some(marker) = &self.ready_marker_seen {
+            self.ops.push(format!("{label}:{}", marker.exists()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -596,10 +614,7 @@ impl Herdr for MockHerdr {
         self.ops.push(format!("sync_sizes {pane}"));
         // The winsize resync is a geometry-affecting op, so it too must land
         // before the ready marker (see `close_pane`).
-        if let Some(marker) = &self.ready_marker_seen {
-            self.ops
-                .push(format!("marker_exists_at_sync:{}", marker.exists()));
-        }
+        self.probe_marker("marker_exists_at_sync");
         Ok(())
     }
 
@@ -612,9 +627,7 @@ impl Herdr for MockHerdr {
         self.ops.push(format!("close {pane}"));
         // `maneuver::open` must write the ready marker only after every
         // geometry-affecting op, including this close.
-        if let Some(marker) = &self.ready_marker_seen {
-            self.ops.push(format!("marker_exists_at_close:{}", marker.exists()));
-        }
+        self.probe_marker("marker_exists_at_close");
         Ok(())
     }
 
