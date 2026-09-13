@@ -595,7 +595,10 @@ mod tests {
                             panic!("{position:?}/{panes}: no winsize resync: {:?}", h.ops)
                         });
                     assert_eq!(
-                        h.ops.iter().filter(|op| op.starts_with("sync_sizes")).count(),
+                        h.ops
+                            .iter()
+                            .filter(|op| op.starts_with("sync_sizes"))
+                            .count(),
                         1,
                         "{position:?}/{panes}: {:?}",
                         h.ops
