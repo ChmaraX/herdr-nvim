@@ -1,13 +1,15 @@
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread::sleep,
     time::{Duration, Instant},
 };
 
+// `fs` is used cross-platform by `wait_for_layout_ready`; `OsStr`/`ErrorKind`
+// are only needed by the Unix filesystem-socket code.
 #[cfg(not(windows))]
-use std::{ffi::OsStr, fs, io::ErrorKind};
+use std::{ffi::OsStr, io::ErrorKind};
 
 use anyhow::{bail, Context, Result};
 
@@ -22,6 +24,11 @@ use crate::state;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
+
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+// Short: only waits out the tail of an already-in-flight `maneuver::open`,
+// never a fresh operation, so a stale size is preferable to a hung-looking pane.
+const READY_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -255,6 +262,7 @@ pub fn sidebar_cmd() -> Result<()> {
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
+    wait_for_layout_ready();
 
     attach_remote_ui(&socket, &config.sidebar)
 }
@@ -283,6 +291,25 @@ fn attach_remote_ui(socket: &Path, sidebar: &Sidebar) -> Result<()> {
         bail!("nvim --remote-ui failed (exit {status})");
     }
     Ok(())
+}
+
+/// Blocks until `maneuver::open` signals layout is settled via
+/// `HERDR_NVIM_READY_MARKER`, or `READY_POLL_TIMEOUT` elapses; a no-op if
+/// the env var is unset, so this can never turn into an unconditional stall.
+fn wait_for_layout_ready() {
+    let Some(marker) = env::var_os("HERDR_NVIM_READY_MARKER").map(PathBuf::from) else {
+        return;
+    };
+    let deadline = Instant::now() + READY_POLL_TIMEOUT;
+    while !marker.exists() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        sleep(READY_POLL_INTERVAL);
+    }
+    // Removal is best-effort: a leftover marker is nonced, unreachable by
+    // later opens, and collected by `state::sweep_stale_markers`.
+    let _ = fs::remove_file(&marker);
 }
 
 /// Locate the plugin root (the directory containing `lua/herdr-nvim`) so the
