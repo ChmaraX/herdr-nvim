@@ -1,8 +1,8 @@
--- :Herdr user command with scoped subcommands (comment/list/send/submit) and
--- completions. Private module; the public API lives in herdr-nvim.init.
+-- :Herdr user command with scoped subcommands (comment/list/send/submit/ref)
+-- and completions. Private module; the public API lives in herdr-nvim.init.
 local M = {}
 
-local subcommands = { "comment", "list", "send", "submit" }
+local subcommands = { "comment", "list", "send", "submit", "ref" }
 
 -- Idempotent: delete-then-create also replaces lazy.nvim's `cmd` placeholder.
 function M.register()
@@ -12,7 +12,7 @@ function M.register()
   end, {
     nargs = "?",
     range = true,
-    desc = "herdr-nvim: comment, list, send, or submit code annotations",
+    desc = "herdr-nvim: comment, list, send, or submit code annotations; reference a line range",
     complete = function(arg_lead, cmdline)
       return require("herdr-nvim.commands").complete(arg_lead, cmdline)
     end,
@@ -35,13 +35,15 @@ function M.complete(arg_lead, cmdline)
     :totable()
 end
 
--- Dispatch a subcommand; `comment` honors the command range (cursor line by
--- default, or :'<,'>/:5,10 when given).
+-- Dispatch a subcommand; `comment` and `ref` honor the command range (cursor
+-- line by default, or :'<,'>/:5,10 when given).
 function M.run(opts)
   local hn = require("herdr-nvim")
   local sub = opts.fargs[1]
   if sub == "comment" then
     hn.comment_range(opts.line1, opts.line2)
+  elseif sub == "ref" then
+    hn.ref_range(opts.line1, opts.line2)
   elseif sub == "list" then
     hn.list_comments()
   elseif sub == "send" then

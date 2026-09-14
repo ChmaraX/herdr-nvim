@@ -31,3 +31,22 @@ T.test("prompt: multiple comments numbered, snippet capped at 3 lines, header co
   T.ok(s:find("2. b.rs:2-3", 1, true))
   T.ok(s:find("   Comment: c2", 1, true))
 end)
+
+T.test("prompt: format_ref is a bare citation ending in a space", function()
+  local s = prompt.format_ref({ file = "/repo/lua/init.lua", start_line = 5, end_line = 10 }, { cwd = "/repo" })
+  T.eq(s, "lua/init.lua:5-10 ")
+  T.ok(not s:find("`", 1, true), "a ref carries no code")
+  T.ok(not s:find("Comment:", 1, true), "a ref carries no comment")
+end)
+
+T.test("prompt: format_ref collapses a single line", function()
+  T.eq(prompt.format_ref({ file = "/repo/a.rs", start_line = 7, end_line = 7 }, { cwd = "/repo" }), "a.rs:7 ")
+end)
+
+T.test("prompt: _relpath shortens against the cwd, keeps outside paths absolute", function()
+  T.eq(prompt._relpath("/repo/lua/init.lua", "/repo"), "lua/init.lua")
+  T.eq(prompt._relpath("/repo/lua/init.lua", "/repo/"), "lua/init.lua", "trailing slash tolerated")
+  T.eq(prompt._relpath("/elsewhere/x.lua", "/repo"), "/elsewhere/x.lua", "outside the cwd stays absolute")
+  T.eq(prompt._relpath("/repo-other/x.lua", "/repo"), "/repo-other/x.lua", "prefix must end at a separator")
+  T.eq(prompt._relpath("/repo/x.lua", ""), "/repo/x.lua", "no cwd known → unchanged")
+end)

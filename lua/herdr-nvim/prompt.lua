@@ -18,4 +18,31 @@ function M.format(items, opts)
   return table.concat(lines, "\n")
 end
 
+-- `file` shortened against the agent's cwd, so a reference reads as a path you
+-- would type ("lua/herdr-nvim/init.lua"), not a wall of home directory. A file
+-- outside the agent's cwd keeps its absolute path -- it is the only spelling
+-- that still resolves from there.
+function M._relpath(file, cwd)
+  if not cwd or cwd == "" then
+    return file
+  end
+  local prefix = cwd:gsub("/$", "") .. "/"
+  if file:sub(1, #prefix) == prefix then
+    return file:sub(#prefix + 1)
+  end
+  return file
+end
+
+-- A bare file:line citation for dropping into a half-typed message: no header,
+-- no code, no git context. Ends with a space so the sentence carries on where
+-- the reference stops.
+function M.format_ref(item, opts)
+  opts = opts or {}
+  local path = M._relpath(item.file, opts.cwd)
+  if item.start_line == item.end_line then
+    return string.format("%s:%d ", path, item.start_line)
+  end
+  return string.format("%s:%d-%d ", path, item.start_line, item.end_line)
+end
+
 return M

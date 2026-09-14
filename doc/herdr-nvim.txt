@@ -3,8 +3,10 @@ INTRODUCTION                                                        *herdr-nvim*
 herdr-nvim adds code annotations that you send to herdr agents (pi, claude,
 codex). Comment a line or a selection like a code review, list pending
 comments, then send them all to any agent in your workspace — with file:line
-and git context. The plugin is the nvim half of the herdr workspace plugin;
-the sidebar itself is provided by the herdr side.
+and git context. Or send nothing but a file:line reference, dropped into a
+message you are still typing (|herdr-nvim.ref_range()|). The plugin is the
+nvim half of the herdr workspace plugin; the sidebar itself is provided by the
+herdr side.
 
 Links:
 - Repository: https://github.com/ChmaraX/herdr-nvim
@@ -36,6 +38,13 @@ ephemeral by design: in-memory only, cleared after a successful send.
 
 A pending-comment indicator for your statusline is provided by
 |herdr-nvim.statusline()|.
+
+A reference is the lighter half: just `path:12-20` and a trailing space, with
+no comment, no code and no decoration, for naming a location in the middle of
+a message you are already typing. The path is shortened against the cwd of the
+agent that receives it; a file outside that cwd keeps its absolute path. A
+single line collapses to `path:12`. A reference never submits, and never
+touches the pending comments.
 ================================================================================
 REQUIREMENTS                                           *herdr-nvim-requirements*
 
@@ -66,13 +75,15 @@ lazy.nvim can lazy-load it and declare the keymaps in the spec:
       { "<leader>al", "<CMD>Herdr list<CR>", desc = "List comments" },
       { "<leader>as", "<CMD>Herdr send<CR>", desc = "Send to agent" },
       { "<leader>aS", "<CMD>Herdr submit<CR>", desc = "Submit to agent" },
+      { "<leader>ai", "<CMD>Herdr ref<CR>", desc = "Reference lines" },
+      { "<leader>ai", "<CMD>Herdr ref<CR>", mode = "x" },
     },
     opts = {},
   }
 <
 
 The leader-only `+AI` entry creates a which-key group; the `mode = "x"`
-`comment` entry shares one key across normal and visual mode.
+entries share one key across normal and visual mode.
 
 No plugin manager? It still works in vanilla nvim and in the herdr sidebar
 nvim, whose runtimepath the daemon injects: registration happens both from
@@ -108,6 +119,8 @@ functions directly, or bind through the command:
   vim.keymap.set("n", "<leader>al", function() hn.list_comments() end)
   vim.keymap.set("n", "<leader>as", "<Cmd>Herdr send<CR>")
   vim.keymap.set("n", "<leader>aS", "<Cmd>Herdr submit<CR>")
+  vim.keymap.set("n", "<leader>ai", function() hn.ref_line() end)
+  vim.keymap.set("x", "<leader>ai", function() hn.ref_selection() end)
 <
 
 Prefer declaring keymaps in your plugin-manager spec? A lazy.nvim example
@@ -115,7 +128,7 @@ with a which-key group lives in |herdr-nvim-installation|.
 ================================================================================
 COMMANDS                                                   *herdr-nvim-commands*
 
-:Herdr {comment, list, send, submit} ~
+:Herdr {comment, list, send, submit, ref} ~
   Scoped command for the annotation actions, with subcommand completion.
   The command is registered when the plugin loads; registration is
   idempotent and happens both from the runtimepath plugin script and from
@@ -129,6 +142,10 @@ COMMANDS                                                   *herdr-nvim-commands*
     `⏎` edits, `d` deletes, `q`/<Esc> closes.
   - `send`: Paste all comments into a chosen agent's input (no submit).
   - `submit`: Paste all comments into a chosen agent's input and submit.
+  - `ref`: Send a bare `path:line` reference for the command range to a
+    chosen agent — no comment, no code, never a submit. :Herdr ref targets
+    the cursor line; :'<,'>Herdr ref the visual selection; an explicit
+    range like :5,10Herdr ref is honored.
 
 Run :Herdr with no subcommand (or an unknown one) for an error listing
 the valid subcommands.
@@ -212,6 +229,30 @@ herdr-nvim.send_all({opts}) ~
 
   When |herdr-nvim.setup()| opts `clear_after_send` is true (the default),
   comments are cleared after a successful send.
+
+                                                        *herdr-nvim.ref_range()*
+herdr-nvim.ref_range({start_line}, {end_line}) ~
+  Send a bare `path:line` reference for a 1-indexed, inclusive line range to
+  an agent, with a trailing space and nothing else: no comment, no code, no
+  git context. A single-line range collapses to `path:12`. The path is
+  shortened against the cwd of the agent that receives it; a file outside
+  that cwd keeps its absolute path. Never submits, and never touches pending
+  comments. A buffer with no file name is refused with a warning; a buffer
+  with unsaved changes warns (the agent reads the file on disk) but still
+  sends.
+  Parameters: ~
+    {start_line} (`integer`) First line of the range.
+    {end_line} (`integer`) Last line of the range (inclusive).
+
+                                                         *herdr-nvim.ref_line()*
+herdr-nvim.ref_line() ~
+  Reference the current line. Equivalent to |herdr-nvim.ref_range()| with the
+  cursor line.
+
+                                                    *herdr-nvim.ref_selection()*
+herdr-nvim.ref_selection() ~
+  Reference the current visual selection. Equivalent to
+  |herdr-nvim.ref_range()| over the visual marks.
 
                                                        *herdr-nvim.statusline()*
 herdr-nvim.statusline() ~

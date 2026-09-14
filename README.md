@@ -21,6 +21,8 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 - **Code annotations you send to the agent.** Comment lines or a selection
   like a code review. Then send them all to any agent in the workspace (pi,
   claude, codex), with file:line and git context.
+- **Inline file:line references.** Mid-sentence, drop a bare `path:12-20` into
+  the agent's input — no comment, no code — and carry on typing.
 
 ## Requirements
 
@@ -114,6 +116,7 @@ tab-complete):
 | `<leader>al` | `:Herdr list` | list comments (float): hover to jump, `⏎` edit, `d` delete |
 | `<leader>as` | `:Herdr send` | paste all comments into the agent's input |
 | `<leader>aS` | `:Herdr submit` | send all comments to the agent (auto-submits) |
+| `<leader>ai` | `:Herdr ref` | reference the current line / selection at the agent's cursor (also takes a range: `:5,10Herdr ref`) |
 
 Keymaps are on by default (prefix `<leader>a`) and never override a map you
 already set. To bind your own, set `keymaps = false` and map the command:
@@ -124,12 +127,29 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "C
 ```
 
 Or call the Lua API directly (`comment_line`, `comment_selection`,
-`comment_range(s, e)`, `list_comments`, `send_all{ submit = false|true }`).
+`comment_range(s, e)`, `list_comments`, `send_all{ submit = false|true }`,
+`ref_line`, `ref_selection`, `ref_range(s, e)`).
 See `:help herdr-nvim` for the full reference.
 
 Sending skips the picker when the target is obvious: the lone agent in the
 workspace, or the single agent sharing this tab (the sibling pane). The picker
 only appears when two or more agents could plausibly be meant.
+
+## References
+
+Not every hand-off is a review. `<leader>ai` (or `:Herdr ref`) sends nothing but
+the citation — `lua/herdr-nvim/init.lua:118-141`, with a trailing space — so you
+can fire it in the middle of a half-typed message and keep going. No comment to
+write, no code to paste, and it never submits.
+
+The path is shortened against the cwd of the agent that actually receives it, so
+it reads like a path you would type; a file outside that cwd keeps its absolute
+path, the only spelling that still resolves from there. A single line collapses
+to `path:12`.
+
+A reference points at the file on disk, so if the buffer has unsaved changes you
+get a warning saying so — the agent will read what is written, not what is on
+your screen. It still sends.
 
 Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
 your edits), cleared after a successful send. The sent prompt includes each
