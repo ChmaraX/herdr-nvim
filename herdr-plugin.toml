@@ -14,23 +14,29 @@ command = ["bin/herdr-nvim", "toggle"]
 # Overlay pane that renders the file picker. Opened programmatically by the
 # `pick-file` action (via `herdr plugin pane open --entrypoint picker`), which
 # passes the handoff path in `HERDR_NVIM_HANDOFF`.
+#
+# Pane commands run with the pane's own cwd, and a relative program name is
+# resolved against PATH rather than the plugin checkout — so `bin/herdr-nvim`
+# fails to spawn for a `herdr plugin install` checkout. Go through
+# `$HERDR_PLUGIN_ROOT`, which herdr exports for every plugin process.
 [[panes]]
 id = "picker"
 title = "open file"
 placement = "popup"
-command = ["bin/herdr-nvim", "picker"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-nvim\" picker"]
 
 # Full-height nvim sidebar pane. Opened programmatically by the `toggle` action
 # via `herdr plugin pane open --entrypoint sidebar --placement split`, which
 # spawns this command NON-INTERACTIVELY (sh -c, no interactive shell) so there
 # is no shell prompt/echo of the command line in the pane. The tab id comes
 # from herdr's HERDR_TAB_ID env (set for plugin panes); the cwd is the pane's
-# own cwd (set via --cwd). See daemon::sidebar_cmd.
+# own cwd (set via --cwd). See daemon::sidebar_cmd. The command resolves via
+# `$HERDR_PLUGIN_ROOT` for the same reason as the picker pane above.
 [[panes]]
 id = "sidebar"
 title = "nvim sidebar"
 placement = "split"
-command = ["bin/herdr-nvim", "sidebar"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-nvim\" sidebar"]
 
 [[actions]]
 id = "pick-file"
