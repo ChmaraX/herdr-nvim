@@ -6,21 +6,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-// `fs` is used cross-platform by `wait_for_layout_ready`; `OsStr`/`ErrorKind`
-// are only needed by the Unix filesystem-socket code.
-#[cfg(not(windows))]
 use std::{ffi::OsStr, io::ErrorKind};
 
 use anyhow::{bail, Context, Result};
+use serde_json::Value;
 
 use crate::{
     config::{Config, Sidebar},
     herdr::{CliHerdr, Herdr},
-    state::tab_key,
+    state::{self, tab_key},
 };
-
-#[cfg(not(windows))]
-use crate::state;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -33,13 +28,19 @@ const READY_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Directory that holds one `<tab>.sock` per running daemon, one per tab.
+/// How long `send_quit` waits for a daemon to go away after asking it to quit.
+const QUIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const QUIT_POLL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Directory that registers every running daemon, one entry per tab.
+///
+/// On Unix each entry is the daemon's own `<tab>.sock` listen socket. Windows
+/// daemons listen on named pipes, which cannot be enumerated reliably, so
+/// `ensure_daemon` drops a `<tab>.pipe` marker file here instead -- that is
+/// what lets `gc` and `on-event` find a workspace's daemons on Windows.
 ///
 /// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
-/// XDG runtime dir, falling back to the platform temp dir. Windows uses named
-/// pipes instead of filesystem sockets, so this directory is only used by the
-/// Unix implementation.
-#[cfg(not(windows))]
+/// XDG runtime dir, falling back to the platform temp dir.
 fn socket_dir() -> PathBuf {
     env::var_os("HERDR_NVIM_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -49,15 +50,32 @@ fn socket_dir() -> PathBuf {
         .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"))
 }
 
+/// Extension of the per-daemon entries in `socket_dir` (see there).
+#[cfg(not(windows))]
+const REGISTRY_EXT: &str = "sock";
+#[cfg(windows)]
+const REGISTRY_EXT: &str = "pipe";
+
 pub fn socket_path(tab: &str) -> PathBuf {
+    socket_path_for_key(&tab_key(tab))
+}
+
+/// Socket (Unix) or named pipe (Windows) for an already-sanitized tab key.
+fn socket_path_for_key(key: &str) -> PathBuf {
     #[cfg(windows)]
     {
-        PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{}", tab_key(tab)))
+        PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{key}"))
     }
     #[cfg(not(windows))]
     {
-        socket_dir().join(format!("{}.sock", tab_key(tab)))
+        registry_path(key)
     }
+}
+
+/// The `socket_dir` entry that registers the daemon for `key`: the socket
+/// itself on Unix, a marker file on Windows.
+fn registry_path(key: &str) -> PathBuf {
+    socket_dir().join(format!("{key}.{REGISTRY_EXT}"))
 }
 
 /// The workspace id embedded in a tab id. Tab ids are `<workspace>:<tab>`, so
@@ -91,6 +109,10 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
     if daemon_healthy(&socket, &config.sidebar) {
+        // Also (re)register an already-running daemon, so one spawned before
+        // the Windows marker existed still becomes discoverable.
+        #[cfg(windows)]
+        register_daemon(tab)?;
         return Ok(socket);
     }
 
@@ -104,12 +126,12 @@ pub fn ensure_daemon(
         // A stale (dead) socket file would make `nvim --listen` fail to bind.
         // We only get here after the health check failed, so any file present
         // is dead.
-        remove_socket(&socket)?;
+        remove_file_if_exists(&socket)?;
     }
-    #[cfg(windows)]
-    let _ = socket;
 
     spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
+    #[cfg(windows)]
+    register_daemon(tab)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
@@ -124,6 +146,18 @@ pub fn ensure_daemon(
         }
         sleep(HEALTH_POLL_INTERVAL);
     }
+}
+
+/// Windows only: record the daemon in `socket_dir` (named pipes themselves
+/// cannot be listed). The marker holds the raw tab id for diagnostics.
+#[cfg(windows)]
+fn register_daemon(tab: &str) -> Result<()> {
+    let marker = registry_path(&tab_key(tab));
+    let dir = socket_dir();
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
+    fs::write(&marker, tab)
+        .with_context(|| format!("failed to write daemon marker {}", marker.display()))
 }
 
 fn spawn_daemon(
@@ -341,56 +375,141 @@ pub fn gc_cmd() -> Result<()> {
 /// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
 /// on every toggle to reap stale per-tab daemons from closed tabs.
 pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
-    #[cfg(windows)]
-    {
-        // Windows named pipes cannot be enumerated through read_dir. The pipe
-        // disappears with its daemon, so there is no socket cleanup to do.
-        let _ = (h, sidebar);
+    let Some(keys) = daemon_keys()? else {
         return Ok(());
-    }
-
-    #[cfg(not(windows))]
-    {
-        let dir = socket_dir();
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read runtime directory {}", dir.display()))
-            }
-        };
-
-        let tabs = h.list_tabs()?;
-        let known: Vec<String> = tabs.iter().map(|tab| tab_key(tab)).collect();
-        for entry in entries {
-            let path = entry
-                .with_context(|| format!("failed to read entry in {}", dir.display()))?
-                .path();
-            if path.extension().and_then(OsStr::to_str) != Some("sock") {
-                continue;
-            }
-            let Some(tab_stem) = path.file_stem().and_then(OsStr::to_str) else {
-                continue;
-            };
-            if known.iter().any(|known_tab| known_tab == tab_stem) {
-                continue;
-            }
-
-            // Orphaned: ask the daemon (if any) to quit, then unlink socket +
-            // state. `tab_stem` is a filename component, already sanitized (see
-            // `state::tab_key`), so it goes through `state::remove_key` rather
-            // than `state::remove` -- that avoids sanitizing an already-sanitized
-            // key a second time.
-            let _ = send_quit(&path, sidebar);
-            remove_socket(&path)?;
-            state::remove_key(tab_stem)?;
+    };
+    let known: Vec<String> = h.list_tabs()?.iter().map(|tab| tab_key(tab)).collect();
+    for key in keys {
+        if !known.contains(&key) {
+            stop_tab_key(&key, sidebar)?;
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+/// Sanitized tab keys of every registered daemon (see `socket_dir`), or
+/// `None` when the runtime directory does not exist yet (nothing to reap).
+fn daemon_keys() -> Result<Option<Vec<String>>> {
+    let dir = socket_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read runtime directory {}", dir.display()))
+        }
+    };
+    let mut keys = Vec::new();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("failed to read entry in {}", dir.display()))?
+            .path();
+        if path.extension().and_then(OsStr::to_str) != Some(REGISTRY_EXT) {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(OsStr::to_str) {
+            keys.push(stem.to_owned());
+        }
+    }
+    Ok(Some(keys))
+}
+
+/// Vimscript: number of listed buffers with unsaved changes.
+const UNSAVED_BUFFERS_EXPR: &str = "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
+
+/// Stop the daemon for an already-sanitized tab key (a `socket_dir` entry
+/// stem, see `state::tab_key`): force-quit it if it is still running, then
+/// drop its registry entry and sidebar state file. Unsaved buffers are
+/// discarded -- the tab they belonged to is gone -- but reported on stderr
+/// (herdr's plugin command log). A daemon that is already gone is a no-op
+/// beyond the file cleanup.
+fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
+    let socket = socket_path_for_key(key);
+    // Doubles as the liveness probe: `None` means nothing is listening.
+    if let Some(unsaved) = remote_expr(&socket, UNSAVED_BUFFERS_EXPR, sidebar) {
+        if unsaved != "0" {
+            eprintln!(
+                "herdr-nvim: tab {key} closed; discarding {unsaved} unsaved buffer(s) in its nvim"
+            );
+        }
+        send_quit(&socket, sidebar)?;
+    }
+    // `key` is a filename component, already sanitized, so it goes through
+    // `state::remove_key` rather than `state::remove` -- that avoids
+    // sanitizing an already-sanitized key a second time.
+    remove_file_if_exists(&registry_path(key))?;
+    state::remove_key(key)
+}
+
+/// A close event herdr delivered to the `on-event` hook.
+#[derive(Debug, PartialEq)]
+enum CloseEvent {
+    Tab(String),
+    Workspace(String),
+}
+
+/// Parse `HERDR_PLUGIN_EVENT_JSON`. Anything that is not a well-formed
+/// `tab_closed`/`workspace_closed` event yields `None` (ignored).
+fn parse_close_event(raw: &str) -> Option<CloseEvent> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let event = value
+        .get("event")
+        .or_else(|| value.pointer("/data/type"))
+        .and_then(Value::as_str)?;
+    let id = |pointer: &str| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    };
+    match event {
+        "tab_closed" => id("/data/tab_id").map(CloseEvent::Tab),
+        "workspace_closed" => id("/data/workspace_id").map(CloseEvent::Workspace),
+        _ => None,
     }
 }
 
-#[cfg(any(not(windows), test))]
+/// Stop the daemon(s) a close event makes obsolete. A workspace close does
+/// not fire `tab_closed` for its tabs, so it stops every daemon whose key
+/// starts with `<workspace>_` (tab ids are `<workspace>:<tab>`); the trailing
+/// `_` keeps workspace `w7` from matching `w7B`'s tabs. Best effort: one
+/// daemon failing to stop does not spare the rest.
+fn handle_close_event(event: &CloseEvent, sidebar: &Sidebar) -> Result<()> {
+    match event {
+        CloseEvent::Tab(tab) => stop_tab_key(&tab_key(tab), sidebar),
+        CloseEvent::Workspace(workspace) => {
+            let prefix = format!("{}_", tab_key(workspace));
+            let mut result = Ok(());
+            for key in daemon_keys()?.unwrap_or_default() {
+                if key.starts_with(&prefix) {
+                    if let Err(err) = stop_tab_key(&key, sidebar) {
+                        result = result.and(Err(err));
+                    }
+                }
+            }
+            result
+        }
+    }
+}
+
+/// herdr `tab.closed` / `workspace.closed` event hook: free the closed tab's
+/// (or every closed-workspace tab's) daemon right away instead of waiting for
+/// the next toggle's gc. Irrelevant or unparseable events are a silent no-op.
+pub fn on_event_cmd() -> Result<()> {
+    let Some(event) = env::var("HERDR_PLUGIN_EVENT_JSON")
+        .ok()
+        .as_deref()
+        .and_then(parse_close_event)
+    else {
+        return Ok(());
+    };
+    let config = crate::config::load();
+    handle_close_event(&event, &config.sidebar)
+}
+
+/// Ask the daemon to force-quit (`qa!`), then wait until it stops answering
+/// so callers can rely on it being gone.
 fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
     nvim_cmd(sidebar)
         .arg("--headless")
@@ -403,26 +522,20 @@ fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
         .stderr(Stdio::null())
         .status()
         .with_context(|| format!("failed to run nvim --remote-send for {}", socket.display()))?;
-    // Give the daemon a moment to process the quit before we unlink the socket.
-    sleep(Duration::from_millis(200));
+    let deadline = Instant::now() + QUIT_POLL_TIMEOUT;
+    while Instant::now() < deadline && remote_expr(socket, "1", sidebar).is_some() {
+        sleep(QUIT_POLL_INTERVAL);
+    }
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn remove_socket(socket: &Path) -> Result<()> {
-    match fs::remove_file(socket) {
+/// Remove a file, treating "already gone" as success.
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to remove socket {}", socket.display()))
-        }
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
     }
-}
-
-#[cfg(all(windows, test))]
-fn remove_socket(_socket: &Path) -> Result<()> {
-    // Named pipes are kernel objects and are removed when their owner exits.
-    Ok(())
 }
 
 #[cfg(test)]
@@ -438,9 +551,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(not(windows))]
-    use crate::{herdr::MockHerdr, state};
-    #[cfg(not(windows))]
+    use crate::herdr::MockHerdr;
     use std::collections::VecDeque;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -520,13 +631,225 @@ mod tests {
     /// Best-effort daemon shutdown so no stray `nvim --headless` survives a test.
     fn stop_daemon(socket: &Path) {
         let _ = send_quit(socket, &Sidebar::default());
-        for _ in 0..50 {
-            if remote_expr(socket, "1+1", &Sidebar::default()).is_none() {
-                break;
-            }
-            sleep(Duration::from_millis(100));
+        #[cfg(not(windows))]
+        let _ = remove_file_if_exists(socket);
+    }
+
+    /// Points `HERDR_NVIM_STATE_DIR` into the runtime guard's temp dir while
+    /// alive: stopping a daemon removes its tab's state file, which must never
+    /// touch the real user state dir. Create it BEFORE the `RuntimeEnvGuard`:
+    /// the state lock must be taken first, matching the maneuver tests' lock
+    /// order, or the two test modules can deadlock.
+    struct StateEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        old: Option<OsString>,
+    }
+
+    impl StateEnvGuard {
+        fn new() -> Self {
+            let lock = state::STATE_DIR_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let old = env::var_os("HERDR_NVIM_STATE_DIR");
+            Self { _lock: lock, old }
         }
-        let _ = remove_socket(socket);
+
+        fn point_into(&self, runtime: &RuntimeEnvGuard) {
+            env::set_var("HERDR_NVIM_STATE_DIR", runtime.dir.join("state"));
+        }
+    }
+
+    impl Drop for StateEnvGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
+                None => env::remove_var("HERDR_NVIM_STATE_DIR"),
+            }
+        }
+    }
+
+    /// Whether the OS still runs `pid`. The test process is the daemons'
+    /// parent and never reaps them, so on Unix an exited daemon lingers as a
+    /// zombie -- that counts as dead.
+    fn process_alive(pid: &str) -> bool {
+        #[cfg(not(windows))]
+        {
+            let output = Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .expect("run ps");
+            let stat = String::from_utf8_lossy(&output.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
+        #[cfg(windows)]
+        {
+            let output = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+                .output()
+                .expect("run tasklist");
+            String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+        }
+    }
+
+    /// A real daemon spawned for a test tab, with the pid it reported. Quits
+    /// the daemon on drop, so a failing assertion never leaks a process.
+    struct TestDaemon {
+        tab: &'static str,
+        socket: PathBuf,
+        pid: String,
+    }
+
+    impl TestDaemon {
+        fn spawn(tab: &'static str, config: &Config) -> Self {
+            let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let socket =
+                ensure_daemon(tab, &plugin_root, config, &plugin_root).expect("ensure_daemon");
+            let pid = remote_expr(&socket, "getpid()", &config.sidebar).expect("daemon pid");
+            // Give the daemon a sidebar state file so its cleanup is observable.
+            let state_file = state::state_path(tab);
+            fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+            fs::write(&state_file, b"{}").unwrap();
+            Self { tab, socket, pid }
+        }
+
+        fn assert_alive(&self, sidebar: &Sidebar) {
+            assert!(process_alive(&self.pid), "{} daemon process died", self.tab);
+            assert_eq!(
+                remote_expr(&self.socket, "1+1", sidebar).as_deref(),
+                Some("2"),
+                "{} daemon stopped answering",
+                self.tab
+            );
+            assert!(
+                registry_path(&tab_key(self.tab)).exists(),
+                "{} registry entry removed",
+                self.tab
+            );
+            assert!(
+                state::state_path(self.tab).exists(),
+                "{} state file removed",
+                self.tab
+            );
+        }
+
+        fn assert_gone(&self, sidebar: &Sidebar) {
+            assert!(
+                !process_alive(&self.pid),
+                "{} daemon process still running",
+                self.tab
+            );
+            assert!(
+                remote_expr(&self.socket, "1+1", sidebar).is_none(),
+                "{} daemon still answering",
+                self.tab
+            );
+            assert!(
+                !registry_path(&tab_key(self.tab)).exists(),
+                "{} registry entry left behind",
+                self.tab
+            );
+            assert!(
+                !state::state_path(self.tab).exists(),
+                "{} state file left behind",
+                self.tab
+            );
+        }
+    }
+
+    impl Drop for TestDaemon {
+        fn drop(&mut self) {
+            stop_daemon(&self.socket);
+        }
+    }
+
+    // The event-hook scenario end to end: real daemons, real close events as
+    // herdr delivers them, observed through the actual processes and files.
+    // `wHnAB` is the prefix trap -- closing workspace `wHnA` must not touch it.
+    #[test]
+    fn close_events_stop_exactly_the_closed_tabs_daemons() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let state = StateEnvGuard::new();
+        let runtime = RuntimeEnvGuard::new();
+        state.point_into(&runtime);
+        let config = Config::default();
+        let sidebar = &config.sidebar;
+
+        let a1 = TestDaemon::spawn("wHnA:t1", &config);
+        let a2 = TestDaemon::spawn("wHnA:t2", &config);
+        let ab1 = TestDaemon::spawn("wHnAB:t1", &config);
+        let b1 = TestDaemon::spawn("wHnB:t1", &config);
+        // Unsaved work in the closing tab is discarded, not a blocker.
+        // `noswapfile`: parallel tests may point HOME somewhere unwritable,
+        // and a failed swap-file creation would abort the edit.
+        remote_expr(
+            &a1.socket,
+            r#"execute('setlocal noswapfile | call setline(1, "unsaved")')"#,
+            sidebar,
+        )
+        .expect("dirty a buffer");
+        assert_eq!(
+            remote_expr(&a1.socket, UNSAVED_BUFFERS_EXPR, sidebar).as_deref(),
+            Some("1")
+        );
+        let all = [&a1, &a2, &ab1, &b1];
+        for daemon in all {
+            daemon.assert_alive(sidebar);
+        }
+
+        let deliver = |raw: &str| {
+            if let Some(event) = parse_close_event(raw) {
+                handle_close_event(&event, sidebar).expect("handle event");
+            }
+        };
+
+        deliver(
+            r#"{"event":"tab_closed","data":{"type":"tab_closed","tab_id":"wHnA:t1","workspace_id":"wHnA"}}"#,
+        );
+        a1.assert_gone(sidebar);
+        for daemon in [&a2, &ab1, &b1] {
+            daemon.assert_alive(sidebar);
+        }
+
+        deliver(
+            r#"{"event":"workspace_closed","data":{"type":"workspace_closed","workspace_id":"wHnA","workspace":{"workspace_id":"wHnA","label":"x"}}}"#,
+        );
+        a2.assert_gone(sidebar);
+        ab1.assert_alive(sidebar);
+        b1.assert_alive(sidebar);
+
+        // Irrelevant events, and closes of things that have no daemon.
+        deliver(
+            r#"{"event":"pane_focused","data":{"type":"pane_focused","pane_id":"wHnB:p1","workspace_id":"wHnB"}}"#,
+        );
+        deliver(
+            r#"{"event":"tab_closed","data":{"type":"tab_closed","tab_id":"wHnA:t1","workspace_id":"wHnA"}}"#,
+        );
+        deliver(
+            r#"{"event":"workspace_closed","data":{"type":"workspace_closed","workspace_id":"wHnZ"}}"#,
+        );
+        ab1.assert_alive(sidebar);
+        b1.assert_alive(sidebar);
+    }
+
+    #[test]
+    fn malformed_or_foreign_event_json_is_ignored() {
+        for raw in [
+            "",
+            "not json",
+            "{}",
+            "[]",
+            r#"{"event":"tab_closed"}"#,
+            r#"{"event":"tab_closed","data":{"tab_id":""}}"#,
+            r#"{"event":"tab_closed","data":{"tab_id":7}}"#,
+            r#"{"event":"workspace_closed","data":{}}"#,
+            r#"{"event":"tab_created","data":{"tab_id":"w1:t1"}}"#,
+        ] {
+            assert_eq!(parse_close_event(raw), None, "{raw:?}");
+        }
     }
 
     #[test]
@@ -647,22 +970,19 @@ mod tests {
         stop_daemon(&socket);
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn gc_removes_orphan_sockets_and_keeps_known_tabs() {
-        let guard = RuntimeEnvGuard::new();
-
         // Isolate the state dir too, since gc removes orphan state files.
-        let state_lock = state::STATE_DIR_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let old_state = env::var_os("HERDR_NVIM_STATE_DIR");
-        env::set_var("HERDR_NVIM_STATE_DIR", guard.dir.join("state"));
+        let state = StateEnvGuard::new();
+        let guard = RuntimeEnvGuard::new();
+        state.point_into(&guard);
 
-        // Two dead socket files (sanitized tab ids); only "wsKeep:t1" is still a
-        // live tab.
-        fs::write(socket_path("wsKeep:t1"), b"").unwrap();
-        fs::write(socket_path("wsOrphan:t1"), b"").unwrap();
+        // Two dead registry entries (sockets on Unix, pipe markers on
+        // Windows); only "wsKeep:t1" is still a live tab.
+        let keep = registry_path(&tab_key("wsKeep:t1"));
+        let orphan = registry_path(&tab_key("wsOrphan:t1"));
+        fs::write(&keep, b"").unwrap();
+        fs::write(&orphan, b"").unwrap();
 
         let mut herdr = MockHerdr {
             list_tabs_results: VecDeque::from([Ok(vec!["wsKeep:t1".to_owned()])]),
@@ -670,17 +990,8 @@ mod tests {
         };
         gc(&mut herdr, &Sidebar::default()).unwrap();
 
-        assert!(socket_path("wsKeep:t1").exists(), "known tab kept");
-        assert!(
-            !socket_path("wsOrphan:t1").exists(),
-            "orphan tab socket removed"
-        );
-
-        match &old_state {
-            Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
-            None => env::remove_var("HERDR_NVIM_STATE_DIR"),
-        }
-        drop(state_lock);
+        assert!(keep.exists(), "known tab kept");
+        assert!(!orphan.exists(), "orphan tab entry removed");
     }
 
     #[test]

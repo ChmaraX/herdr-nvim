@@ -26,13 +26,14 @@ fn main() {
         "toggle" => run(maneuver::toggle_cmd),
         "sidebar" => run(daemon::sidebar_cmd),
         "daemon-gc" => run(daemon::gc_cmd),
+        "on-event" => run(daemon::on_event_cmd),
         "doctor" => run(doctor::doctor_cmd),
         "pick-file" => run(bridge::pick_file_cmd),
         "picker" => run(picker::picker_cmd),
         "open-link" => run(openlink::open_link_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|doctor|pick-file|picker|open-link>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|doctor|pick-file|picker|open-link>"
             );
             2
         }

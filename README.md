@@ -26,7 +26,7 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 
 ## Requirements
 
-nvim ≥ 0.10 · herdr ≥ 0.7.4 · runs inside a herdr session
+nvim ≥ 0.10 · herdr ≥ 0.7.5 · runs inside a herdr session
 
 ## Install
 
@@ -66,8 +66,12 @@ description = "open file from agent output"
 
 `prefix+e` toggles it. Each tab gets its own nvim, backed by a headless
 daemon that survives the toggle. Two tabs can show two different files in two
-sidebars. When you close and reopen a sidebar, it loses nothing. herdr
-removes the daemons of closed tabs automatically.
+sidebars. When you close and reopen a sidebar, it loses nothing.
+
+A daemon lives as long as its tab. Closing the tab (or its whole workspace)
+stops that nvim right away, along with its LSP servers; unsaved buffers in it
+are discarded. Daemons survive a herdr restart, so restored tabs reattach to
+their nvim; any whose tab did not come back are reaped when herdr starts.
 
 ## The file picker
 
