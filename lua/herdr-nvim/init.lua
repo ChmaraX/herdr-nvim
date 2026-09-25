@@ -29,6 +29,8 @@ function M.setup(config)
     map("n", p .. "l", function() M.list_comments() end, "herdr-nvim: list comments")
     map("n", p .. "s", function() M.send_all({ submit = false }) end, "herdr-nvim: paste comments to agent")
     map("n", p .. "S", function() M.send_all({ submit = true }) end, "herdr-nvim: send comments to agent")
+    map("x", p .. "i", function() M.ref_selection() end, "herdr-nvim: reference selection at agent cursor")
+    map("n", p .. "i", function() M.ref_line() end, "herdr-nvim: reference line at agent cursor")
   end
 end
 
@@ -97,6 +99,39 @@ function M._git_context(cwd)
     vim.fn.fnamemodify(vim.trim(root), ":t"), vim.trim(branch))
 end
 
+-- Single funnel for every send (pending comments and bare references alike), so
+-- the agent resolution, the picker fallback, and the "agent is working" warning
+-- all live in exactly one place. `build_payload(agent)` runs once the agent is
+-- resolved -- paths are shortened against that agent's cwd. `on_sent(agent,
+-- payload)` runs only after a successful dispatch.
+local function deliver_to_agent(build_payload, opts, on_sent)
+  local agent_list, err = agents.list()
+  if not agent_list then
+    vim.notify("herdr-nvim: " .. err, vim.log.levels.ERROR)
+    return
+  end
+  local function deliver(agent)
+    if agent.status == "working" then
+      vim.notify("herdr-nvim: " .. agents.display(agent) .. " is working — sending anyway", vim.log.levels.WARN)
+    end
+    local payload = build_payload(agent)
+    local ok, derr = dispatch.send(agent.pane_id, payload, opts)
+    if not ok then
+      vim.notify("herdr-nvim: " .. derr, vim.log.levels.ERROR)
+      return
+    end
+    on_sent(agent, payload)
+  end
+  -- Skip the picker when the target is unambiguous (the common one-agent case);
+  -- fall back to the picker only when 2+ agents could plausibly be meant.
+  local agent = agents.resolve(agent_list)
+  if agent then
+    deliver(agent)
+  else
+    ui.pick_agent(agent_list, deliver)
+  end
+end
+
 function M.send_all(opts)
   local list = comments.list()
   if #list == 0 then
@@ -109,38 +144,54 @@ function M.send_all(opts)
   end
   local first_file = list[1].file
   local cwd = first_file ~= "" and vim.fn.fnamemodify(first_file, ":h") or nil
-  local text = prompt.format(items, { header_context = M._git_context(cwd) })
-  local agent_list, err = agents.list()
-  if not agent_list then
-    vim.notify("herdr-nvim: " .. err, vim.log.levels.ERROR)
-    return
-  end
-  -- Single funnel for every send (both the resolved and picked paths), so the
-  -- "agent is working" warning lives in exactly one place.
-  local function deliver(agent)
-    if agent.status == "working" then
-      vim.notify("herdr-nvim: " .. agents.display(agent) .. " is working — sending anyway", vim.log.levels.WARN)
-    end
-    local ok, derr = dispatch.send(agent.pane_id, text, opts)
-    if not ok then
-      vim.notify("herdr-nvim: " .. derr, vim.log.levels.ERROR)
-      return
-    end
+  local header_context = M._git_context(cwd)
+  deliver_to_agent(function(agent)
+    return prompt.format(items, { header_context = header_context, cwd = agent.cwd })
+  end, opts, function(agent)
     if M.config.clear_after_send then
       for _, c in ipairs(list) do
         M.delete_comment(c)
       end
     end
     vim.notify(string.format("herdr-nvim: sent %d comment(s) to %s", #list, agent.title))
+  end)
+end
+
+-- Range primitive behind ref_line(), ref_selection(), and :Herdr ref. Sends a
+-- bare `path:line` citation and nothing else -- no comment, no code, no header,
+-- and never a submit -- so it lands in the middle of a message you are still
+-- typing. Pending comments are untouched.
+function M.ref_range(start_line, end_line)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local file = vim.api.nvim_buf_get_name(bufnr)
+  if file == "" then
+    vim.notify("herdr-nvim: buffer has no file to reference", vim.log.levels.WARN)
+    return
   end
-  -- Skip the picker when the target is unambiguous (the common one-agent case);
-  -- fall back to the picker only when 2+ agents could plausibly be meant.
-  local agent = agents.resolve(agent_list)
-  if agent then
-    deliver(agent)
-  else
-    ui.pick_agent(agent_list, deliver)
-  end
+  local item = { file = file, start_line = start_line, end_line = end_line }
+  deliver_to_agent(function(agent)
+    return prompt.format_ref(item, { cwd = agent.cwd })
+  end, { submit = false }, function(_, payload)
+    vim.notify("herdr-nvim: referenced " .. vim.trim(payload))
+    -- A reference points at the file on disk, so unwritten changes are
+    -- invisible to whoever opens it. Worth saying out loud; not worth blocking
+    -- over. Only after a send, so a cancelled picker stays silent.
+    if vim.bo[bufnr].modified then
+      vim.notify("herdr-nvim: buffer has unsaved changes — the agent reads the file on disk",
+        vim.log.levels.WARN)
+    end
+  end)
+end
+
+function M.ref_selection()
+  vim.cmd([[execute "normal! \<esc>"]]) -- materialize '< '> marks
+  local s, e = ui.visual_range()
+  M.ref_range(s, e)
+end
+
+function M.ref_line()
+  local l = vim.api.nvim_win_get_cursor(0)[1]
+  M.ref_range(l, l)
 end
 
 function M.statusline()

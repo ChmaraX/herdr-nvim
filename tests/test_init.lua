@@ -104,13 +104,14 @@ T.test("init: send_all formats, dispatches, clears", function()
   local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
   ui.pick_agent = function(_, cb) cb({ pane_id = "wZ:p9", title = "π", status = "idle" }) end
   dispatch.send = function(pane, text, opts) sent = { pane, text, opts }; return true end
-  agents.list = function() return { { pane_id = "wZ:p9", title = "π", status = "idle" } } end
+  local dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":h")
+  agents.list = function() return { { pane_id = "wZ:p9", title = "π", status = "idle", cwd = dir } } end
 
   hn.send_all({ submit = false })
   ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
 
   T.eq(sent[1], "wZ:p9")
-  T.ok(sent[2]:find("1. " .. vim.api.nvim_buf_get_name(b) .. ":1-1", 1, true))
+  T.ok(sent[2]:find("1. hn-send.lua:1\n", 1, true), "path shortened against the agent's cwd")
   T.ok(sent[2]:find("> alpha", 1, true))
   T.eq(sent[3].submit, false)
   T.eq(comments.list(), {}, "clear_after_send default clears comments")
@@ -223,4 +224,131 @@ T.test("init: statusline reflects pending comment count", function()
   comments.add(b, 1, 1, "a")
   comments.add(b, 1, 1, "b")
   T.eq(hn.statusline(), "● 2")
+end)
+
+T.test("init: ref_range sends a bare citation, never submits, keeps comments", function()
+  comments.clear()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a", "b", "c", "d" })
+  vim.api.nvim_buf_set_name(b, "/repo/lua/hn-ref.lua")
+  vim.api.nvim_set_current_buf(b)
+  comments.add(b, 1, 1, "keep me")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local sent = {}
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  ui.pick_agent = function() error("picker must not open for a lone agent") end
+  dispatch.send = function(pane, text, opts) sent = { pane, text, opts }; return true end
+  agents.list = function() return { { pane_id = "wZ:p9", title = "pi", status = "idle", cwd = "/repo" } } end
+
+  hn.ref_range(2, 3)
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+
+  T.eq(sent[1], "wZ:p9")
+  T.eq(sent[2], "lua/hn-ref.lua:2-3 ", "payload is the citation alone")
+  T.eq(sent[3].submit, false, "a ref must never submit")
+  T.eq(#comments.list(), 1, "referencing must not clear pending comments")
+end)
+
+T.test("init: ref_range shortens against the picked agent's cwd, not the buffer's", function()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a" })
+  vim.api.nvim_buf_set_name(b, "/repo/deep/x.lua")
+  vim.api.nvim_set_current_buf(b)
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local previous = vim.env.HERDR_TAB_ID
+  vim.env.HERDR_TAB_ID = nil
+  local sent = {}
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  -- Two agents → the picker runs, so the cwd is only known after resolution.
+  ui.pick_agent = function(l, cb) cb(l[2]) end
+  dispatch.send = function(_, text) sent = { text }; return true end
+  agents.list = function()
+    return {
+      { pane_id = "wA:p1", tab_id = "wA:t1", title = "pi", status = "idle", cwd = "/repo" },
+      { pane_id = "wB:p2", tab_id = "wB:t1", title = "claude", status = "idle", cwd = "/repo/deep" },
+    }
+  end
+
+  hn.ref_range(1, 1)
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+  vim.env.HERDR_TAB_ID = previous
+
+  T.eq(sent[1], "x.lua:1 ", "path is relative to the agent that was picked")
+end)
+
+T.test("init: ref_range warns on an unsaved buffer but still sends", function()
+  -- A listed, non-scratch buffer: 'modified' is ignored on buftype=nofile, so
+  -- the scratch buffers the other tests use can never be dirty.
+  local b = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_name(b, "/repo/dirty.lua")
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "edited" })
+  T.ok(vim.bo[b].modified, "precondition: the buffer is dirty")
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local warns, sent = {}, {}
+  local o1, o2, o3, on = ui.pick_agent, dispatch.send, agents.list, vim.notify
+  ui.pick_agent = function() end
+  dispatch.send = function(_, text) sent = { text }; return true end
+  agents.list = function() return { { pane_id = "wZ:p9", title = "pi", status = "idle", cwd = "/repo" } } end
+  vim.notify = function(msg, level) if level == vim.log.levels.WARN then table.insert(warns, msg) end end
+
+  hn.ref_range(1, 1)
+  ui.pick_agent, dispatch.send, agents.list, vim.notify = o1, o2, o3, on
+
+  T.eq(#warns, 1, "unsaved buffer warns exactly once")
+  T.ok(warns[1]:find("unsaved changes", 1, true))
+  T.eq(sent[1], "dirty.lua:1 ", "the warning must not block the send")
+  vim.bo[b].modified = false -- let the buffer be wiped without an E37 prompt
+end)
+
+T.test("init: ref_range refuses a buffer with no file", function()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a" })
+  vim.api.nvim_set_current_buf(b)
+  local dispatch = require("herdr-nvim.dispatch")
+  local warns = {}
+  local o1, on = dispatch.send, vim.notify
+  dispatch.send = function() error("must not dispatch a nameless buffer") end
+  vim.notify = function(msg, level) if level == vim.log.levels.WARN then table.insert(warns, msg) end end
+
+  hn.ref_range(1, 1)
+  dispatch.send, vim.notify = o1, on
+
+  T.eq(#warns, 1)
+  T.ok(warns[1]:find("no file", 1, true))
+end)
+
+T.test("init: ref_line and ref_selection resolve their own span", function()
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a", "b", "c", "d" })
+  vim.api.nvim_buf_set_name(b, "/repo/span.lua")
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+
+  local ui = require("herdr-nvim.ui")
+  local dispatch = require("herdr-nvim.dispatch")
+  local agents = require("herdr-nvim.agents")
+  local sent = {}
+  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
+  ui.pick_agent = function() end
+  dispatch.send = function(_, text) sent[#sent + 1] = text; return true end
+  agents.list = function() return { { pane_id = "wZ:p9", title = "pi", status = "idle", cwd = "/repo" } } end
+
+  hn.ref_line()
+  vim.api.nvim_buf_set_mark(b, "<", 2, 0, {})
+  vim.api.nvim_buf_set_mark(b, ">", 4, 0, {})
+  hn.ref_selection()
+  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
+
+  T.eq(sent[1], "span.lua:3 ", "ref_line targets the cursor line")
+  T.eq(sent[2], "span.lua:2-4 ", "ref_selection targets the visual marks")
 end)

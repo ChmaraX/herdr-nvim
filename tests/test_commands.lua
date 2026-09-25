@@ -24,8 +24,9 @@ T.test("commands: register replaces a pre-existing placeholder", function()
 end)
 
 T.test("commands: complete filters subcommands by lead", function()
-  T.eq(commands.complete("", "Herdr "), { "comment", "list", "send", "submit" })
+  T.eq(commands.complete("", "Herdr "), { "comment", "list", "send", "submit", "ref" })
   T.eq(commands.complete("s", "Herdr s"), { "send", "submit" })
+  T.eq(commands.complete("r", "Herdr r"), { "ref" })
   T.eq(commands.complete("c", "Herdr c"), { "comment" })
   T.eq(commands.complete("co", "Herdr co"), { "comment" })
   T.eq(commands.complete("x", "Herdr x"), {})
@@ -55,6 +56,15 @@ T.test("commands: run send/submit map to the send_all submit flag", function()
   commands.run({ fargs = { "submit" } })
   T.eq(got, { submit = true })
   hn.send_all = orig
+end)
+
+T.test("commands: run ref forwards the range", function()
+  local got
+  local orig = hn.ref_range
+  hn.ref_range = function(s, e) got = { s, e } end
+  commands.run({ fargs = { "ref" }, line1 = 4, line2 = 9 })
+  hn.ref_range = orig
+  T.eq(got, { 4, 9 })
 end)
 
 T.test("commands: run list maps to list_comments", function()
