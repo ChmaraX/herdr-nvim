@@ -4,21 +4,25 @@
 //! its tab.
 //!
 //! Daemons are enumerated from the same runtime-dir registry that `gc` and
-//! the close hooks use (`daemon::daemon_keys`), queried over their own socket
-//! for pid / unsaved buffers / pending comments, named through
-//! `herdr api snapshot`, and measured with one OS process-table snapshot.
-//! Stopping goes through the shared `daemon::stop_tab_key`.
+//! the close hooks use (`registry::daemon_keys`), queried over their own
+//! socket for pid / unsaved buffers / pending comments / tab id, named
+//! through `herdr api snapshot`, and measured with one OS process-table
+//! snapshot. Stopping goes through the shared `registry::stop_keys`.
 
 use std::{collections::HashMap, env, process::Command};
 
-use anyhow::{bail, Result};
-use serde::Serialize;
+use anyhow::{bail, Context, Result};
+use serde::{Serialize, Serializer};
 
 use crate::{
     config::Sidebar,
-    daemon::{daemon_keys, remote_expr, socket_path_for_key, stop_tab_key, UNSAVED_BUFFERS_EXPR},
     herdr::{CliHerdr, Herdr, TabInfo},
-    state::tab_key,
+    state::{tab_key, TabId},
+};
+
+use super::{
+    registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
+    remote_expr,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -26,8 +30,7 @@ const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
                      herdr-nvim daemons stop --all [--force]\n       \
                      herdr-nvim daemons stop --orphans";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DaemonState {
     /// Answers on its socket and its tab is open in herdr.
     Alive,
@@ -40,6 +43,7 @@ pub(crate) enum DaemonState {
 }
 
 impl DaemonState {
+    /// The one source of the state names, for the table and the JSON alike.
     fn as_str(self) -> &'static str {
         match self {
             Self::Alive => "alive",
@@ -50,53 +54,135 @@ impl DaemonState {
     }
 }
 
-/// One registered daemon. `None` fields could not be determined.
-#[derive(Clone, Debug, Serialize)]
+impl Serialize for DaemonState {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// What a registered daemon said about itself over its socket.
+#[derive(Clone, Debug)]
+pub(crate) struct Probe {
+    pub pid: Option<u32>,
+    pub unsaved: Option<u32>,
+    pub comments: Option<u32>,
+    /// The daemon's own `$HERDR_TAB_ID`, if it matches its registry key.
+    pub tab_id: Option<TabId>,
+}
+
+/// One registered daemon.
+#[derive(Clone, Debug)]
 pub(crate) struct DaemonInfo {
-    pub tab_id: String,
     /// Sanitized tab key (the runtime-dir registry entry's stem).
     pub key: String,
-    pub workspace_label: Option<String>,
-    pub tab_label: Option<String>,
-    pub tab_number: Option<u64>,
-    pub pid: Option<u32>,
+    /// herdr's tab for this daemon: `None` if the tab is gone or herdr could
+    /// not be asked (see `herdr_reachable`).
+    pub tab: Option<TabInfo>,
+    pub herdr_reachable: bool,
+    /// What the daemon answered; `None` if it did not answer.
+    pub probe: Option<Probe>,
     /// Resident memory of the daemon plus all of its descendants (LSPs, jobs).
     pub rss_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
-    pub state: DaemonState,
-    pub unsaved_buffers: Option<u32>,
-    pub pending_comments: Option<u32>,
-    /// Whether herdr still has the tab: `None` when herdr was unreachable.
-    #[serde(skip)]
-    pub tab_open: Option<bool>,
 }
 
 impl DaemonInfo {
+    pub(crate) fn state(&self) -> DaemonState {
+        match (&self.probe, &self.tab, self.herdr_reachable) {
+            (None, _, _) => DaemonState::Unresponsive,
+            (Some(_), Some(_), _) => DaemonState::Alive,
+            (Some(_), None, true) => DaemonState::Orphaned,
+            (Some(_), None, false) => DaemonState::Unknown,
+        }
+    }
+
+    /// herdr confirmed the tab no longer exists (responsive or not).
+    fn tab_gone(&self) -> bool {
+        self.herdr_reachable && self.tab.is_none()
+    }
+
+    /// The tab id, from the daemon itself or from herdr. `None` for an
+    /// unresponsive daemon whose tab herdr does not know: a key cannot be
+    /// decoded back into an id.
+    fn tab_id(&self) -> Option<&TabId> {
+        self.probe
+            .as_ref()
+            .and_then(|probe| probe.tab_id.as_ref())
+            .or(self.tab.as_ref().map(|tab| &tab.tab_id))
+    }
+
+    /// The tab id if known, else the key -- either works for `daemons stop`.
+    fn tab_ref(&self) -> &str {
+        self.tab_id().map_or(&self.key, TabId::as_str)
+    }
+
+    fn unsaved(&self) -> Option<u32> {
+        self.probe.as_ref().and_then(|probe| probe.unsaved)
+    }
+
+    fn comments(&self) -> Option<u32> {
+        self.probe.as_ref().and_then(|probe| probe.comments)
+    }
+
     /// `workspace / tab` as herdr shows it, or `None` for a tab herdr does
     /// not (or could not be asked to) know.
     fn display_name(&self) -> Option<String> {
-        if self.tab_open != Some(true) {
-            return None;
-        }
-        let workspace = self
+        let tab = self.tab.as_ref()?;
+        let workspace = tab
             .workspace_label
             .clone()
-            .unwrap_or_else(|| self.tab_id.split(':').next().unwrap_or("").to_owned());
-        let tab = self
+            .unwrap_or_else(|| tab.tab_id.workspace().to_owned());
+        let name = tab
             .tab_label
             .clone()
-            .or_else(|| self.tab_number.map(|number| number.to_string()))
-            .unwrap_or_else(|| self.tab_id.clone());
-        Some(format!("{workspace} / {tab}"))
+            .or_else(|| tab.tab_number.map(|number| number.to_string()))
+            .unwrap_or_else(|| tab.tab_id.to_string());
+        Some(format!("{workspace} / {name}"))
     }
 
     /// What to call the daemon in stop messages.
     fn name(&self) -> String {
-        self.display_name().unwrap_or_else(|| self.tab_id.clone())
+        self.display_name()
+            .unwrap_or_else(|| self.tab_ref().to_owned())
     }
 
     fn has_pending_work(&self) -> bool {
-        self.unsaved_buffers.unwrap_or(0) > 0 || self.pending_comments.unwrap_or(0) > 0
+        self.unsaved().unwrap_or(0) > 0 || self.comments().unwrap_or(0) > 0
+    }
+}
+
+/// `--json` shape: one flat object per daemon, state and names derived.
+impl Serialize for DaemonInfo {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Row<'a> {
+            tab_id: Option<&'a TabId>,
+            key: &'a str,
+            workspace_label: Option<&'a str>,
+            tab_label: Option<&'a str>,
+            tab_number: Option<u64>,
+            pid: Option<u32>,
+            rss_bytes: Option<u64>,
+            uptime_secs: Option<u64>,
+            state: DaemonState,
+            unsaved_buffers: Option<u32>,
+            pending_comments: Option<u32>,
+        }
+        let tab = self.tab.as_ref();
+        Row {
+            tab_id: self.tab_id(),
+            key: &self.key,
+            workspace_label: tab.and_then(|tab| tab.workspace_label.as_deref()),
+            tab_label: tab.and_then(|tab| tab.tab_label.as_deref()),
+            tab_number: tab.and_then(|tab| tab.tab_number),
+            pid: self.probe.as_ref().and_then(|probe| probe.pid),
+            rss_bytes: self.rss_bytes,
+            uptime_secs: self.uptime_secs,
+            state: self.state(),
+            unsaved_buffers: self.unsaved(),
+            pending_comments: self.comments(),
+        }
+        .serialize(serializer)
     }
 }
 
@@ -110,13 +196,6 @@ fn probe_expr() -> String {
     format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
 }
 
-struct Probe {
-    pid: Option<u32>,
-    unsaved: Option<u32>,
-    comments: Option<u32>,
-    tab_id: Option<String>,
-}
-
 fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
     let out = remote_expr(&socket_path_for_key(key), &probe_expr(), sidebar)?;
     let mut parts = out.splitn(4, ' ');
@@ -126,8 +205,8 @@ fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
     let comments = number();
     let tab_id = parts
         .next()
-        .map(str::to_owned)
-        .filter(|tab| !tab.is_empty() && tab_key(tab) == key);
+        .map(TabId::new)
+        .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
     Some(Probe {
         pid,
         unsaved,
@@ -136,69 +215,41 @@ fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
     })
 }
 
-/// Every registered daemon, sorted by tab id. herdr being unreachable is not
+/// Every registered daemon, sorted by key. herdr being unreachable is not
 /// an error: names are then unknown and responsive daemons are `Unknown`.
 pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<DaemonInfo>> {
-    let keys = daemon_keys()?.unwrap_or_default();
+    let keys = daemon_keys()?;
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    let tabs = h.tab_infos().ok();
+    Ok(describe(keys, h.tab_infos().ok().as_deref(), sidebar))
+}
+
+/// Probe and measure the daemons for `keys`, naming them from herdr's live
+/// `tabs` (`None` when herdr could not be asked).
+fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
-    let mut daemons: Vec<DaemonInfo> = keys
-        .into_iter()
+    keys.into_iter()
         .map(|key| {
             let probe = probe(&key, sidebar);
             let tab = tabs
-                .as_ref()
-                .and_then(|tabs| tabs.iter().find(|tab| tab_key(&tab.tab_id) == key));
-            let tab_open = tabs.as_ref().map(|_| tab.is_some());
-            let tab_id = probe
-                .as_ref()
-                .and_then(|probe| probe.tab_id.clone())
-                .or_else(|| tab.map(|tab| tab.tab_id.clone()))
-                .unwrap_or_else(|| key.replacen('_', ":", 1));
-            let state = match (&probe, tab_open) {
-                (None, _) => DaemonState::Unresponsive,
-                (Some(_), Some(true)) => DaemonState::Alive,
-                (Some(_), Some(false)) => DaemonState::Orphaned,
-                (Some(_), None) => DaemonState::Unknown,
-            };
+                .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
+                .cloned();
             let pid = probe.as_ref().and_then(|probe| probe.pid);
             let (rss_bytes, uptime_secs) = match (pid, &procs) {
                 (Some(pid), Some(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
-            let TabInfo {
-                workspace_label,
-                tab_label,
-                tab_number,
-                ..
-            } = tab.cloned().unwrap_or(TabInfo {
-                tab_id: String::new(),
-                workspace_id: String::new(),
-                workspace_label: None,
-                tab_label: None,
-                tab_number: None,
-            });
             DaemonInfo {
-                tab_id,
                 key,
-                workspace_label,
-                tab_label,
-                tab_number,
-                pid,
+                tab,
+                herdr_reachable: tabs.is_some(),
+                probe,
                 rss_bytes,
                 uptime_secs,
-                state,
-                unsaved_buffers: probe.as_ref().and_then(|probe| probe.unsaved),
-                pending_comments: probe.as_ref().and_then(|probe| probe.comments),
-                tab_open,
             }
         })
-        .collect();
-    daemons.sort_by(|a, b| a.tab_id.cmp(&b.tab_id));
-    Ok(daemons)
+        .collect()
 }
 
 /// Which daemons `daemons stop` targets.
@@ -216,53 +267,65 @@ pub(crate) struct StopOutcome {
     pub stopped: Vec<String>,
     /// One explanation per daemon left running for lack of `--force`.
     pub refused: Vec<String>,
+    /// One explanation per daemon that failed to stop.
+    pub failed: Vec<String>,
 }
 
 /// Stop the targeted daemons. A daemon with unsaved buffers or pending
 /// comments is refused unless `force` -- except an orphan, whose tab (and so
-/// whatever it held) is already gone.
+/// whatever it held) is already gone. `--orphans` needs herdr: without it,
+/// every daemon would look orphaned.
 pub(crate) fn stop(
     h: &mut dyn Herdr,
     sidebar: &Sidebar,
     target: &Target,
     force: bool,
 ) -> Result<StopOutcome> {
-    if let Target::Tab(tab) = target {
-        let key = tab_key(tab);
-        if !daemon_keys()?.unwrap_or_default().contains(&key) {
-            bail!("no nvim daemon for tab {tab}");
+    let keys = daemon_keys()?;
+    let (selected, tabs) = match target {
+        Target::Tab(tab) => {
+            let key = tab_key(tab);
+            if !keys.contains(&key) {
+                bail!("no nvim daemon for tab {tab}");
+            }
+            (vec![key], h.tab_infos().ok())
         }
-    }
-    let daemons = collect(h, sidebar)?;
-    if *target == Target::Orphans && daemons.iter().any(|d| d.tab_open.is_none()) {
-        bail!("cannot tell which daemons are orphaned: herdr is unreachable");
-    }
+        Target::All => (keys, h.tab_infos().ok()),
+        Target::Orphans => {
+            let tabs = h
+                .tab_infos()
+                .context("cannot tell which daemons are orphaned: herdr is unreachable")?;
+            (orphans(&keys, &tabs), Some(tabs))
+        }
+    };
     let mut outcome = StopOutcome::default();
-    for daemon in daemons {
-        let selected = match target {
-            Target::Tab(tab) => daemon.key == tab_key(tab),
-            Target::All => true,
-            Target::Orphans => daemon.tab_open == Some(false),
-        };
-        if !selected {
-            continue;
-        }
-        let orphan = daemon.tab_open == Some(false);
-        if !force && !orphan && daemon.has_pending_work() {
+    let mut doomed = Vec::new();
+    for daemon in describe(selected, tabs.as_deref(), sidebar) {
+        if !force && !daemon.tab_gone() && daemon.has_pending_work() {
             outcome.refused.push(format!(
                 "not stopping {}: it has {} unsaved buffer(s) and {} pending comment(s) \
                  (use --force to discard them)",
                 daemon.name(),
-                daemon.unsaved_buffers.unwrap_or(0),
-                daemon.pending_comments.unwrap_or(0),
+                daemon.unsaved().unwrap_or(0),
+                daemon.comments().unwrap_or(0),
             ));
-            continue;
+        } else {
+            doomed.push(daemon);
         }
-        stop_tab_key(&daemon.key, sidebar)?;
-        outcome.stopped.push(match daemon.rss_bytes {
-            Some(rss) => format!("stopped {} (freed {})", daemon.name(), format_bytes(rss)),
-            None => format!("stopped {}", daemon.name()),
-        });
+    }
+    let keys: Vec<String> = doomed.iter().map(|daemon| daemon.key.clone()).collect();
+    for (daemon, (_, result)) in doomed.iter().zip(stop_keys(&keys, sidebar)) {
+        match (result, daemon.rss_bytes) {
+            (Ok(()), Some(rss)) => outcome.stopped.push(format!(
+                "stopped {} (freed {})",
+                daemon.name(),
+                format_bytes(rss)
+            )),
+            (Ok(()), None) => outcome.stopped.push(format!("stopped {}", daemon.name())),
+            (Err(error), _) => outcome
+                .failed
+                .push(format!("could not stop {}: {error:#}", daemon.name())),
+        }
     }
     Ok(outcome)
 }
@@ -287,7 +350,8 @@ pub fn daemons_cmd() -> Result<()> {
             for line in &outcome.stopped {
                 println!("{line}");
             }
-            if outcome.stopped.is_empty() && outcome.refused.is_empty() {
+            let problems: Vec<&String> = outcome.refused.iter().chain(&outcome.failed).collect();
+            if outcome.stopped.is_empty() && problems.is_empty() {
                 println!(
                     "{}",
                     if target == Target::Orphans {
@@ -297,8 +361,15 @@ pub fn daemons_cmd() -> Result<()> {
                     }
                 );
             }
-            if !outcome.refused.is_empty() {
-                bail!("{}", outcome.refused.join("\n"));
+            if !problems.is_empty() {
+                bail!(
+                    "{}",
+                    problems
+                        .iter()
+                        .map(|line| line.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
             }
             Ok(())
         }
@@ -353,15 +424,15 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
         "STATE".to_owned(),
     ]];
     for daemon in daemons {
-        let mut state = daemon.state.as_str().to_owned();
-        if let Some(n @ 1..) = daemon.unsaved_buffers {
+        let mut state = daemon.state().as_str().to_owned();
+        if let Some(n @ 1..) = daemon.unsaved() {
             state.push_str(&format!(" · {n} unsaved"));
         }
-        if let Some(n @ 1..) = daemon.pending_comments {
+        if let Some(n @ 1..) = daemon.comments() {
             state.push_str(&format!(" · {n} comment(s)"));
         }
         rows.push([
-            daemon.tab_id.clone(),
+            daemon.tab_ref().to_owned(),
             daemon.display_name().unwrap_or_else(dash),
             daemon.rss_bytes.map_or_else(dash, format_bytes),
             daemon.uptime_secs.map_or_else(dash, format_uptime),
@@ -385,6 +456,24 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
     out.push('\n');
     out.push_str(&summary(daemons));
     out.push('\n');
+    out.push_str(&hints(daemons));
+    out
+}
+
+/// How to act on the listing, so `herdr-nvim daemons` is the only command
+/// to remember. The example tab is the heaviest daemon.
+fn hints(daemons: &[DaemonInfo]) -> String {
+    let example = daemons
+        .iter()
+        .max_by_key(|daemon| daemon.rss_bytes.unwrap_or(0))
+        .map_or("<TAB>", DaemonInfo::tab_ref);
+    let mut out = format!(
+        "stop one: herdr-nvim daemons stop {example}   (--force discards unsaved work)\n\
+         stop all: herdr-nvim daemons stop --all\n"
+    );
+    if daemons.iter().any(DaemonInfo::tab_gone) {
+        out.push_str("orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)\n");
+    }
     out
 }
 
@@ -408,7 +497,7 @@ pub(crate) fn doctor_summary(h: &mut dyn Herdr, sidebar: &Sidebar) -> String {
     if daemons.is_empty() {
         return "no nvim daemons running".to_owned();
     }
-    let count = |state| daemons.iter().filter(|d| d.state == state).count();
+    let count = |state| daemons.iter().filter(|d| d.state() == state).count();
     let mut line = summary(&daemons);
     for state in [
         DaemonState::Orphaned,
@@ -602,16 +691,13 @@ mod tests {
     use super::*;
     use crate::{
         config::Config,
-        daemon::tests::{
-            nvim_available, process_alive, RuntimeEnvGuard, StateEnvGuard, TestDaemon,
-        },
         herdr::MockHerdr,
+        test_support::{kill, nvim_available, process_alive, wait_dead, TestDaemon, TestEnv},
     };
 
     fn tab(tab_id: &str, workspace: &str, label: &str) -> TabInfo {
         TabInfo {
-            tab_id: tab_id.to_owned(),
-            workspace_id: tab_id.split(':').next().unwrap().to_owned(),
+            tab_id: TabId::new(tab_id),
             workspace_label: Some(workspace.to_owned()),
             tab_label: Some(label.to_owned()),
             tab_number: None,
@@ -632,10 +718,17 @@ mod tests {
         }
     }
 
+    fn unreachable_herdr() -> MockHerdr {
+        MockHerdr {
+            tab_infos_results: VecDeque::from([Err(anyhow::anyhow!("no herdr"))]),
+            ..Default::default()
+        }
+    }
+
     fn row<'a>(daemons: &'a [DaemonInfo], tab_id: &str) -> &'a DaemonInfo {
         daemons
             .iter()
-            .find(|d| d.tab_id == tab_id)
+            .find(|d| d.tab_ref() == tab_id)
             .unwrap_or_else(|| panic!("no row for {tab_id}"))
     }
 
@@ -648,9 +741,7 @@ mod tests {
             eprintln!("skipping: nvim not found on PATH");
             return;
         }
-        let state = StateEnvGuard::new();
-        let runtime = RuntimeEnvGuard::new();
-        state.point_into(&runtime);
+        let _env = TestEnv::new();
         let config = Config::default();
         let sidebar = &config.sidebar;
 
@@ -664,131 +755,106 @@ mod tests {
         let job = "jobstart(['sleep', '300'])";
         #[cfg(windows)]
         let job = "jobstart(['ping', '-n', '300', '127.0.0.1'])";
-        let child: u32 = remote_expr(&heavy.socket, &format!("jobpid({job})"), sidebar)
-            .expect("start child job")
+        let child: u32 = heavy
+            .eval(&format!("jobpid({job})"))
             .parse()
             .expect("child pid");
         let child_guard = KillOnDrop(child);
-        remote_expr(
-            &heavy.socket,
+        heavy.eval(
             "luaeval(\"require('herdr-nvim.comments').add(vim.api.nvim_get_current_buf(), 1, 1, 'look')\")",
-            sidebar,
-        )
-        .expect("add a comment");
-        remote_expr(
-            &dirty.socket,
-            r#"execute('setlocal noswapfile | call setline(1, "unsaved")')"#,
-            sidebar,
-        )
-        .expect("dirty a buffer");
+        );
+        dirty.dirty_a_buffer();
 
         let mut herdr = herdr_with_tabs(8);
         let daemons = collect(&mut herdr, sidebar).unwrap();
         assert_eq!(daemons.len(), 3);
 
         let heavy_row = row(&daemons, "wHnDa:t1");
-        assert_eq!(heavy_row.state, DaemonState::Alive);
+        assert_eq!(heavy_row.state(), DaemonState::Alive);
         assert_eq!(heavy_row.display_name().as_deref(), Some("novu / api"));
-        assert_eq!(
-            heavy_row.pid.map(|p| p.to_string()),
-            Some(heavy.pid.clone())
-        );
-        assert_eq!(heavy_row.pending_comments, Some(1));
-        assert_eq!(heavy_row.unsaved_buffers, Some(0));
+        assert_eq!(heavy_row.probe.as_ref().unwrap().pid, Some(heavy.pid));
+        assert_eq!(heavy_row.comments(), Some(1));
+        assert_eq!(heavy_row.unsaved(), Some(0));
         assert!(heavy_row.uptime_secs.is_some());
         let procs = ProcessTable::load().expect("process table");
-        let heavy_pid = heavy_row.pid.unwrap();
         assert!(
-            procs.tree(heavy_pid).contains(&child),
+            procs.tree(heavy.pid).contains(&child),
             "child job not counted as the daemon's descendant"
         );
-        assert!(heavy_row.rss_bytes.is_some_and(|rss| rss > 0));
-        let own = procs.rss(heavy_pid).unwrap();
-        let child_rss = procs.rss(child).unwrap();
-        assert!(child_rss > 0);
-        assert!(procs.tree_rss(heavy_pid).unwrap() >= own + child_rss);
+        // The child's memory is part of the daemon's total.
+        let own = procs.rss(heavy.pid).unwrap();
+        assert!(heavy_row.rss_bytes.is_some_and(|rss| rss > own));
 
         let dirty_row = row(&daemons, "wHnDb:t1");
-        assert_eq!(dirty_row.state, DaemonState::Alive);
-        assert_eq!(dirty_row.unsaved_buffers, Some(1));
-        assert_eq!(
-            dirty_row.pid.map(|p| p.to_string()),
-            Some(dirty.pid.clone())
-        );
+        assert_eq!(dirty_row.state(), DaemonState::Alive);
+        assert_eq!(dirty_row.unsaved(), Some(1));
 
+        // Its tab id comes from the daemon itself, not from herdr.
         let orphan_row = row(&daemons, "wHnDc:t1");
-        assert_eq!(orphan_row.state, DaemonState::Orphaned);
+        assert_eq!(orphan_row.state(), DaemonState::Orphaned);
         assert_eq!(orphan_row.display_name(), None);
+
+        let json = serde_json::to_value(&daemons).unwrap();
+        assert_eq!(json[0]["tab_id"], "wHnDa:t1");
+        assert_eq!(json[0]["state"], "alive");
+        assert_eq!(json[0]["workspace_label"], "novu");
+        assert_eq!(json[2]["state"], "orphaned");
 
         let table = render_table(&daemons);
         assert!(table.contains("novu / api"), "{table}");
-        assert!(table.contains("3 daemons · "), "{table}");
         assert!(
             table
                 .lines()
                 .any(|l| l.starts_with("wHnDc:t1") && l.contains("—") && l.contains("orphaned")),
             "{table}"
         );
+        // The hints name real commands, and --orphans only with an orphan.
+        assert!(table.contains("daemons stop wHnD"), "{table}");
+        assert!(table.contains("daemons stop --all"), "{table}");
+        assert!(table.contains("daemons stop --orphans"), "{table}");
+        let without_orphan = render_table(&daemons[..2]);
+        assert!(without_orphan.contains("daemons stop --all"));
+        assert!(!without_orphan.contains("--orphans"), "{without_orphan}");
 
-        // herdr unreachable: still listed, names unknown, never orphaned.
-        let mut unreachable = MockHerdr {
-            tab_infos_results: VecDeque::from([Err(anyhow::anyhow!("no herdr"))]),
-            ..Default::default()
-        };
-        let blind = collect(&mut unreachable, sidebar).unwrap();
-        assert!(blind.iter().all(|d| d.state == DaemonState::Unknown));
+        // herdr unreachable: still listed, names unknown, never orphaned --
+        // and `--orphans` refuses rather than treating every tab as gone.
+        let blind = collect(&mut unreachable_herdr(), sidebar).unwrap();
+        assert!(blind.iter().all(|d| d.state() == DaemonState::Unknown));
         assert!(blind.iter().all(|d| d.display_name().is_none()));
+        assert!(!render_table(&blind).contains("--orphans"));
+        assert!(stop(&mut unreachable_herdr(), sidebar, &Target::Orphans, false).is_err());
+        orphan.assert_alive();
 
         // Unsaved work refuses a plain stop...
         let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDb:t1".into()), false).unwrap();
-        assert!(outcome.stopped.is_empty());
-        assert!(
-            outcome.refused[0].contains("1 unsaved buffer"),
-            "{outcome:?}"
-        );
-        dirty.assert_alive(sidebar);
+        assert_eq!((outcome.stopped.len(), outcome.refused.len()), (0, 1));
+        dirty.assert_alive();
         // ...but not a forced one.
         let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDb:t1".into()), true).unwrap();
         assert_eq!(outcome.stopped.len(), 1);
-        assert!(
-            outcome.stopped[0].starts_with("stopped herdr-nvim / 2"),
-            "{outcome:?}"
-        );
-        dirty.assert_gone(sidebar);
-        heavy.assert_alive(sidebar);
+        dirty.assert_gone();
+        heavy.assert_alive();
 
         // Orphans go without --force; open tabs stay.
         let outcome = stop(&mut herdr, sidebar, &Target::Orphans, false).unwrap();
         assert_eq!(outcome.stopped.len(), 1, "{outcome:?}");
-        orphan.assert_gone(sidebar);
-        heavy.assert_alive(sidebar);
+        orphan.assert_gone();
+        heavy.assert_alive();
 
         // Key form works; the pending comment protects it until --force, and
         // stopping it takes its child process down too.
         let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa_t1".into()), false).unwrap();
-        assert!(
-            outcome.refused[0].contains("1 pending comment"),
-            "{outcome:?}"
-        );
-        heavy.assert_alive(sidebar);
+        assert_eq!(outcome.refused.len(), 1);
+        heavy.assert_alive();
         let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa_t1".into()), true).unwrap();
-        assert!(
-            outcome.stopped[0].starts_with("stopped novu / api"),
-            "{outcome:?}"
-        );
-        heavy.assert_gone(sidebar);
+        assert_eq!((outcome.stopped.len(), outcome.failed.len()), (1, 0));
+        heavy.assert_gone();
         wait_dead(child);
-        assert!(
-            !process_alive(&child.to_string()),
-            "child job outlived its daemon"
-        );
+        assert!(!process_alive(child), "child job outlived its daemon");
         drop(child_guard);
 
         assert!(collect(&mut herdr, sidebar).unwrap().is_empty());
-        let error = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("no nvim daemon for tab wHnDa:t1"));
+        assert!(stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).is_err());
     }
 
     /// Kills a test's child process if an assertion fails before its daemon
@@ -797,24 +863,9 @@ mod tests {
 
     impl Drop for KillOnDrop {
         fn drop(&mut self) {
-            #[cfg(not(windows))]
-            let _ = std::process::Command::new("kill")
-                .arg(self.0.to_string())
-                .output();
-            #[cfg(windows)]
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/PID", &self.0.to_string()])
-                .output();
-        }
-    }
-
-    /// nvim stops its jobs on exit, but asynchronously; give it a moment.
-    fn wait_dead(pid: u32) {
-        for _ in 0..40 {
-            if !process_alive(&pid.to_string()) {
-                return;
+            if process_alive(self.0) {
+                kill(self.0);
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 

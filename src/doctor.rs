@@ -28,7 +28,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::{
-    daemon, daemons,
+    daemon,
     herdr::{CliHerdr, Dir, Herdr},
     maneuver,
 };
@@ -43,7 +43,7 @@ pub fn doctor_cmd() -> Result<()> {
     // into the scratch temp dir below.
     println!(
         "daemons: {}",
-        daemons::doctor_summary(&mut CliHerdr, &config.sidebar)
+        daemon::inventory::doctor_summary(&mut CliHerdr, &config.sidebar)
     );
 
     // Isolate all daemon sockets and maneuver state files into a throwaway temp

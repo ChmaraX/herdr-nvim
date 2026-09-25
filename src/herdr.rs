@@ -5,6 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::state::TabId;
+
 /// The plugin id, used for `herdr plugin pane open --entrypoint sidebar`.
 const PLUGIN_ID: &str = "chmarax.herdr-nvim";
 
@@ -33,8 +35,7 @@ pub struct AgentInfo {
 /// hidden nvim daemon belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabInfo {
-    pub tab_id: String,
-    pub workspace_id: String,
+    pub tab_id: TabId,
     pub workspace_label: Option<String>,
     pub tab_label: Option<String>,
     pub tab_number: Option<u64>,
@@ -63,22 +64,20 @@ fn parse_tab_infos(value: &Value) -> Result<Vec<TabInfo>> {
         .unwrap_or_default();
     tabs.iter()
         .map(|tab| {
-            let tab_id = string_at(tab, "/tab_id")?.to_owned();
+            let tab_id = TabId::new(string_at(tab, "/tab_id")?);
             let workspace_id = tab
                 .get("workspace_id")
                 .and_then(Value::as_str)
-                .map_or_else(|| tab_id.split_once(':').map_or("", |(ws, _)| ws), |ws| ws)
-                .to_owned();
+                .unwrap_or_else(|| tab_id.workspace());
             let workspace_label = workspaces
                 .iter()
-                .find(|ws| ws.get("workspace_id").and_then(Value::as_str) == Some(&workspace_id))
+                .find(|ws| ws.get("workspace_id").and_then(Value::as_str) == Some(workspace_id))
                 .and_then(label);
             Ok(TabInfo {
                 workspace_label,
                 tab_label: label(tab),
                 tab_number: tab.get("number").and_then(Value::as_u64),
                 tab_id,
-                workspace_id,
             })
         })
         .collect()
@@ -213,10 +212,9 @@ pub trait Herdr {
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
-    /// All tab ids across all workspaces (raw, unsanitized). Used by
-    /// `daemon::gc` to determine which per-tab daemons are still live.
-    fn list_tabs(&mut self) -> Result<Vec<String>>;
-    /// Every live tab with its workspace/tab names (`herdr api snapshot`).
+    /// Every live tab across all workspaces, with its workspace/tab names
+    /// (`herdr api snapshot`). Used by `daemon::registry::gc` to tell which
+    /// per-tab daemons are still live, and to name them.
     fn tab_infos(&mut self) -> Result<Vec<TabInfo>>;
     /// Read the pane's recent (unwrapped) output as plain text, newest lines
     /// last. `lines` bounds how many trailing lines are returned.
@@ -444,17 +442,6 @@ impl Herdr for CliHerdr {
             .any(|(pane_id, _tab_id)| pane_id == pane))
     }
 
-    fn list_tabs(&mut self) -> Result<Vec<String>> {
-        let value = Self::run(&args(&["api", "snapshot"]))?;
-        let tabs = value
-            .pointer("/result/snapshot/tabs")
-            .and_then(Value::as_array)
-            .context("herdr api snapshot response missing result.snapshot.tabs array")?;
-        tabs.iter()
-            .map(|tab| Ok(string_at(tab, "/tab_id")?.to_owned()))
-            .collect()
-    }
-
     fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
         parse_tab_infos(&Self::run(&args(&["api", "snapshot"]))?)
     }
@@ -585,7 +572,6 @@ pub struct MockHerdr {
     pub create_tab_results: VecDeque<Result<(String, String)>>,
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
-    pub list_tabs_results: VecDeque<Result<Vec<String>>>,
     pub tab_infos_results: VecDeque<Result<Vec<TabInfo>>>,
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
@@ -697,11 +683,6 @@ impl Herdr for MockHerdr {
     fn pane_alive(&mut self, pane: &str) -> Result<bool> {
         self.ops.push(format!("alive {pane}"));
         Self::next(&mut self.pane_alive_results, "pane_alive")
-    }
-
-    fn list_tabs(&mut self) -> Result<Vec<String>> {
-        self.ops.push("list_tabs".to_owned());
-        Self::next(&mut self.list_tabs_results, "list_tabs")
     }
 
     fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
@@ -822,15 +803,13 @@ mod tests {
             tabs,
             [
                 TabInfo {
-                    tab_id: "w26:t2".to_owned(),
-                    workspace_id: "w26".to_owned(),
+                    tab_id: TabId::new("w26:t2"),
                     workspace_label: Some("novu".to_owned()),
                     tab_label: Some("api".to_owned()),
                     tab_number: Some(2),
                 },
                 TabInfo {
-                    tab_id: "w9:t1".to_owned(),
-                    workspace_id: "w9".to_owned(),
+                    tab_id: TabId::new("w9:t1"),
                     workspace_label: None,
                     tab_label: None,
                     tab_number: None,

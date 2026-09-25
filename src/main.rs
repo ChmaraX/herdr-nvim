@@ -2,7 +2,6 @@ mod bridge;
 mod candidates;
 mod config;
 mod daemon;
-mod daemons;
 mod doctor;
 mod extract;
 mod fff;
@@ -15,6 +14,8 @@ mod path;
 mod picker;
 mod sessions;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 fn main() {
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
@@ -26,9 +27,9 @@ fn main() {
     let code = match mode.as_str() {
         "toggle" => run(maneuver::toggle_cmd),
         "sidebar" => run(daemon::sidebar_cmd),
-        "daemon-gc" => run(daemon::gc_cmd),
-        "on-event" => run(daemon::on_event_cmd),
-        "daemons" => run(daemons::daemons_cmd),
+        "daemon-gc" => run(daemon::registry::gc_cmd),
+        "on-event" => run(daemon::events::on_event_cmd),
+        "daemons" => run(daemon::inventory::daemons_cmd),
         "doctor" => run(doctor::doctor_cmd),
         "pick-file" => run(bridge::pick_file_cmd),
         "picker" => run(picker::picker_cmd),

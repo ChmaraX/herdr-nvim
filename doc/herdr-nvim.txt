@@ -15,7 +15,10 @@ survive a herdr restart are reaped when herdr starts.
 
 To list the daemons (tab, workspace/tab names, memory including child
 processes such as LSP servers, uptime, state) or stop one by hand without
-closing its tab, run the `herdr-nvim` binary from a shell:
+closing its tab, run the `herdr-nvim` binary from a shell. The listing ends
+with the stop commands, e.g. `stop one: herdr-nvim daemons stop w26:t2`,
+`stop all: herdr-nvim daemons stop --all`, and `--orphans` when a daemon's
+tab is gone:
 >sh
   herdr-nvim daemons                   # --json for machine-readable output
   herdr-nvim daemons stop w26:t2       # or the key form w26_t2

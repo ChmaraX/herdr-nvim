@@ -74,15 +74,23 @@ are discarded. Daemons survive a herdr restart, so restored tabs reattach to
 their nvim; any whose tab did not come back are reaped when herdr starts.
 
 To see which tab each hidden nvim belongs to and how much memory it (with its
-LSP servers) holds, or to free one without closing its tab:
+LSP servers) holds, run `herdr-nvim daemons` (`--json` for machine-readable
+output). The listing ends with the commands to free them:
 
-```sh
-herdr-nvim daemons                  # table; --json for machine-readable output
-herdr-nvim daemons stop w26:t2      # refuses if it has unsaved buffers or pending comments
-herdr-nvim daemons stop w26:t2 --force
-herdr-nvim daemons stop --orphans   # daemons whose tab is gone
-herdr-nvim daemons stop --all [--force]
+```text
+TAB       WORKSPACE / TAB   RAM      UP       STATE
+w26:t2    novu / api        1.4 GB   3h 31m   alive · 2 unsaved
+w26:t5    novu / web        612 MB   12m      alive
+w9:t1     —                 180 MB   2d 4h    orphaned
+
+3 daemons · 2.2 GB total
+stop one: herdr-nvim daemons stop w26:t2   (--force discards unsaved work)
+stop all: herdr-nvim daemons stop --all
+orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)
 ```
+
+`daemons stop <tab>` refuses a daemon with unsaved buffers or pending comments
+unless given `--force`; `--orphans` stops the daemons whose tab is gone.
 
 The next toggle in that tab starts a fresh nvim.
 
