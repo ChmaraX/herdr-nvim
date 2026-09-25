@@ -327,27 +327,6 @@ T.test("init: ref_range refuses a buffer with no file", function()
   T.ok(warns[1]:find("no file", 1, true))
 end)
 
-T.test("init: ref_range clamps a reversed, out-of-range span", function()
-  local b = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "one", "two" })
-  vim.api.nvim_buf_set_name(b, "/repo/clamp.lua")
-  vim.api.nvim_set_current_buf(b)
-
-  local ui = require("herdr-nvim.ui")
-  local dispatch = require("herdr-nvim.dispatch")
-  local agents = require("herdr-nvim.agents")
-  local sent = {}
-  local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
-  ui.pick_agent = function() end
-  dispatch.send = function(_, text) sent = { text }; return true end
-  agents.list = function() return { { pane_id = "wZ:p9", title = "pi", status = "idle", cwd = "/repo" } } end
-
-  hn.ref_range(99, 0)
-  ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
-
-  T.eq(sent[1], "clamp.lua:1-2 ", "span clamps to the buffer")
-end)
-
 T.test("init: ref_line and ref_selection resolve their own span", function()
   local b = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(b, 0, -1, false, { "a", "b", "c", "d" })

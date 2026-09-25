@@ -44,8 +44,6 @@ end)
 T.test("prompt: format_ref is a bare citation ending in a space", function()
   local s = prompt.format_ref({ file = "/repo/lua/init.lua", start_line = 5, end_line = 10 }, { cwd = "/repo" })
   T.eq(s, "lua/init.lua:5-10 ")
-  T.ok(not s:find("`", 1, true), "a ref carries no code")
-  T.ok(not s:find("Comment:", 1, true), "a ref carries no comment")
 end)
 
 T.test("prompt: format_ref collapses a single line", function()

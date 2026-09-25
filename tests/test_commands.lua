@@ -58,10 +58,10 @@ T.test("commands: run send/submit map to the send_all submit flag", function()
   hn.send_all = orig
 end)
 
-T.test("commands: run ref forwards the range and takes no submit flag", function()
+T.test("commands: run ref forwards the range", function()
   local got
   local orig = hn.ref_range
-  hn.ref_range = function(s, e, extra) got = { s, e, extra } end
+  hn.ref_range = function(s, e) got = { s, e } end
   commands.run({ fargs = { "ref" }, line1 = 4, line2 = 9 })
   hn.ref_range = orig
   T.eq(got, { 4, 9 })

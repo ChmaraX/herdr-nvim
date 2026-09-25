@@ -123,7 +123,8 @@ already set. To bind your own, set `keymaps = false` and map the command:
 
 ```lua
 require("herdr-nvim").setup({ keymaps = false })
-vim.keymap.set({ "n", "x" }, "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "Comment" })
+vim.keymap.set("n", "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "Comment" })
+vim.keymap.set("x", "<leader>ac", ":Herdr comment<CR>", { desc = "Comment" }) -- `:` passes the selection
 ```
 
 Or call the Lua API directly (`comment_line`, `comment_selection`,
@@ -153,7 +154,9 @@ your screen. It still sends.
 
 Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
 your edits), cleared after a successful send. The sent prompt includes each
-comment's file:line plus the repo and branch, so the agent has context.
+comment's file:line plus the repo and branch, so the agent has context. Paths
+use the same short form as references: relative to the receiving agent's cwd,
+and `path:12` for a single line.
 
 For a pending-comment indicator (`● 3`) in your statusline:
 `require("herdr-nvim").statusline()`.

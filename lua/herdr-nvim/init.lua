@@ -101,10 +101,10 @@ end
 
 -- Single funnel for every send (pending comments and bare references alike), so
 -- the agent resolution, the picker fallback, and the "agent is working" warning
--- all live in exactly one place. `text` is either the payload or a
--- function(agent) returning it -- a reference needs the resolved agent's cwd to
--- shorten its path. `on_sent(agent)` runs only after a successful dispatch.
-function M._deliver_to_agent(text, opts, on_sent)
+-- all live in exactly one place. `build_payload(agent)` runs once the agent is
+-- resolved -- paths are shortened against that agent's cwd. `on_sent(agent,
+-- payload)` runs only after a successful dispatch.
+local function deliver_to_agent(build_payload, opts, on_sent)
   local agent_list, err = agents.list()
   if not agent_list then
     vim.notify("herdr-nvim: " .. err, vim.log.levels.ERROR)
@@ -114,13 +114,13 @@ function M._deliver_to_agent(text, opts, on_sent)
     if agent.status == "working" then
       vim.notify("herdr-nvim: " .. agents.display(agent) .. " is working — sending anyway", vim.log.levels.WARN)
     end
-    local payload = type(text) == "function" and text(agent) or text
+    local payload = build_payload(agent)
     local ok, derr = dispatch.send(agent.pane_id, payload, opts)
     if not ok then
       vim.notify("herdr-nvim: " .. derr, vim.log.levels.ERROR)
       return
     end
-    on_sent(agent)
+    on_sent(agent, payload)
   end
   -- Skip the picker when the target is unambiguous (the common one-agent case);
   -- fall back to the picker only when 2+ agents could plausibly be meant.
@@ -145,11 +145,9 @@ function M.send_all(opts)
   local first_file = list[1].file
   local cwd = first_file ~= "" and vim.fn.fnamemodify(first_file, ":h") or nil
   local header_context = M._git_context(cwd)
-  -- Deferred like ref_range: paths are shortened against the resolved agent's cwd.
-  local function payload(agent)
+  deliver_to_agent(function(agent)
     return prompt.format(items, { header_context = header_context, cwd = agent.cwd })
-  end
-  M._deliver_to_agent(payload, opts, function(agent)
+  end, opts, function(agent)
     if M.config.clear_after_send then
       for _, c in ipairs(list) do
         M.delete_comment(c)
@@ -170,26 +168,18 @@ function M.ref_range(start_line, end_line)
     vim.notify("herdr-nvim: buffer has no file to reference", vim.log.levels.WARN)
     return
   end
-  if start_line > end_line then
-    start_line, end_line = end_line, start_line
-  end
-  local count = vim.api.nvim_buf_line_count(bufnr)
-  start_line = math.max(1, math.min(start_line, count))
-  end_line = math.max(1, math.min(end_line, count))
-  -- A reference points at the file on disk, so unwritten changes are invisible
-  -- to whoever opens it. Worth saying out loud; not worth blocking over.
-  if vim.bo[bufnr].modified then
-    vim.notify("herdr-nvim: buffer has unsaved changes — the agent reads the file on disk",
-      vim.log.levels.WARN)
-  end
   local item = { file = file, start_line = start_line, end_line = end_line }
-  -- Deferred: the path is shortened against the cwd of whichever agent is
-  -- resolved, which the picker may not settle until after this returns.
-  local function payload(agent)
+  deliver_to_agent(function(agent)
     return prompt.format_ref(item, { cwd = agent.cwd })
-  end
-  M._deliver_to_agent(payload, { submit = false }, function(agent)
-    vim.notify("herdr-nvim: referenced " .. vim.trim(prompt.format_ref(item, { cwd = agent.cwd })))
+  end, { submit = false }, function(_, payload)
+    vim.notify("herdr-nvim: referenced " .. vim.trim(payload))
+    -- A reference points at the file on disk, so unwritten changes are
+    -- invisible to whoever opens it. Worth saying out loud; not worth blocking
+    -- over. Only after a send, so a cancelled picker stays silent.
+    if vim.bo[bufnr].modified then
+      vim.notify("herdr-nvim: buffer has unsaved changes — the agent reads the file on disk",
+        vim.log.levels.WARN)
+    end
   end)
 end
 

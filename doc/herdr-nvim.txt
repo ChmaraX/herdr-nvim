@@ -71,19 +71,21 @@ lazy.nvim can lazy-load it and declare the keymaps in the spec:
     keys = {
       { "<leader>a", "", desc = "+AI", mode = { "n", "x" } },
       { "<leader>ac", "<CMD>Herdr comment<CR>", desc = "Comment" },
-      { "<leader>ac", "<CMD>Herdr comment<CR>", mode = "x" },
+      { "<leader>ac", ":Herdr comment<CR>", mode = "x" },
       { "<leader>al", "<CMD>Herdr list<CR>", desc = "List comments" },
       { "<leader>as", "<CMD>Herdr send<CR>", desc = "Send to agent" },
       { "<leader>aS", "<CMD>Herdr submit<CR>", desc = "Submit to agent" },
       { "<leader>ai", "<CMD>Herdr ref<CR>", desc = "Reference lines" },
-      { "<leader>ai", "<CMD>Herdr ref<CR>", mode = "x" },
+      { "<leader>ai", ":Herdr ref<CR>", mode = "x" },
     },
     opts = {},
   }
 <
 
 The leader-only `+AI` entry creates a which-key group; the `mode = "x"`
-entries share one key across normal and visual mode.
+entries share one key across normal and visual mode. Visual mode maps use
+`:` rather than `<CMD>`: the `:` passes the selection as the `'<,'>` range,
+while `<CMD>` would only see the cursor line.
 
 No plugin manager? It still works in vanilla nvim and in the herdr sidebar
 nvim, whose runtimepath the daemon injects: registration happens both from
@@ -221,7 +223,10 @@ herdr-nvim.delete_comment({comment}) ~
                                                          *herdr-nvim.send_all()*
 herdr-nvim.send_all({opts}) ~
   Send all pending comments to a chosen agent (picked via vim.ui.select),
-  preceded by the formatted prompt with file:line and git context.
+  preceded by the formatted prompt with file:line and git context. Each path
+  is shortened against the receiving agent's cwd (a file outside it stays
+  absolute), and a single line collapses to `path:12`, the same spelling as
+  |herdr-nvim.ref_range()|.
   Parameters: ~
     {opts} (`table`) Options:
     - `submit` (`boolean`, default false): when true, auto-submits the text
