@@ -21,8 +21,8 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 - **Code annotations you send to the agent.** Comment lines or a selection
   like a code review. Then send them all to any agent in the workspace (pi,
   claude, codex), with file:line and git context.
-- **Inline file:line references.** Mid-sentence, drop a bare `path:12-20` into
-  the agent's input — no comment, no code — and carry on typing.
+- **Inline file:line references.** Drop `path:12-20` into the agent's input
+  mid-sentence.
 
 ## Requirements
 
@@ -138,25 +138,12 @@ only appears when two or more agents could plausibly be meant.
 
 ## References
 
-Not every hand-off is a review. `<leader>ai` (or `:Herdr ref`) sends nothing but
-the citation — `lua/herdr-nvim/init.lua:118-141`, with a trailing space — so you
-can fire it in the middle of a half-typed message and keep going. No comment to
-write, no code to paste, and it never submits.
-
-The path is shortened against the cwd of the agent that actually receives it, so
-it reads like a path you would type; a file outside that cwd keeps its absolute
-path, the only spelling that still resolves from there. A single line collapses
-to `path:12`.
-
-A reference points at the file on disk, so if the buffer has unsaved changes you
-get a warning saying so — the agent will read what is written, not what is on
-your screen. It still sends.
+`<leader>ai` (or `:Herdr ref`) drops just `path:12-20` into the agent's input,
+so you can mention code mid-sentence. It never submits.
 
 Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
 your edits), cleared after a successful send. The sent prompt includes each
-comment's file:line plus the repo and branch, so the agent has context. Paths
-use the same short form as references: relative to the receiving agent's cwd,
-and `path:12` for a single line.
+comment's file:line plus the repo and branch, so the agent has context.
 
 For a pending-comment indicator (`● 3`) in your statusline:
 `require("herdr-nvim").statusline()`.
