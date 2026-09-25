@@ -104,13 +104,14 @@ T.test("init: send_all formats, dispatches, clears", function()
   local o1, o2, o3 = ui.pick_agent, dispatch.send, agents.list
   ui.pick_agent = function(_, cb) cb({ pane_id = "wZ:p9", title = "π", status = "idle" }) end
   dispatch.send = function(pane, text, opts) sent = { pane, text, opts }; return true end
-  agents.list = function() return { { pane_id = "wZ:p9", title = "π", status = "idle" } } end
+  local dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":h")
+  agents.list = function() return { { pane_id = "wZ:p9", title = "π", status = "idle", cwd = dir } } end
 
   hn.send_all({ submit = false })
   ui.pick_agent, dispatch.send, agents.list = o1, o2, o3
 
   T.eq(sent[1], "wZ:p9")
-  T.ok(sent[2]:find("1. " .. vim.api.nvim_buf_get_name(b) .. ":1-1", 1, true))
+  T.ok(sent[2]:find("1. hn-send.lua:1\n", 1, true), "path shortened against the agent's cwd")
   T.ok(sent[2]:find("> alpha", 1, true))
   T.eq(sent[3].submit, false)
   T.eq(comments.list(), {}, "clear_after_send default clears comments")

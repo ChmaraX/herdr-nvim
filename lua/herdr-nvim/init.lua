@@ -144,8 +144,12 @@ function M.send_all(opts)
   end
   local first_file = list[1].file
   local cwd = first_file ~= "" and vim.fn.fnamemodify(first_file, ":h") or nil
-  local text = prompt.format(items, { header_context = M._git_context(cwd) })
-  M._deliver_to_agent(text, opts, function(agent)
+  local header_context = M._git_context(cwd)
+  -- Deferred like ref_range: paths are shortened against the resolved agent's cwd.
+  local function payload(agent)
+    return prompt.format(items, { header_context = header_context, cwd = agent.cwd })
+  end
+  M._deliver_to_agent(payload, opts, function(agent)
     if M.config.clear_after_send then
       for _, c in ipairs(list) do
         M.delete_comment(c)
