@@ -1,3 +1,11 @@
+//! The per-tab headless nvim daemon: spawning it and attaching the sidebar's
+//! UI to it. Its registry and shutdown live in `registry`, the herdr close
+//! hooks in `events`, and the `herdr-nvim daemons` command in `inventory`.
+
+pub(crate) mod events;
+pub(crate) mod inventory;
+pub(crate) mod registry;
+
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -6,21 +14,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-// `fs` is used cross-platform by `wait_for_layout_ready`; `OsStr`/`ErrorKind`
-// are only needed by the Unix filesystem-socket code.
-#[cfg(not(windows))]
-use std::{ffi::OsStr, io::ErrorKind};
-
 use anyhow::{bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
-    herdr::{CliHerdr, Herdr},
-    state::tab_key,
+    state::TabId,
 };
 
-#[cfg(not(windows))]
-use crate::state;
+use registry::socket_path;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,43 +30,6 @@ const READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // Short: only waits out the tail of an already-in-flight `maneuver::open`,
 // never a fresh operation, so a stale size is preferable to a hung-looking pane.
 const READY_POLL_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[cfg(test)]
-pub static RUNTIME_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Directory that holds one `<tab>.sock` per running daemon, one per tab.
-///
-/// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
-/// XDG runtime dir, falling back to the platform temp dir. Windows uses named
-/// pipes instead of filesystem sockets, so this directory is only used by the
-/// Unix implementation.
-#[cfg(not(windows))]
-fn socket_dir() -> PathBuf {
-    env::var_os("HERDR_NVIM_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("XDG_RUNTIME_DIR").map(|path| PathBuf::from(path).join("herdr-nvim"))
-        })
-        .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"))
-}
-
-pub fn socket_path(tab: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{}", tab_key(tab)))
-    }
-    #[cfg(not(windows))]
-    {
-        socket_dir().join(format!("{}.sock", tab_key(tab)))
-    }
-}
-
-/// The workspace id embedded in a tab id. Tab ids are `<workspace>:<tab>`, so
-/// the workspace is the prefix before the first `:`. A tab id without a `:`
-/// (never expected in practice) is returned unchanged rather than panicking.
-fn workspace_of_tab(tab: &str) -> &str {
-    tab.split_once(':').map_or(tab, |(workspace, _)| workspace)
-}
 
 /// Build a `Command` invoking the configured nvim binary with the configured
 /// environment overrides. Shared by every call site that talks to a daemon
@@ -91,6 +55,10 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
     if daemon_healthy(&socket, &config.sidebar) {
+        // Also (re)register an already-running daemon, so one spawned before
+        // the Windows marker existed still becomes discoverable.
+        #[cfg(windows)]
+        registry::register_daemon(tab)?;
         return Ok(socket);
     }
 
@@ -104,12 +72,12 @@ pub fn ensure_daemon(
         // A stale (dead) socket file would make `nvim --listen` fail to bind.
         // We only get here after the health check failed, so any file present
         // is dead.
-        remove_socket(&socket)?;
+        crate::state::remove_file_if_exists(&socket)?;
     }
-    #[cfg(windows)]
-    let _ = socket;
 
     spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
+    #[cfg(windows)]
+    registry::register_daemon(tab)?;
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
@@ -155,7 +123,7 @@ fn spawn_daemon(
     // picker opens even for an unambiguous target (issue #20). Setting them here
     // from the tab id we already have makes scoping deterministic regardless of
     // which pane first spawned the daemon.
-    let workspace = workspace_of_tab(tab);
+    let workspace = TabId::new(tab).workspace().to_owned();
 
     let mut command = nvim_cmd(sidebar);
     command
@@ -166,7 +134,7 @@ fn spawn_daemon(
         .arg(format!("set rtp+={}", plugin_root.display()))
         .arg("--cmd")
         .arg(&vim_enter)
-        .env("HERDR_WORKSPACE_ID", workspace)
+        .env("HERDR_WORKSPACE_ID", &workspace)
         .env("HERDR_TAB_ID", tab)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -223,7 +191,7 @@ fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
 /// the trimmed stdout, or `None` if the daemon is unreachable.
-fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
+pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
     let output = nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
@@ -330,238 +298,10 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
     bail!("could not locate plugin root (set HERDR_NVIM_PLUGIN_ROOT)")
 }
 
-/// Garbage-collect daemons whose tab no longer exists: quit the daemon and
-/// remove its socket and state file.
-pub fn gc_cmd() -> Result<()> {
-    let mut herdr = CliHerdr;
-    let config = crate::config::load();
-    gc(&mut herdr, &config.sidebar)
-}
-
-/// `pub(crate)` so `maneuver::toggle` can run an opportunistic, best-effort gc
-/// on every toggle to reap stale per-tab daemons from closed tabs.
-pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
-    #[cfg(windows)]
-    {
-        // Windows named pipes cannot be enumerated through read_dir. The pipe
-        // disappears with its daemon, so there is no socket cleanup to do.
-        let _ = (h, sidebar);
-        return Ok(());
-    }
-
-    #[cfg(not(windows))]
-    {
-        let dir = socket_dir();
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read runtime directory {}", dir.display()))
-            }
-        };
-
-        let tabs = h.list_tabs()?;
-        let known: Vec<String> = tabs.iter().map(|tab| tab_key(tab)).collect();
-        for entry in entries {
-            let path = entry
-                .with_context(|| format!("failed to read entry in {}", dir.display()))?
-                .path();
-            if path.extension().and_then(OsStr::to_str) != Some("sock") {
-                continue;
-            }
-            let Some(tab_stem) = path.file_stem().and_then(OsStr::to_str) else {
-                continue;
-            };
-            if known.iter().any(|known_tab| known_tab == tab_stem) {
-                continue;
-            }
-
-            // Orphaned: ask the daemon (if any) to quit, then unlink socket +
-            // state. `tab_stem` is a filename component, already sanitized (see
-            // `state::tab_key`), so it goes through `state::remove_key` rather
-            // than `state::remove` -- that avoids sanitizing an already-sanitized
-            // key a second time.
-            let _ = send_quit(&path, sidebar);
-            remove_socket(&path)?;
-            state::remove_key(tab_stem)?;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(any(not(windows), test))]
-fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
-    nvim_cmd(sidebar)
-        .arg("--headless")
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote-send")
-        .arg("<cmd>qa!<cr>")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("failed to run nvim --remote-send for {}", socket.display()))?;
-    // Give the daemon a moment to process the quit before we unlink the socket.
-    sleep(Duration::from_millis(200));
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn remove_socket(socket: &Path) -> Result<()> {
-    match fs::remove_file(socket) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to remove socket {}", socket.display()))
-        }
-    }
-}
-
-#[cfg(all(windows, test))]
-fn remove_socket(_socket: &Path) -> Result<()> {
-    // Named pipes are kernel objects and are removed when their owner exits.
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        ffi::OsString,
-        fs,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            MutexGuard,
-        },
-    };
-
     use super::*;
-
-    #[cfg(not(windows))]
-    use crate::{herdr::MockHerdr, state};
-    #[cfg(not(windows))]
-    use std::collections::VecDeque;
-
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    /// Redirects the socket dir (and an isolated, empty nvim config) into a
-    /// unique temp dir for the duration of a test, restoring the prior env on
-    /// drop. The config isolation keeps any real user init.lua out of the
-    /// spawned daemon so tests are hermetic and fast.
-    struct RuntimeEnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        old_runtime: Option<OsString>,
-        old_config: Option<OsString>,
-        dir: PathBuf,
-    }
-
-    impl RuntimeEnvGuard {
-        fn new() -> Self {
-            let lock = RUNTIME_DIR_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let dir = env::temp_dir().join(format!(
-                "hn-daemon-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-
-            let old_runtime = env::var_os("HERDR_NVIM_RUNTIME_DIR");
-            let old_config = env::var_os("XDG_CONFIG_HOME");
-            env::set_var("HERDR_NVIM_RUNTIME_DIR", &dir);
-            env::set_var("XDG_CONFIG_HOME", dir.join("xdg-config"));
-
-            Self {
-                _lock: lock,
-                old_runtime,
-                old_config,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for RuntimeEnvGuard {
-        fn drop(&mut self) {
-            match &self.old_runtime {
-                Some(value) => env::set_var("HERDR_NVIM_RUNTIME_DIR", value),
-                None => env::remove_var("HERDR_NVIM_RUNTIME_DIR"),
-            }
-            match &self.old_config {
-                Some(value) => env::set_var("XDG_CONFIG_HOME", value),
-                None => env::remove_var("XDG_CONFIG_HOME"),
-            }
-            let _ = fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn nvim_available() -> bool {
-        #[cfg(not(windows))]
-        {
-            return Command::new("which")
-                .arg("nvim")
-                .output()
-                .map(|output| output.status.success())
-                .unwrap_or(false);
-        }
-
-        #[cfg(windows)]
-        {
-            return Command::new("where.exe")
-                .arg("nvim")
-                .output()
-                .map(|output| output.status.success())
-                .unwrap_or(false);
-        }
-    }
-
-    /// Best-effort daemon shutdown so no stray `nvim --headless` survives a test.
-    fn stop_daemon(socket: &Path) {
-        let _ = send_quit(socket, &Sidebar::default());
-        for _ in 0..50 {
-            if remote_expr(socket, "1+1", &Sidebar::default()).is_none() {
-                break;
-            }
-            sleep(Duration::from_millis(100));
-        }
-        let _ = remove_socket(socket);
-    }
-
-    #[test]
-    fn socket_path_respects_runtime_dir_override() {
-        let _guard = RuntimeEnvGuard::new();
-        #[cfg(not(windows))]
-        assert_eq!(socket_path("wsX"), _guard.dir.join("wsX.sock"));
-        #[cfg(windows)]
-        assert_eq!(
-            socket_path("wsX"),
-            PathBuf::from(r"\\.\pipe\herdr-nvim-wsX")
-        );
-    }
-
-    #[test]
-    fn socket_path_sanitizes_colon_in_tab_id() {
-        let _guard = RuntimeEnvGuard::new();
-        #[cfg(not(windows))]
-        assert_eq!(socket_path("wX:t1"), _guard.dir.join("wX_t1.sock"));
-        #[cfg(windows)]
-        assert_eq!(
-            socket_path("wX:t1"),
-            PathBuf::from(r"\\.\pipe\herdr-nvim-wX_t1")
-        );
-    }
-
-    #[test]
-    fn workspace_of_tab_takes_the_prefix_before_the_colon() {
-        assert_eq!(workspace_of_tab("w39:t1"), "w39");
-        // Only the first colon splits; the rest belongs to the tab segment.
-        assert_eq!(workspace_of_tab("w39:t1:x"), "w39");
-        // No colon / empty: return the input unchanged rather than panicking.
-        assert_eq!(workspace_of_tab("w39"), "w39");
-        assert_eq!(workspace_of_tab(""), "");
-    }
+    use crate::test_support::{nvim_available, TestDaemon, TestEnv};
 
     // Regression test for issue #20: a daemon spawned through the pick-file
     // picker inherits only HERDR_PLUGIN_CONTEXT_JSON (plugin panes get no flat
@@ -574,8 +314,7 @@ mod tests {
             eprintln!("skipping: nvim not found on PATH");
             return;
         }
-        let _guard = RuntimeEnvGuard::new();
-        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let _env = TestEnv::new();
         let config = Config::default();
 
         // Mimic the picker/finisher parent env: JSON blob present, flat vars
@@ -586,25 +325,18 @@ mod tests {
             "HERDR_PLUGIN_CONTEXT_JSON",
             r#"{"workspace_id":"w39","tab_id":"w39:t1"}"#,
         );
-
-        let socket =
-            ensure_daemon("w39:t1", &plugin_root, &config, &plugin_root).expect("ensure_daemon");
+        let daemon = TestDaemon::spawn("w39:t1", &config);
+        env::remove_var("HERDR_PLUGIN_CONTEXT_JSON");
 
         // What agents.lua reads inside the daemon must now be populated.
-        let ws = remote_expr(&socket, "$HERDR_WORKSPACE_ID", &config.sidebar);
-        let tab = remote_expr(&socket, "$HERDR_TAB_ID", &config.sidebar);
-
-        env::remove_var("HERDR_PLUGIN_CONTEXT_JSON");
-        stop_daemon(&socket);
-
         assert_eq!(
-            ws.as_deref(),
-            Some("w39"),
+            daemon.eval("$HERDR_WORKSPACE_ID"),
+            "w39",
             "daemon must have HERDR_WORKSPACE_ID"
         );
         assert_eq!(
-            tab.as_deref(),
-            Some("w39:t1"),
+            daemon.eval("$HERDR_TAB_ID"),
+            "w39:t1",
             "daemon must have HERDR_TAB_ID"
         );
     }
@@ -615,72 +347,25 @@ mod tests {
             eprintln!("skipping: nvim not found on PATH");
             return;
         }
-
-        let _guard = RuntimeEnvGuard::new();
+        let _env = TestEnv::new();
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let config = Config::default();
 
-        // Reuse plugin_root (a real, already-existing directory) as the cwd
-        // too -- no need for a second temp dir just for this.
-        let socket =
-            ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("first ensure_daemon");
+        let daemon = TestDaemon::spawn("wD", &config);
         #[cfg(not(windows))]
-        assert!(socket.exists(), "socket file should exist after spawn");
-        #[cfg(windows)]
-        assert!(remote_expr(&socket, "1+1", &config.sidebar).is_some());
-
-        let pid1 =
-            remote_expr(&socket, "getpid()", &config.sidebar).expect("daemon should report a pid");
-        assert!(!pid1.is_empty());
+        assert!(
+            daemon.socket.exists(),
+            "socket file should exist after spawn"
+        );
 
         let socket_again =
             ensure_daemon("wD", &plugin_root, &config, &plugin_root).expect("second ensure_daemon");
-        assert_eq!(socket, socket_again);
-
-        let pid2 = remote_expr(&socket, "getpid()", &config.sidebar)
-            .expect("daemon should still report a pid");
+        assert_eq!(daemon.socket, socket_again);
         assert_eq!(
-            pid1, pid2,
+            daemon.eval("getpid()"),
+            daemon.pid.to_string(),
             "second ensure_daemon must reuse the daemon, not spawn a new one"
         );
-
-        stop_daemon(&socket);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn gc_removes_orphan_sockets_and_keeps_known_tabs() {
-        let guard = RuntimeEnvGuard::new();
-
-        // Isolate the state dir too, since gc removes orphan state files.
-        let state_lock = state::STATE_DIR_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let old_state = env::var_os("HERDR_NVIM_STATE_DIR");
-        env::set_var("HERDR_NVIM_STATE_DIR", guard.dir.join("state"));
-
-        // Two dead socket files (sanitized tab ids); only "wsKeep:t1" is still a
-        // live tab.
-        fs::write(socket_path("wsKeep:t1"), b"").unwrap();
-        fs::write(socket_path("wsOrphan:t1"), b"").unwrap();
-
-        let mut herdr = MockHerdr {
-            list_tabs_results: VecDeque::from([Ok(vec!["wsKeep:t1".to_owned()])]),
-            ..Default::default()
-        };
-        gc(&mut herdr, &Sidebar::default()).unwrap();
-
-        assert!(socket_path("wsKeep:t1").exists(), "known tab kept");
-        assert!(
-            !socket_path("wsOrphan:t1").exists(),
-            "orphan tab socket removed"
-        );
-
-        match &old_state {
-            Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
-            None => env::remove_var("HERDR_NVIM_STATE_DIR"),
-        }
-        drop(state_lock);
     }
 
     #[test]

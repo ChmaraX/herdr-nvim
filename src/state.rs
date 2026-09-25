@@ -1,15 +1,12 @@
 use std::{
     env, fs,
     io::ErrorKind,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
-#[cfg(test)]
-pub static STATE_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 pub enum Phase {
@@ -35,6 +32,62 @@ pub struct StateFile {
 /// orchestrator and the sidebar pane compute the same path.
 pub(crate) fn tab_key(key: &str) -> String {
     key.replace(':', "_")
+}
+
+/// A herdr tab id, `<workspace>:<tab>` (e.g. `w26:t2`). The single place that
+/// knows how a tab id splits into its workspace and how it maps to the
+/// sanitized key naming its daemon socket and state file.
+///
+/// A key cannot be turned back into a tab id (`_` may occur in either part),
+/// so code holding only keys either asks the daemon for its `$HERDR_TAB_ID`
+/// or compares against `key()` of the tab ids herdr reports.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub(crate) struct TabId(String);
+
+impl TabId {
+    pub(crate) fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The workspace prefix before the first `:`. An id without a `:` (never
+    /// expected in practice) is returned unchanged rather than panicking.
+    pub(crate) fn workspace(&self) -> &str {
+        self.0
+            .split_once(':')
+            .map_or(&self.0, |(workspace, _)| workspace)
+    }
+
+    /// The sanitized filename key (see `tab_key`).
+    pub(crate) fn key(&self) -> String {
+        tab_key(&self.0)
+    }
+
+    /// Whether `key` belongs to a tab of `workspace`: every such tab id starts
+    /// with `<workspace>:`, so its key starts with that prefix's key. The
+    /// separator keeps workspace `w7` from matching `w7B`'s tabs.
+    pub(crate) fn key_in_workspace(key: &str, workspace: &str) -> bool {
+        key.starts_with(&tab_key(&format!("{workspace}:")))
+    }
+}
+
+impl std::fmt::Display for TabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Remove a file, treating "already gone" as success.
+pub(crate) fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 fn state_dir() -> PathBuf {
@@ -134,62 +187,44 @@ pub fn remove(tab: &str) -> Result<()> {
 }
 
 /// Remove the state file for an already-sanitized key (e.g. a socket file
-/// stem, which is already in filename form). Used by `daemon::gc`, which
-/// only ever has the sanitized key on hand -- calling `remove` there would
-/// re-sanitize an already-sanitized key, which only happens to be a no-op
-/// because sanitization is idempotent.
+/// stem, which is already in filename form). Used by
+/// `daemon::registry::stop_tab_key`, which only ever has the sanitized key on
+/// hand -- calling `remove` there would re-sanitize an already-sanitized key,
+/// which only happens to be a no-op because sanitization is idempotent.
 pub(crate) fn remove_key(key: &str) -> Result<()> {
-    let path = path_for_key(key);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to remove state file {}", path.display()))
-        }
-    }
+    remove_file_if_exists(&path_for_key(key)).context("failed to remove state file")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, path::PathBuf, sync::MutexGuard};
+    use std::fs;
 
     use super::*;
-
-    struct StateDirGuard {
-        _lock: MutexGuard<'static, ()>,
-        old: Option<std::ffi::OsString>,
-        dir: PathBuf,
-    }
-
-    impl StateDirGuard {
-        fn new(dir: PathBuf) -> Self {
-            let lock = STATE_DIR_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let old = env::var_os("HERDR_NVIM_STATE_DIR");
-            let _ = fs::remove_dir_all(&dir);
-            env::set_var("HERDR_NVIM_STATE_DIR", &dir);
-            Self {
-                _lock: lock,
-                old,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for StateDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.dir);
-            match &self.old {
-                Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
-                None => env::remove_var("HERDR_NVIM_STATE_DIR"),
-            }
-        }
-    }
+    use crate::test_support::TestEnv;
 
     fn with_state_dir(test: impl FnOnce()) {
-        let _guard = StateDirGuard::new(env::temp_dir().join("hn-state-test"));
+        let _env = TestEnv::new();
         test();
+    }
+
+    #[test]
+    fn tab_id_splits_workspace_and_key() {
+        let tab = TabId::new("w39:t1");
+        assert_eq!(tab.workspace(), "w39");
+        assert_eq!(tab.key(), "w39_t1");
+        // Only the first colon splits; the rest belongs to the tab segment.
+        assert_eq!(TabId::new("w39:t1:x").workspace(), "w39");
+        // No colon / empty: returned unchanged rather than panicking.
+        assert_eq!(TabId::new("w39").workspace(), "w39");
+        assert_eq!(TabId::new("").workspace(), "");
+    }
+
+    #[test]
+    fn key_in_workspace_is_exact() {
+        assert!(TabId::key_in_workspace("wA_t1", "wA"));
+        assert!(!TabId::key_in_workspace("wAB_t1", "wA"), "prefix trap");
+        assert!(!TabId::key_in_workspace("wA", "wA"));
+        assert!(!TabId::key_in_workspace("wB_t1", "wA"));
     }
 
     #[test]

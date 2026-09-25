@@ -8,6 +8,27 @@ message you are still typing (|herdr-nvim.ref_range()|). The plugin is the
 nvim half of the herdr workspace plugin; the sidebar itself is provided by the
 herdr side.
 
+The sidebar's nvim is a headless daemon, one per herdr tab. It lives as long
+as its tab: closing the tab or its workspace stops it immediately (unsaved
+buffers in it are discarded), and daemons left over from tabs that did not
+survive a herdr restart are reaped when herdr starts.
+
+To list the daemons (tab, workspace/tab names, memory including child
+processes such as LSP servers, uptime, state) or stop one by hand without
+closing its tab, run the `herdr-nvim` binary from a shell. The listing ends
+with the stop commands, e.g. `stop one: herdr-nvim daemons stop w26:t2`,
+`stop all: herdr-nvim daemons stop --all`, and `--orphans` when a daemon's
+tab is gone:
+>sh
+  herdr-nvim daemons                   # --json for machine-readable output
+  herdr-nvim daemons stop w26:t2       # or the key form w26_t2
+  herdr-nvim daemons stop w26:t2 --force
+  herdr-nvim daemons stop --orphans    # daemons whose tab is gone
+  herdr-nvim daemons stop --all [--force]
+<
+A daemon with unsaved buffers or pending comments is only stopped with
+`--force` (orphans never need it). The next toggle starts a fresh nvim.
+
 Links:
 - Repository: https://github.com/ChmaraX/herdr-nvim
 - herdr: https://herdr.dev
@@ -49,7 +70,7 @@ touches the pending comments.
 REQUIREMENTS                                           *herdr-nvim-requirements*
 
 - Neovim >= 0.10
-- herdr >= 0.7.4, running inside a herdr session
+- herdr >= 0.7.5, running inside a herdr session
 - The `herdr` CLI available on PATH (lists agents, sends comments)
 ================================================================================
 INSTALLATION                                           *herdr-nvim-installation*

@@ -14,6 +14,8 @@ mod path;
 mod picker;
 mod sessions;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 fn main() {
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
@@ -25,14 +27,16 @@ fn main() {
     let code = match mode.as_str() {
         "toggle" => run(maneuver::toggle_cmd),
         "sidebar" => run(daemon::sidebar_cmd),
-        "daemon-gc" => run(daemon::gc_cmd),
+        "daemon-gc" => run(daemon::registry::gc_cmd),
+        "on-event" => run(daemon::events::on_event_cmd),
+        "daemons" => run(daemon::inventory::daemons_cmd),
         "doctor" => run(doctor::doctor_cmd),
         "pick-file" => run(bridge::pick_file_cmd),
         "picker" => run(picker::picker_cmd),
         "open-link" => run(openlink::open_link_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|doctor|pick-file|picker|open-link>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link>"
             );
             2
         }

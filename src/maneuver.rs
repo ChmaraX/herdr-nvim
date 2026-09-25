@@ -81,7 +81,7 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
     // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
     // closed tabs. Non-fatal -- a gc failure must never block a toggle.
     let config = crate::config::load();
-    let _ = daemon::gc(h, &config.sidebar);
+    let _ = daemon::registry::gc(h, &config.sidebar);
 
     // Only a fully-Open sidebar is eligible for the fast close-and-return
     // path. A sidebar_pane recorded while phase is still Evacuating is a
@@ -293,24 +293,15 @@ pub fn toggle_cmd() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::VecDeque,
-        env, fs,
-        path::PathBuf,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            MutexGuard,
-        },
-    };
+    use std::{collections::VecDeque, env, path::PathBuf, sync::MutexGuard};
 
     use super::*;
     use crate::{
         herdr::{MockHerdr, PaneRect},
         layout::MoveStep,
         state::{self, Phase, StateFile},
+        test_support::TestEnv,
     };
-
-    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn ctx() -> Ctx {
         Ctx {
@@ -339,8 +330,8 @@ mod tests {
         ]
     }
 
-    // The opportunistic gc(h) at the start of toggle() calls h.list_tabs() only
-    // if the (isolated, per-test) runtime dir happens to exist; StateDirGuard
+    // The opportunistic gc(h) at the start of toggle() calls h.tab_infos() only
+    // if the (isolated, per-test) runtime dir has registered daemons; TestEnv
     // points HERDR_NVIM_RUNTIME_DIR at a directory that is never created, so gc
     // is normally a no-op. Scripting a response here anyway is defensive: it
     // keeps these tests correct even if that gc short-circuit ever changes.
@@ -349,7 +340,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(three_pane_rects())]),
             create_tab_results: VecDeque::from([Ok(("wT:t9".into(), "wT:p90".into()))]),
             split_pane_results: VecDeque::from([Ok("wT:p99".into())]),
-            list_tabs_results: VecDeque::from([Ok(vec![])]),
+            tab_infos_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -358,7 +349,7 @@ mod tests {
         MockHerdr {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 100, 100)])]),
             split_pane_results: VecDeque::from([Ok("wT:p99".into())]),
-            list_tabs_results: VecDeque::from([Ok(vec![])]),
+            tab_infos_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -366,7 +357,7 @@ mod tests {
     fn mock_with_alive_sidebar() -> MockHerdr {
         MockHerdr {
             pane_alive_results: VecDeque::from([Ok(true)]),
-            list_tabs_results: VecDeque::from([Ok(vec![])]),
+            tab_infos_results: VecDeque::from([Ok(vec![])]),
             ..Default::default()
         }
     }
@@ -423,62 +414,8 @@ mod tests {
         }
     }
 
-    struct StateDirGuard {
-        _state_lock: MutexGuard<'static, ()>,
-        _runtime_lock: MutexGuard<'static, ()>,
-        old_state: Option<std::ffi::OsString>,
-        old_runtime: Option<std::ffi::OsString>,
-        dir: PathBuf,
-    }
-
-    impl StateDirGuard {
-        fn new(dir: PathBuf) -> Self {
-            let state_lock = state::STATE_DIR_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            // Also isolate the daemon socket dir: toggle()'s opportunistic gc
-            // scans it, and without this override it would fall back to the
-            // real XDG runtime dir / system temp dir and could reap live
-            // daemons unrelated to this test.
-            let runtime_lock = daemon::RUNTIME_DIR_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let old_state = env::var_os("HERDR_NVIM_STATE_DIR");
-            let old_runtime = env::var_os("HERDR_NVIM_RUNTIME_DIR");
-            let _ = fs::remove_dir_all(&dir);
-            env::set_var("HERDR_NVIM_STATE_DIR", &dir);
-            env::set_var("HERDR_NVIM_RUNTIME_DIR", dir.join("runtime"));
-            Self {
-                _state_lock: state_lock,
-                _runtime_lock: runtime_lock,
-                old_state,
-                old_runtime,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for StateDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.dir);
-            match &self.old_state {
-                Some(value) => env::set_var("HERDR_NVIM_STATE_DIR", value),
-                None => env::remove_var("HERDR_NVIM_STATE_DIR"),
-            }
-            match &self.old_runtime {
-                Some(value) => env::set_var("HERDR_NVIM_RUNTIME_DIR", value),
-                None => env::remove_var("HERDR_NVIM_RUNTIME_DIR"),
-            }
-        }
-    }
-
     fn with_state_dir(test: impl FnOnce()) {
-        let dir = env::temp_dir().join(format!(
-            "herdr-nvim-maneuver-{}-{}",
-            std::process::id(),
-            TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _guard = StateDirGuard::new(dir);
+        let _env = TestEnv::new();
         test();
     }
 

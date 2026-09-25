@@ -1,7 +1,7 @@
 id = "chmarax.herdr-nvim"
 name = "herdr-nvim"
 version = "1.0.1"
-min_herdr_version = "0.7.4"
+min_herdr_version = "0.7.5"
 platforms = ["macos", "linux", "windows"]
 description = "Full-height nvim sidebar with agent annotations: toggle with one key, comment code, send to any agent."
 
@@ -62,6 +62,22 @@ id = "file-url"
 title = "Open in nvim sidebar"
 pattern = '^file://'
 action = "open-link"
+
+# Stop a tab's nvim daemon (and its LSPs) as soon as herdr closes the tab.
+# Closing a workspace does not fire tab.closed for its tabs, so it gets its own
+# hook, which stops every daemon of that workspace.
+[[events]]
+on = "tab.closed"
+command = ["bin/herdr-nvim", "on-event"]
+
+[[events]]
+on = "workspace.closed"
+command = ["bin/herdr-nvim", "on-event"]
+
+# After a herdr (re)start, reap daemons whose tab was not restored. Restored
+# tabs keep their ids, so their daemons are left for them to reattach to.
+[[startup]]
+command = ["bin/herdr-nvim", "daemon-gc"]
 
 [[build]]
 command = ["bash", "herdr/install.sh"]

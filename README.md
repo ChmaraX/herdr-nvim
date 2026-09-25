@@ -26,7 +26,7 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 
 ## Requirements
 
-nvim ≥ 0.10 · herdr ≥ 0.7.4 · runs inside a herdr session
+nvim ≥ 0.10 · herdr ≥ 0.7.5 · runs inside a herdr session
 
 ## Install
 
@@ -66,8 +66,33 @@ description = "open file from agent output"
 
 `prefix+e` toggles it. Each tab gets its own nvim, backed by a headless
 daemon that survives the toggle. Two tabs can show two different files in two
-sidebars. When you close and reopen a sidebar, it loses nothing. herdr
-removes the daemons of closed tabs automatically.
+sidebars. When you close and reopen a sidebar, it loses nothing.
+
+A daemon lives as long as its tab. Closing the tab (or its whole workspace)
+stops that nvim right away, along with its LSP servers; unsaved buffers in it
+are discarded. Daemons survive a herdr restart, so restored tabs reattach to
+their nvim; any whose tab did not come back are reaped when herdr starts.
+
+To see which tab each hidden nvim belongs to and how much memory it (with its
+LSP servers) holds, run `herdr-nvim daemons` (`--json` for machine-readable
+output). The listing ends with the commands to free them:
+
+```text
+TAB       WORKSPACE / TAB   RAM      UP       STATE
+w26:t2    novu / api        1.4 GB   3h 31m   alive · 2 unsaved
+w26:t5    novu / web        612 MB   12m      alive
+w9:t1     —                 180 MB   2d 4h    orphaned
+
+3 daemons · 2.2 GB total
+stop one: herdr-nvim daemons stop w26:t2   (--force discards unsaved work)
+stop all: herdr-nvim daemons stop --all
+orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)
+```
+
+`daemons stop <tab>` refuses a daemon with unsaved buffers or pending comments
+unless given `--force`; `--orphans` stops the daemons whose tab is gone.
+
+The next toggle in that tab starts a fresh nvim.
 
 ## The file picker
 
