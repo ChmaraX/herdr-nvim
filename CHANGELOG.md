@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.0.1...v1.1.0) (2026-09-25)
+
+
+### Features
+
+* auto-clean hidden nvims and add herdr-nvim daemons ([#34](https://github.com/ChmaraX/herdr-nvim/issues/34)) ([#39](https://github.com/ChmaraX/herdr-nvim/issues/39)) ([adf3e51](https://github.com/ChmaraX/herdr-nvim/commit/adf3e51707c5527289773e57f51b0bcff107b07e))
+* send a bare file:line reference to the agent ([#33](https://github.com/ChmaraX/herdr-nvim/issues/33)) ([53cef84](https://github.com/ChmaraX/herdr-nvim/commit/53cef84ac58fdd28321939cb19f4f5d73345c1d3))
+
+
+### Bug Fixes
+
+* **install:** fall back to source build when the prebuilt binary can't run ([#37](https://github.com/ChmaraX/herdr-nvim/issues/37)) ([3ef126f](https://github.com/ChmaraX/herdr-nvim/commit/3ef126f68b443469f6d3c09248380ce18f70fd5b))
+
 ## [1.0.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.0.0...v1.0.1) (2026-09-13)
 
 
