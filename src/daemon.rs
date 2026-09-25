@@ -61,7 +61,7 @@ pub fn socket_path(tab: &str) -> PathBuf {
 }
 
 /// Socket (Unix) or named pipe (Windows) for an already-sanitized tab key.
-fn socket_path_for_key(key: &str) -> PathBuf {
+pub(crate) fn socket_path_for_key(key: &str) -> PathBuf {
     #[cfg(windows)]
     {
         PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{key}"))
@@ -257,7 +257,7 @@ fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
 /// the trimmed stdout, or `None` if the daemon is unreachable.
-fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
+pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
     let output = nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
@@ -389,7 +389,7 @@ pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
 
 /// Sanitized tab keys of every registered daemon (see `socket_dir`), or
 /// `None` when the runtime directory does not exist yet (nothing to reap).
-fn daemon_keys() -> Result<Option<Vec<String>>> {
+pub(crate) fn daemon_keys() -> Result<Option<Vec<String>>> {
     let dir = socket_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -415,21 +415,22 @@ fn daemon_keys() -> Result<Option<Vec<String>>> {
 }
 
 /// Vimscript: number of listed buffers with unsaved changes.
-const UNSAVED_BUFFERS_EXPR: &str = "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
+pub(crate) const UNSAVED_BUFFERS_EXPR: &str =
+    "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
 
 /// Stop the daemon for an already-sanitized tab key (a `socket_dir` entry
 /// stem, see `state::tab_key`): force-quit it if it is still running, then
 /// drop its registry entry and sidebar state file. Unsaved buffers are
-/// discarded -- the tab they belonged to is gone -- but reported on stderr
-/// (herdr's plugin command log). A daemon that is already gone is a no-op
+/// discarded -- the tab is gone, or `daemons stop --force` asked for it --
+/// but reported on stderr (herdr's plugin command log). A daemon that is already gone is a no-op
 /// beyond the file cleanup.
-fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
+pub(crate) fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
     // Doubles as the liveness probe: `None` means nothing is listening.
     if let Some(unsaved) = remote_expr(&socket, UNSAVED_BUFFERS_EXPR, sidebar) {
         if unsaved != "0" {
             eprintln!(
-                "herdr-nvim: tab {key} closed; discarding {unsaved} unsaved buffer(s) in its nvim"
+                "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
             );
         }
         send_quit(&socket, sidebar)?;
@@ -539,7 +540,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         ffi::OsString,
         fs,
@@ -560,7 +561,7 @@ mod tests {
     /// unique temp dir for the duration of a test, restoring the prior env on
     /// drop. The config isolation keeps any real user init.lua out of the
     /// spawned daemon so tests are hermetic and fast.
-    struct RuntimeEnvGuard {
+    pub(crate) struct RuntimeEnvGuard {
         _lock: MutexGuard<'static, ()>,
         old_runtime: Option<OsString>,
         old_config: Option<OsString>,
@@ -568,7 +569,7 @@ mod tests {
     }
 
     impl RuntimeEnvGuard {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let lock = RUNTIME_DIR_LOCK
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -608,7 +609,7 @@ mod tests {
         }
     }
 
-    fn nvim_available() -> bool {
+    pub(crate) fn nvim_available() -> bool {
         #[cfg(not(windows))]
         {
             return Command::new("which")
@@ -640,13 +641,13 @@ mod tests {
     /// touch the real user state dir. Create it BEFORE the `RuntimeEnvGuard`:
     /// the state lock must be taken first, matching the maneuver tests' lock
     /// order, or the two test modules can deadlock.
-    struct StateEnvGuard {
+    pub(crate) struct StateEnvGuard {
         _lock: MutexGuard<'static, ()>,
         old: Option<OsString>,
     }
 
     impl StateEnvGuard {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let lock = state::STATE_DIR_LOCK
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -654,7 +655,7 @@ mod tests {
             Self { _lock: lock, old }
         }
 
-        fn point_into(&self, runtime: &RuntimeEnvGuard) {
+        pub(crate) fn point_into(&self, runtime: &RuntimeEnvGuard) {
             env::set_var("HERDR_NVIM_STATE_DIR", runtime.dir.join("state"));
         }
     }
@@ -671,7 +672,7 @@ mod tests {
     /// Whether the OS still runs `pid`. The test process is the daemons'
     /// parent and never reaps them, so on Unix an exited daemon lingers as a
     /// zombie -- that counts as dead.
-    fn process_alive(pid: &str) -> bool {
+    pub(crate) fn process_alive(pid: &str) -> bool {
         #[cfg(not(windows))]
         {
             let output = Command::new("ps")
@@ -694,14 +695,14 @@ mod tests {
 
     /// A real daemon spawned for a test tab, with the pid it reported. Quits
     /// the daemon on drop, so a failing assertion never leaks a process.
-    struct TestDaemon {
-        tab: &'static str,
-        socket: PathBuf,
-        pid: String,
+    pub(crate) struct TestDaemon {
+        pub(crate) tab: &'static str,
+        pub(crate) socket: PathBuf,
+        pub(crate) pid: String,
     }
 
     impl TestDaemon {
-        fn spawn(tab: &'static str, config: &Config) -> Self {
+        pub(crate) fn spawn(tab: &'static str, config: &Config) -> Self {
             let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let socket =
                 ensure_daemon(tab, &plugin_root, config, &plugin_root).expect("ensure_daemon");
@@ -713,7 +714,7 @@ mod tests {
             Self { tab, socket, pid }
         }
 
-        fn assert_alive(&self, sidebar: &Sidebar) {
+        pub(crate) fn assert_alive(&self, sidebar: &Sidebar) {
             assert!(process_alive(&self.pid), "{} daemon process died", self.tab);
             assert_eq!(
                 remote_expr(&self.socket, "1+1", sidebar).as_deref(),
@@ -733,7 +734,7 @@ mod tests {
             );
         }
 
-        fn assert_gone(&self, sidebar: &Sidebar) {
+        pub(crate) fn assert_gone(&self, sidebar: &Sidebar) {
             assert!(
                 !process_alive(&self.pid),
                 "{} daemon process still running",

@@ -2,6 +2,7 @@ mod bridge;
 mod candidates;
 mod config;
 mod daemon;
+mod daemons;
 mod doctor;
 mod extract;
 mod fff;
@@ -27,13 +28,14 @@ fn main() {
         "sidebar" => run(daemon::sidebar_cmd),
         "daemon-gc" => run(daemon::gc_cmd),
         "on-event" => run(daemon::on_event_cmd),
+        "daemons" => run(daemons::daemons_cmd),
         "doctor" => run(doctor::doctor_cmd),
         "pick-file" => run(bridge::pick_file_cmd),
         "picker" => run(picker::picker_cmd),
         "open-link" => run(openlink::open_link_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|doctor|pick-file|picker|open-link>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link>"
             );
             2
         }

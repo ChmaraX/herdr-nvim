@@ -73,6 +73,19 @@ stops that nvim right away, along with its LSP servers; unsaved buffers in it
 are discarded. Daemons survive a herdr restart, so restored tabs reattach to
 their nvim; any whose tab did not come back are reaped when herdr starts.
 
+To see which tab each hidden nvim belongs to and how much memory it (with its
+LSP servers) holds, or to free one without closing its tab:
+
+```sh
+herdr-nvim daemons                  # table; --json for machine-readable output
+herdr-nvim daemons stop w26:t2      # refuses if it has unsaved buffers or pending comments
+herdr-nvim daemons stop w26:t2 --force
+herdr-nvim daemons stop --orphans   # daemons whose tab is gone
+herdr-nvim daemons stop --all [--force]
+```
+
+The next toggle in that tab starts a fresh nvim.
+
 ## The file picker
 
 `prefix+o` pops a fuzzy file picker. It has two modes:

@@ -28,7 +28,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::{
-    daemon,
+    daemon, daemons,
     herdr::{CliHerdr, Dir, Herdr},
     maneuver,
 };
@@ -37,6 +37,14 @@ const WORKSPACE_LABEL: &str = "herdr-nvim-doctor";
 
 pub fn doctor_cmd() -> Result<()> {
     let with_agent = parse_with_agent(env::args());
+    let config = crate::config::load();
+
+    // The user's real daemons, listed before the runtime dir is redirected
+    // into the scratch temp dir below.
+    println!(
+        "daemons: {}",
+        daemons::doctor_summary(&mut CliHerdr, &config.sidebar)
+    );
 
     // Isolate all daemon sockets and maneuver state files into a throwaway temp
     // dir so a live run never collides with (or leaves behind) real artifacts.
@@ -48,7 +56,6 @@ pub fn doctor_cmd() -> Result<()> {
     env::set_var("HERDR_NVIM_STATE_DIR", &state_dir);
     // Belt-and-suspenders: even if a check panics or an early `?` fires, this
     // guard quits stray daemons and removes the temp dir on unwind.
-    let config = crate::config::load();
     let _temp_guard = TempGuard {
         dir: temp.clone(),
         sidebar: config.sidebar.clone(),

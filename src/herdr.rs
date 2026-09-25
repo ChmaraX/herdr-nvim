@@ -28,6 +28,62 @@ pub struct AgentInfo {
     pub focused: bool,
 }
 
+/// A live tab with the human-facing names herdr shows for it (from
+/// `herdr api snapshot`), used by `herdr-nvim daemons` to say which tab a
+/// hidden nvim daemon belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabInfo {
+    pub tab_id: String,
+    pub workspace_id: String,
+    pub workspace_label: Option<String>,
+    pub tab_label: Option<String>,
+    pub tab_number: Option<u64>,
+}
+
+/// Pure: every tab in a `herdr api snapshot` response, joined with its
+/// workspace's label. Missing labels/numbers are `None`, not errors.
+fn parse_tab_infos(value: &Value) -> Result<Vec<TabInfo>> {
+    let snapshot = value
+        .pointer("/result/snapshot")
+        .context("herdr api snapshot response missing result.snapshot")?;
+    let tabs = snapshot
+        .pointer("/tabs")
+        .and_then(Value::as_array)
+        .context("herdr api snapshot response missing result.snapshot.tabs array")?;
+    let label = |node: &Value| {
+        node.get("label")
+            .and_then(Value::as_str)
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned)
+    };
+    let workspaces = snapshot
+        .pointer("/workspaces")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    tabs.iter()
+        .map(|tab| {
+            let tab_id = string_at(tab, "/tab_id")?.to_owned();
+            let workspace_id = tab
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .map_or_else(|| tab_id.split_once(':').map_or("", |(ws, _)| ws), |ws| ws)
+                .to_owned();
+            let workspace_label = workspaces
+                .iter()
+                .find(|ws| ws.get("workspace_id").and_then(Value::as_str) == Some(&workspace_id))
+                .and_then(label);
+            Ok(TabInfo {
+                workspace_label,
+                tab_label: label(tab),
+                tab_number: tab.get("number").and_then(Value::as_u64),
+                tab_id,
+                workspace_id,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentSession {
     pub agent: String,
@@ -160,6 +216,8 @@ pub trait Herdr {
     /// All tab ids across all workspaces (raw, unsanitized). Used by
     /// `daemon::gc` to determine which per-tab daemons are still live.
     fn list_tabs(&mut self) -> Result<Vec<String>>;
+    /// Every live tab with its workspace/tab names (`herdr api snapshot`).
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>>;
     /// Read the pane's recent (unwrapped) output as plain text, newest lines
     /// last. `lines` bounds how many trailing lines are returned.
     fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String>;
@@ -397,6 +455,10 @@ impl Herdr for CliHerdr {
             .collect()
     }
 
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
+        parse_tab_infos(&Self::run(&args(&["api", "snapshot"]))?)
+    }
+
     fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
         Self::run_text(&args(&[
             "pane",
@@ -524,6 +586,7 @@ pub struct MockHerdr {
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
     pub list_tabs_results: VecDeque<Result<Vec<String>>>,
+    pub tab_infos_results: VecDeque<Result<Vec<TabInfo>>>,
     pub read_pane_results: VecDeque<Result<String>>,
     pub pane_cwd_results: VecDeque<Result<PathBuf>>,
     pub agents_results: VecDeque<Result<Vec<AgentInfo>>>,
@@ -641,6 +704,11 @@ impl Herdr for MockHerdr {
         Self::next(&mut self.list_tabs_results, "list_tabs")
     }
 
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
+        self.ops.push("tab_infos".to_owned());
+        Self::next(&mut self.tab_infos_results, "tab_infos")
+    }
+
     fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
         self.ops.push(format!("read_pane {pane} {lines}"));
         Self::next(&mut self.read_pane_results, "read_pane")
@@ -738,6 +806,37 @@ mod tests {
         assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
         assert!(snapshot.agent_session.is_none());
         assert!(snapshot.scroll.is_none());
+    }
+
+    #[test]
+    fn tab_infos_join_workspace_labels_and_tolerate_missing_names() {
+        let value = serde_json::json!({"result": {"snapshot": {
+            "workspaces": [{"workspace_id": "w26", "label": "novu"}],
+            "tabs": [
+                {"tab_id": "w26:t2", "workspace_id": "w26", "label": "api", "number": 2},
+                {"tab_id": "w9:t1", "label": ""},
+            ],
+        }}});
+        let tabs = parse_tab_infos(&value).unwrap();
+        assert_eq!(
+            tabs,
+            [
+                TabInfo {
+                    tab_id: "w26:t2".to_owned(),
+                    workspace_id: "w26".to_owned(),
+                    workspace_label: Some("novu".to_owned()),
+                    tab_label: Some("api".to_owned()),
+                    tab_number: Some(2),
+                },
+                TabInfo {
+                    tab_id: "w9:t1".to_owned(),
+                    workspace_id: "w9".to_owned(),
+                    workspace_label: None,
+                    tab_label: None,
+                    tab_number: None,
+                },
+            ]
+        );
     }
 
     #[test]
