@@ -630,8 +630,8 @@ mod tests {
 
     #[test]
     fn claude_session_without_subagents_dir_is_unchanged() {
-        let session_file = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/session_claude_basic.jsonl");
+        let session_file =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/session_claude_basic.jsonl");
         let text = std::fs::read_to_string(&session_file).unwrap();
         assert_eq!(with_claude_subagents(&session_file, text.clone()), text);
     }
