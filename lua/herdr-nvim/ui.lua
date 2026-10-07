@@ -32,6 +32,31 @@ function M.visual_range()
   return s, e
 end
 
+-- Like visual_range(), but also returns the byte columns of a CHARWISE ('v')
+-- selection so a comment can target a sub-line span: start_line, end_line,
+-- start_col, end_col (0-indexed bytes, end exclusive). Columns are nil for
+-- linewise ('V') / blockwise selections, and for a charwise selection that
+-- already covers a whole single line -- those are whole-line comments.
+function M.visual_region()
+  local sm = vim.api.nvim_buf_get_mark(0, "<")
+  local em = vim.api.nvim_buf_get_mark(0, ">")
+  local s_line, s_col, e_line, e_col = sm[1], sm[2], em[1], em[2]
+  if s_line > e_line or (s_line == e_line and s_col > e_col) then
+    s_line, s_col, e_line, e_col = e_line, e_col, s_line, s_col
+  end
+  if vim.fn.visualmode() ~= "v" then
+    return s_line, e_line, nil, nil
+  end
+  -- The '>' mark is the last selected byte (inclusive); make it exclusive and
+  -- clamp to the line length so v$ (curswant past end of line) stays in bounds.
+  local last = vim.api.nvim_buf_get_lines(0, e_line - 1, e_line, false)[1] or ""
+  local end_excl = math.min(e_col + 1, #last)
+  if s_line == e_line and s_col == 0 and end_excl >= #last then
+    return s_line, e_line, nil, nil -- whole single line: no span needed
+  end
+  return s_line, e_line, s_col, end_excl
+end
+
 function M.input_comment(on_done)
   vim.ui.input({ prompt = "Comment: " }, function(text)
     if text and text ~= "" then

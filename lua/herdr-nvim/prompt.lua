@@ -38,6 +38,10 @@ end
 function M.location(item, cwd)
   local path = M._relpath(item.file, cwd)
   if item.start_line == item.end_line then
+    if item.start_col and item.end_col then
+      -- Single-line sub-span: 1-indexed inclusive display columns (path:12:5-20).
+      return string.format("%s:%d:%d-%d", path, item.start_line, item.start_col + 1, item.end_col)
+    end
     return string.format("%s:%d", path, item.start_line)
   end
   return string.format("%s:%d-%d", path, item.start_line, item.end_line)
