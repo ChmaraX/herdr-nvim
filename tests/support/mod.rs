@@ -79,6 +79,17 @@ impl Sandbox {
 
     /// Run the real binary as herdr would, inside the sandbox.
     pub fn run(&self, args: &[&str], event_json: Option<&str>) -> Output {
+        self.run_with_env(args, event_json, &[])
+    }
+
+    /// Run the real binary with additional environment supplied by herdr for
+    /// this specific entrypoint (for example the sidebar pane's identity).
+    pub fn run_with_env(
+        &self,
+        args: &[&str],
+        event_json: Option<&str>,
+        vars: &[(&str, &str)],
+    ) -> Output {
         let path = env::join_paths(
             std::iter::once(self.dir.join("bin"))
                 .chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
@@ -97,7 +108,8 @@ impl Sandbox {
             .env("HERDR_NVIM_STATE_DIR", self.dir.join("state"))
             .env("XDG_CONFIG_HOME", self.dir.join("xdg-config"))
             .env_remove("HERDR_NVIM_CONFIG")
-            .env_remove("HERDR_PLUGIN_EVENT_JSON");
+            .env_remove("HERDR_PLUGIN_EVENT_JSON")
+            .envs(vars.iter().copied());
         if let Some(json) = event_json {
             command.env("HERDR_PLUGIN_EVENT_JSON", json);
         }
