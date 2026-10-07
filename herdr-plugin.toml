@@ -23,9 +23,9 @@ command = ["bin/herdr-nvim", "picker"]
 # Full-height nvim sidebar pane. Opened programmatically by the `toggle` action
 # via `herdr plugin pane open --entrypoint sidebar --placement split`, which
 # spawns this command NON-INTERACTIVELY (sh -c, no interactive shell) so there
-# is no shell prompt/echo of the command line in the pane. The tab id comes
-# from herdr's HERDR_TAB_ID env (set for plugin panes); the cwd is the pane's
-# own cwd (set via --cwd). See daemon::sidebar_cmd.
+# is no shell prompt/echo of the command line in the pane. Herdr supplies the
+# required HERDR_TAB_ID and HERDR_PANE_ID env values for plugin panes; the cwd
+# is the pane's own cwd (set via --cwd). See daemon::sidebar_cmd.
 [[panes]]
 id = "sidebar"
 title = "nvim sidebar"

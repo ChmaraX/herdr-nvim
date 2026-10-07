@@ -208,6 +208,24 @@ pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Optio
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Quote `s` as a Vimscript single-quoted string, where a literal quote is
+/// represented by two consecutive quotes.
+fn vim_string_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Update the persistent daemon with the identity of the sidebar pane whose UI
+/// is about to attach. A daemon is reused across sidebar toggles, while herdr
+/// creates a fresh pane each time, so the process environment inherited when
+/// the daemon first spawned cannot be treated as current.
+fn refresh_daemon_pane_id(socket: &Path, pane: &str, sidebar: &Sidebar) -> Result<()> {
+    let expr = format!("setenv('HERDR_PANE_ID', {})", vim_string_literal(pane));
+    remote_expr(socket, &expr, sidebar).with_context(|| {
+        format!("failed to update nvim daemon with current sidebar pane id {pane}")
+    })?;
+    Ok(())
+}
+
 /// Quote `s` with single quotes, escaping any single quotes it already
 /// contains (`'` -> `'\''`) -- used where a value is spliced into a command
 /// executed by a shell (e.g. the nvim bin in doctor's `pane run` probe), not
@@ -220,17 +238,21 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// this process with `nvim --remote-ui` attached to it.
 ///
 /// The pane is spawned by herdr via `plugin pane open --entrypoint sidebar`
-/// (non-interactive, no shell echo). herdr sets `HERDR_TAB_ID` for the pane so
-/// it knows which tab's daemon to attach to, and the pane's own cwd (set via
-/// `--cwd`) is where the daemon spawns.
+/// (non-interactive, no shell echo). herdr sets `HERDR_TAB_ID` and
+/// `HERDR_PANE_ID` for plugin panes so this command can select the tab daemon
+/// and refresh it with the live sidebar pane identity. The pane's own cwd (set
+/// via `--cwd`) is where the daemon spawns.
 pub fn sidebar_cmd() -> Result<()> {
     let tab = env::var("HERDR_TAB_ID")
         .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
+    let pane = env::var("HERDR_PANE_ID")
+        .context("herdr-nvim sidebar requires HERDR_PANE_ID (set by herdr for plugin panes)")?;
     let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
     wait_for_layout_ready();
+    refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
 
     attach_remote_ui(&socket, &config.sidebar)
 }
@@ -366,6 +388,11 @@ mod tests {
             daemon.pid.to_string(),
             "second ensure_daemon must reuse the daemon, not spawn a new one"
         );
+    }
+
+    #[test]
+    fn vim_string_literal_escapes_quotes() {
+        assert_eq!(vim_string_literal("w1:p'3"), "'w1:p''3'");
     }
 
     #[test]
