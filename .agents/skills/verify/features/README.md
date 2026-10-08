@@ -10,8 +10,7 @@ This is a behavior-level list of what herdr-nvim does for a user: an nvim sideba
 - If an agent is needed, start `pi` in the pane. It answers from a mock LLM scenario (`box up … --scenario s.json`, templates `smoke/*.scenario.json`). No other agent is installed.
 - The sidebar nvim is vanilla, so `<leader>` is `\`.
 - Box limits (Linux only, no mouse, xterm.js, fixed versions) are in the box README's [Limits](../../../../scripts/box/README.md#limits). If a path hits one, name the gap and cover the closest real path.
-- Tapes start with `Source tapes/_start.tape` (settings, hidden herdr start, `cd ~/demo`), then `Show`.
-- Wait on screen text (`Wait+Screen /regex/`), not fixed sleeps. Keep a short `Sleep` before each `Screenshot` and at the end of a tape: the drawn frame lags the text, and the last screenshot can be lost.
+- Tape mechanics (`Source tapes/_start.tape`, waits, screenshots, final sleeps) are canonical in [scripts/box/README.md#writing-a-tape](../../../../scripts/box/README.md#writing-a-tape).
 
 ## Sidebar
 
