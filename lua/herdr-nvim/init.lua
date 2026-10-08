@@ -34,20 +34,23 @@ function M.setup(config)
   end
 end
 
--- Range primitive behind comment_line(), comment_selection(), and :Herdr comment.
--- start_col / end_col (optional) target a sub-line character span.
-function M.comment_range(start_line, end_line, start_col, end_col)
+-- Internal primitive behind comment_line(), comment_selection(), and :Herdr comment.
+-- span is { start_line = n, end_line = n, cols = { start_col, end_col }? }.
+local function comment_span(span)
   local bufnr = vim.api.nvim_get_current_buf()
   ui.input_comment(function(text)
-    local id = comments.add(bufnr, start_line, end_line, text, start_col, end_col)
+    local id = comments.add(bufnr, span, text)
     ui.decorate(id)
   end)
 end
 
+function M.comment_range(start_line, end_line)
+  comment_span({ start_line = start_line, end_line = end_line })
+end
+
 function M.comment_selection()
   vim.cmd([[execute "normal! \<esc>"]]) -- materialize '< '> marks
-  local s, e, sc, ec = ui.visual_region()
-  M.comment_range(s, e, sc, ec)
+  comment_span(ui.visual_region())
 end
 
 function M.comment_line()

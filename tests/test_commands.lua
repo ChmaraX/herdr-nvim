@@ -47,6 +47,30 @@ T.test("commands: run comment forwards the command range", function()
   T.eq(got, { 2, 4 })
 end)
 
+-- Run `:{range}Herdr comment` after a real visual selection made with `keys`;
+-- returns the line range it passed to comment_range().
+local function comment_after(keys, range)
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "the quick brown fox", "jumps over" })
+  vim.api.nvim_set_current_buf(b)
+  vim.cmd("normal! gg0" .. keys .. "\27")
+  commands.register()
+  local got
+  local orig = hn.comment_range
+  hn.comment_range = function(s, e) got = { s, e } end
+  vim.cmd(range .. "Herdr comment")
+  hn.comment_range = orig
+  return got
+end
+
+T.test("commands: :Herdr comment stays linewise for visual and explicit ranges", function()
+  T.eq(comment_after("4lve", "'<,'>"), { 1, 1 }, "visual command range is linewise")
+  T.eq(comment_after("4lve", "1,1"), { 1, 1 }, "explicit range after a visual selection stays whole-line")
+  T.eq(comment_after("4lve", "2,2"), { 2, 2 }, "explicit range other than the selection")
+  T.eq(comment_after("4lve", ""), { 1, 1 }, "no range")
+  T.eq(comment_after("Vj", "'<,'>"), { 1, 2 }, "linewise selection")
+end)
+
 T.test("commands: run send/submit map to the send_all submit flag", function()
   local got
   local orig = hn.send_all

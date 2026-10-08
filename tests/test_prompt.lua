@@ -51,13 +51,13 @@ T.test("prompt: format_ref collapses a single line", function()
 end)
 
 T.test("prompt: single-line sub-span renders path:line:colStart-colEnd", function()
-  -- 0-indexed start_col 4, exclusive end_col 9 -> 1-indexed inclusive 5-9.
-  T.eq(prompt.location({ file = "/repo/a.rs", start_line = 12, end_line = 12, start_col = 4, end_col = 9 }, "/repo"),
+  -- 0-indexed start col 4, exclusive end col 9 -> 1-indexed inclusive 5-9.
+  T.eq(prompt.location({ file = "/repo/a.rs", start_line = 12, end_line = 12, cols = { 4, 9 } }, "/repo"),
     "a.rs:12:5-9")
 end)
 
 T.test("prompt: multi-line span keeps a line-only location", function()
-  T.eq(prompt.location({ file = "/repo/a.rs", start_line = 12, end_line = 14, start_col = 4, end_col = 9 }, "/repo"),
+  T.eq(prompt.location({ file = "/repo/a.rs", start_line = 12, end_line = 14, cols = { 4, 9 } }, "/repo"),
     "a.rs:12-14")
 end)
 

@@ -57,6 +57,13 @@ An annotated block is drawn as three layers:
 Comments are tracked with extmarks, so they follow your edits. They are
 ephemeral by design: in-memory only, cleared after a successful send.
 
+A characterwise (|v|) selection inside a line comments just that span: the
+agent receives only the selected text, located as `path:12:5-9` (1-indexed
+byte columns, inclusive, as in |col()|). A span over several lines sends the
+selected text under `path:12-14`. Linewise (|V|) and blockwise selections,
+and a |v| selection of one whole line, comment whole lines. The decoration
+still marks whole lines.
+
 A pending-comment indicator for your statusline is provided by
 |herdr-nvim.statusline()|.
 
@@ -92,7 +99,7 @@ lazy.nvim can lazy-load it and declare the keymaps in the spec:
     keys = {
       { "<leader>a", "", desc = "+AI", mode = { "n", "x" } },
       { "<leader>ac", "<CMD>Herdr comment<CR>", desc = "Comment" },
-      { "<leader>ac", ":Herdr comment<CR>", mode = "x" },
+      { "<leader>ac", function() require("herdr-nvim").comment_selection() end, mode = "x" },
       { "<leader>al", "<CMD>Herdr list<CR>", desc = "List comments" },
       { "<leader>as", "<CMD>Herdr send<CR>", desc = "Send to agent" },
       { "<leader>aS", "<CMD>Herdr submit<CR>", desc = "Submit to agent" },
@@ -104,9 +111,11 @@ lazy.nvim can lazy-load it and declare the keymaps in the spec:
 <
 
 The leader-only `+AI` entry creates a which-key group; the `mode = "x"`
-entries share one key across normal and visual mode. Visual mode maps use
-`:` rather than `<CMD>`: the `:` passes the selection as the `'<,'>` range,
-while `<CMD>` would only see the cursor line.
+entries share one key across normal and visual mode. The comment mapping calls
+|herdr-nvim.comment_selection()| so a characterwise selection keeps its exact
+span. The visual reference mapping uses `:` rather than `<CMD>`: the `:` passes
+the selection as the `'<,'>` line range, while `<CMD>` would only see the cursor
+line.
 
 No plugin manager? It still works in vanilla nvim and in the herdr sidebar
 nvim, whose runtimepath the daemon injects: registration happens both from
@@ -158,9 +167,11 @@ COMMANDS                                                   *herdr-nvim-commands*
   |herdr-nvim.setup()|, so it works under lazy.nvim, vanilla nvim, and the
   herdr daemon's injected-runtimepath install alike.
 
-  - `comment`: Add a comment over the command range. :Herdr comment
-    targets the cursor line; :'<,'>Herdr comment targets the visual
-    selection; an explicit range like :5,10Herdr comment is honored.
+  - `comment`: Add a whole-line comment over the command range. :Herdr
+    comment targets the cursor line; :'<,'>Herdr comment targets the visual
+    selection's line range; an explicit range like :5,10Herdr comment is
+    honored. Use |herdr-nvim.comment_selection()| for an exact characterwise
+    visual span.
   - `list`: Open the comment list (a float). Hover jumps to the comment,
     `⏎` edits, `d` deletes, `q`/<Esc> closes.
   - `send`: Paste all comments into a chosen agent's input (no submit).
@@ -219,7 +230,10 @@ herdr-nvim.comment_line() ~
 
                                                 *herdr-nvim.comment_selection()*
 herdr-nvim.comment_selection() ~
-  Add a comment over the current visual selection.
+  Add a comment over the current visual selection. A characterwise (|v|)
+  selection comments the exact span (multibyte characters and
+  'selection' are honored); linewise and blockwise selections comment
+  whole lines.
 
                                                     *herdr-nvim.list_comments()*
 herdr-nvim.list_comments() ~
@@ -247,7 +261,8 @@ herdr-nvim.send_all({opts}) ~
   preceded by the formatted prompt with file:line and git context. Each path
   is shortened against the receiving agent's cwd (a file outside it stays
   absolute), and a single line collapses to `path:12`, the same spelling as
-  |herdr-nvim.ref_range()|.
+  |herdr-nvim.ref_range()|. A span inside one line is `path:12:5-9`
+  (1-indexed byte columns, inclusive) and sends only the selected text.
   Parameters: ~
     {opts} (`table`) Options:
     - `submit` (`boolean`, default false): when true, auto-submits the text

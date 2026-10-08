@@ -137,7 +137,7 @@ tab-complete):
 
 | Keymap | Command | Action |
 | --- | --- | --- |
-| `<leader>ac` | `:Herdr comment` | comment the current line / selection (the command also takes a range: `:5,10Herdr comment`) |
+| `<leader>ac` | `:Herdr comment` / `comment_selection()` | comment the current line / selection; visual `v` keymaps using `comment_selection()` send only that span (the command also takes whole-line ranges: `:5,10Herdr comment`) |
 | `<leader>al` | `:Herdr list` | list comments (float): hover to jump, `⏎` edit, `d` delete |
 | `<leader>as` | `:Herdr send` | paste all comments into the agent's input |
 | `<leader>aS` | `:Herdr submit` | send all comments to the agent (auto-submits) |
@@ -149,7 +149,7 @@ already set. To bind your own, set `keymaps = false` and map the command:
 ```lua
 require("herdr-nvim").setup({ keymaps = false })
 vim.keymap.set("n", "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "Comment" })
-vim.keymap.set("x", "<leader>ac", ":Herdr comment<CR>", { desc = "Comment" }) -- `:` passes the selection
+vim.keymap.set("x", "<leader>ac", function() require("herdr-nvim").comment_selection() end, { desc = "Comment" })
 ```
 
 Or call the Lua API directly (`comment_line`, `comment_selection`,
