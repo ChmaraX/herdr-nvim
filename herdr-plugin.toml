@@ -49,10 +49,12 @@ command = ["bin/herdr-nvim", "open-link"]
 # a directory segment + extension (bare `README.md` stays unlinkified to avoid
 # "Node.js"/"e.g." false positives — the pick-file picker covers those).
 # Optional :line[:col]; Next.js ()/[] route segments allowed.
+# A `:` is only allowed in a leading Windows drive (`C:`) or the :line[:col]
+# suffix, so web URLs (`https://…`) never match and stay with herdr's browser.
 [[link_handlers]]
 id = "file-path"
 title = "Open in nvim sidebar"
-pattern = '^~?[\w.@/()\[\]\\:+-]+[\\/][\w.@()\[\]\\:+-]+\.[A-Za-z]\w*(?::\d+){0,2}$'
+pattern = '^(?:~|[A-Za-z]:)?[\w.@/()\[\]\\+-]+[\\/][\w.@()\[\]\\+-]+\.[A-Za-z]\w*(?::\d+){0,2}$'
 action = "open-link"
 
 # Agents' own OSC 8 file:// links (e.g. Claude Code's) — otherwise herdr would
