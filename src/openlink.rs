@@ -395,6 +395,11 @@ mod tests {
             "app/(marketing)/page.tsx",
             "app/[slug]/page.tsx",
             "~/sub/notes.md",
+            // Windows: drive-letter and backslash paths (see extract.rs).
+            r"C:\Users\a\src\b.rs:3",
+            "C:/x/y.rs",
+            r"d:\proj\main.rs:10:2",
+            r"src\main.rs",
             // Has a directory segment and an extension, so the *pattern*
             // matches; resolution (not the regex) is what rejects this —
             // see resolve_click, which requires the file to actually exist.
@@ -423,6 +428,28 @@ mod tests {
                 "expected {candidate:?} to NOT match"
             );
         }
+    }
+
+    // Issue #42: web URLs must stay with herdr's browser default, so the
+    // file-path handler must not match them.
+    #[test]
+    fn file_path_handler_pattern_does_not_match_web_urls() {
+        let pattern = manifest_link_pattern("file-path");
+        let re = regex::Regex::new(&pattern).expect("file-path pattern must compile");
+        let urls = [
+            "https://example.com",
+            "http://github.com",
+            "https://example.com/index.html",
+            "https://example.com:8080",
+            "https://example.com/a/b.js:10",
+            "https://example.com:8080/a/b.js",
+            "http://localhost:3000/src/main.rs:12:4",
+        ];
+        let matched: Vec<&str> = urls.iter().copied().filter(|u| re.is_match(u)).collect();
+        assert!(
+            matched.is_empty(),
+            "file-path pattern grabs web URLs: {matched:?}"
+        );
     }
 
     #[test]
