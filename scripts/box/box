@@ -29,18 +29,21 @@ Usage:
   box build [--src DIR] [--herdr VER] [--pi VER] [--no-cache]
       Build image hnv-box:latest (+ tag hnv-box:herdr<H>-pi<P>). --src is the
       herdr-nvim checkout whose Cargo.toml/Cargo.lock get precompiled
-      (default: this repo). VER defaults to the latest release.
+      (default: this repo). HERDR defaults to 0.9.3; PI defaults to the latest release.
   box up <item> <worktree> [--scenario FILE] [--cpus N] [--memory SIZE]
       Start box <item>: mount <worktree> read-only at /work, build
       herdr-nvim, start herdr with the plugin linked. Prints "ready" when done.
       Proof dir: $HNV_BOX_PROOF_DIR/<item>/ (mounted at /proof).
-  box record <item> <tape> [--run NAME] [--keep-session] [--timeout SEC]
+  box record <item> <tape> [--run NAME] [--replace] [--allow-dirty] [--keep-session] [--timeout SEC]
       Run a VHS tape inside the box. Output/Screenshot paths in the tape are
       relative to the run dir: /proof/<NAME>/ with --run (e.g. before, after),
       else /proof. The tape (and smoke/_start.tape) is copied to <run dir>/tapes/.
-      The run dir gets .worktree-rev (commit, "(dirty)") and versions.txt.
-      Prints the files produced. Starts from a fresh herdr session (see
-      reset) unless --keep-session.
+      The run dir gets .worktree-rev (commit, "(dirty)"), versions.txt, and
+      scenario.json. Existing run dirs are refused unless --replace is passed.
+      before/after proof runs require a clean worktree unless --allow-dirty is
+      passed, which saves git diff HEAD and an untracked file list in the run dir.
+      Prints the files produced. Starts from a fresh container/session unless
+      --keep-session.
   box reset <item>
       Stop herdr, wipe herdr/herdr-nvim/pi session state and reset ~/demo,
       rebuild herdr-nvim if the worktree changed, restart herdr. Re-stamps
@@ -108,13 +111,58 @@ proof_dir() { local p; p=$(mount_src "$1" /proof); echo "${p:-$PROOF_ROOT/$1}"; 
 stamp() {
   local item=$1 wt=$2 dir=$3
   mkdir -p "$dir"
-  { git -C "$wt" rev-parse HEAD 2>/dev/null || echo unknown
-    git -C "$wt" status --porcelain 2>/dev/null | grep -q . && echo "(dirty)" || true; } | paste -sd' ' - > "$dir/.worktree-rev"
-  docker exec "$(cname "$item")" cat /etc/box-versions > "$dir/versions.txt" 2>/dev/null \
-    || echo "unknown (box not running)" > "$dir/versions.txt"
+  worktree_rev "$wt" > "$dir/.worktree-rev"
+  write_versions "$item" "$dir/versions.txt"
 }
 # Worktree mounted at /work in <item>'s box.
 box_worktree() { local w; w=$(mount_src "$1" /work); [ -n "$w" ] || w=$(cat "$(proof_dir "$1")/.worktree-path" 2>/dev/null || true); echo "$w"; }
+
+worktree_rev() {
+  local wt=$1 dirty=""
+  local rev; rev=$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo unknown)
+  git -C "$wt" status --porcelain 2>/dev/null | grep -q . && dirty=" (dirty)" || true
+  printf '%s%s\n' "$rev" "$dirty"
+}
+
+worktree_dirty() { git -C "$1" status --porcelain 2>/dev/null | grep -q .; }
+
+write_versions() {
+  docker exec "$(cname "$1")" cat /etc/box-versions > "$2" 2>/dev/null \
+    || echo "unknown (box not running)" > "$2"
+}
+
+copy_active_scenario() {
+  local item=$1 dir=$2 proof; proof=$(proof_dir "$item")
+  if [ -f "$proof/scenario.json" ]; then
+    cp "$proof/scenario.json" "$dir/scenario.json"
+  else
+    docker exec "$(cname "$item")" cat /opt/box/default-scenario.json > "$dir/scenario.json"
+  fi
+}
+
+create_container() { # create_container <item> <worktree> <proof> [cpus] [memory]
+  local item=$1 wt=$2 proof=$3 cpus=${4:-$DEFAULT_CPUS} mem=${5:-$DEFAULT_MEMORY}
+  docker volume create --label "$LABEL" --label "hnv.item=$item" "$(vname "$item")" >/dev/null
+  docker run -d --name "$(cname "$item")" --hostname "$item" \
+    --label "$LABEL" --label "hnv.item=$item" \
+    --network none --cpus "$cpus" --memory "$mem" --pids-limit 4096 --shm-size 1g \
+    --mount "type=bind,src=$wt,dst=/work,readonly" \
+    --mount "type=bind,src=$proof,dst=/proof" \
+    --mount "type=volume,src=$(vname "$item"),dst=/cargo-target" \
+    "$IMAGE:latest" >/dev/null
+}
+
+recreate_container() { # recreate_container <item>
+  local item=$1 proof wt c; proof=$(proof_dir "$item"); wt=$(box_worktree "$item"); c=$(cname "$item")
+  [ -n "$wt" ] && [ -d "$wt" ] || die "recreate: cannot determine worktree for '$item'"
+  if docker inspect "$c" >/dev/null 2>&1; then
+    is_box "$c" || die "recreate: $c is not a box container; refusing to remove it"
+    docker rm -f "$c" >/dev/null
+  fi
+  mkdir -p "$proof/logs"
+  echo "$wt" > "$proof/.worktree-path"
+  create_container "$item" "$wt" "$proof"
+}
 
 require_running() {
   local c; c=$(cname "$1")
@@ -141,7 +189,7 @@ cmd_build() {
   done
   [ -f "$src/Cargo.toml" ] && [ -f "$src/Cargo.lock" ] || die "build: --src '$src' has no Cargo.toml/Cargo.lock"
   need_docker
-  if [ -z "$herdr" ]; then herdr=$(latest_herdr) || true; [ -n "$herdr" ] || die "build: could not resolve latest herdr release; pass --herdr X.Y.Z"; fi
+  if [ -z "$herdr" ]; then herdr=0.9.3; fi
   if [ -z "$pi" ]; then pi=$(npm view @earendil-works/pi-coding-agent version 2>/dev/null) || true; [ -n "$pi" ] || die "build: could not resolve latest pi (npm view failed); pass --pi X.Y.Z"; fi
   info "building $IMAGE (herdr $herdr, pi $pi, deps from $src)"
   local t0=$SECONDS
@@ -183,18 +231,11 @@ cmd_up() {
 
   local proof="$PROOF_ROOT/$item"
   mkdir -p "$proof/logs" "$proof/tapes"
-  [ -z "$scenario" ] || cp "$scenario" "$proof/scenario.json"
+  if [ -n "$scenario" ]; then cp "$scenario" "$proof/scenario.json"; else rm -f "$proof/scenario.json"; fi
   echo "$wt" > "$proof/.worktree-path"
 
   local t0=$SECONDS
-  docker volume create --label "$LABEL" --label "hnv.item=$item" "$(vname "$item")" >/dev/null
-  docker run -d --name "$c" --hostname "$item" \
-    --label "$LABEL" --label "hnv.item=$item" \
-    --network none --cpus "$cpus" --memory "$mem" --pids-limit 4096 --shm-size 1g \
-    --mount "type=bind,src=$wt,dst=/work,readonly" \
-    --mount "type=bind,src=$proof,dst=/proof" \
-    --mount "type=volume,src=$(vname "$item"),dst=/cargo-target" \
-    "$IMAGE:latest" >/dev/null
+  create_container "$item" "$wt" "$proof" "$cpus" "$mem"
   stamp "$item" "$wt" "$proof"
   info "started $c (network none, $cpus cpus, $mem); building herdr-nvim from $wt @ $(cat "$proof/.worktree-rev")"
   if ! docker exec "$c" box-start 2>&1 | tee "$proof/logs/box-start.log"; then
@@ -205,12 +246,14 @@ cmd_up() {
 
 cmd_record() {
   local item="${1:-}" tape="${2:-}"; shift 2 || die "record: usage: box record <item> <tape> [--run NAME]"
-  local timeout=600 keep=0 run=""
+  local timeout=600 keep=0 run="" replace=0 allow_dirty=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout) timeout="${2:?}"; shift 2;;
       --keep-session) keep=1; shift;;
       --run) run="${2:?--run needs a name, e.g. before or after}"; shift 2;;
+      --replace) replace=1; shift;;
+      --allow-dirty) allow_dirty=1; shift;;
       *) die "record: unknown option '$1'";;
     esac
   done
@@ -218,46 +261,81 @@ cmd_record() {
   [ -z "$run" ] || [[ "$run" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]] \
     || die "record: invalid run name '$run' (e.g. before, after)"
   need_docker; require_running "$item"
-  local proof; proof=$(proof_dir "$item")
-  local out="$proof${run:+/$run}" cwd="/proof${run:+/$run}" name; name=$(basename "$tape")
-  local tag="${run:+$run-}$name"
-  mkdir -p "$proof/logs" "$out/tapes"
-  # Stamp before the reset so box-start logs the commit it is about to build.
-  local wt; wt=$(box_worktree "$item")
-  stamp "$item" "$wt" "$proof"
-  [ -z "$run" ] || cp "$proof/.worktree-rev" "$proof/versions.txt" "$out/"
-  if [ $keep = 0 ]; then
-    docker exec "$(cname "$item")" box-start --fresh >"$proof/logs/reset.log" 2>&1 \
-      || { cat "$proof/logs/reset.log" >&2; die "record: resetting the box failed"; }
+  local proof wt rev name tag final tmp cwd marker
+  proof=$(proof_dir "$item"); wt=$(box_worktree "$item")
+  [ -n "$wt" ] && [ -d "$wt" ] || die "record: cannot determine worktree for '$item'"
+  if [[ "$run" =~ ^(before|after)$ ]] && worktree_dirty "$wt" && [ $allow_dirty = 0 ]; then
+    die "record: --run $run requires a clean worktree; pass --allow-dirty to record and save git diff HEAD"
   fi
-  # The tape plus shared helpers (`Source tapes/_start.tape`): smoke/_*.tape,
-  # overridden by _*.tape next to the tape. Paths in a tape are relative to
-  # the run dir, which is VHS's cwd.
-  cp "$BOX_DIR"/smoke/_*.tape "$out/tapes/" 2>/dev/null || true
+  name=$(basename "$tape"); tag="${run:+$run-}$name"
+  mkdir -p "$proof/logs"
+  if [ -n "$run" ]; then
+    final="$proof/$run"
+    [ ! -e "$final" ] || [ $replace = 1 ] || die "record: run '$run' already exists; pass --replace to overwrite"
+    tmp=$(mktemp -d "$proof/.${run}.tmp.XXXXXX")
+  else
+    final="$proof"; tmp="$proof"
+  fi
+  mkdir -p "$tmp/tapes"
+
+  if [ $keep = 0 ]; then
+    info "recreating box '$item' for a fresh recording"
+    recreate_container "$item"
+    docker exec "$(cname "$item")" box-start >"$proof/logs/reset.log" 2>&1 \
+      || { cat "$proof/logs/reset.log" >&2; [ -n "$run" ] && rm -rf "$tmp"; die "record: resetting the box failed"; }
+  else
+    rev=$(worktree_rev "$wt")
+    if [ "$(cat "$proof/.last-build-rev" 2>/dev/null || true)" != "$rev" ]; then
+      info "worktree changed since last build; rebuilding herdr-nvim without wiping session"
+      echo "$rev" > "$proof/.worktree-rev"
+      docker exec "$(cname "$item")" box-start >"$proof/logs/rebuild.log" 2>&1 \
+        || { cat "$proof/logs/rebuild.log" >&2; [ -n "$run" ] && rm -rf "$tmp"; die "record: rebuild failed"; }
+    fi
+  fi
+
+  rev=$(worktree_rev "$wt")
+  echo "$rev" > "$tmp/.worktree-rev"
+  write_versions "$item" "$tmp/versions.txt"
+  copy_active_scenario "$item" "$tmp"
+  if [ $allow_dirty = 1 ] && worktree_dirty "$wt"; then
+    git -C "$wt" diff HEAD > "$tmp/git-diff-head.patch" || true
+    git -C "$wt" ls-files --others --exclude-standard > "$tmp/untracked-files.txt" || true
+  fi
+  cp "$BOX_DIR"/smoke/_*.tape "$tmp/tapes/" 2>/dev/null || true
   local d; d=$(cd "$(dirname "$tape")" && pwd)
-  [ "$d" = "$BOX_DIR/smoke" ] || cp "$d"/_*.tape "$out/tapes/" 2>/dev/null || true
-  cp "$tape" "$out/tapes/$name"
-  local marker; marker=$(mktemp); sleep 1
-  info "recording $name in box '$item'${run:+ (run $run)} from $wt @ $(cat "$proof/.worktree-rev") (timeout ${timeout}s)"
+  [ "$d" = "$BOX_DIR/smoke" ] || cp "$d"/_*.tape "$tmp/tapes/" 2>/dev/null || true
+  cp "$tape" "$tmp/tapes/$name"
+  cwd="/proof${run:+/$(basename "$tmp")}"; [ -z "$run" ] && cwd="/proof"
+  marker=$(mktemp); sleep 1
+  info "recording $name in box '$item'${run:+ (run $run)} from $wt @ $rev (timeout ${timeout}s)"
   local rc=0
   docker exec -w "$cwd" "$(cname "$item")" timeout "$timeout" vhs "tapes/$name" >"$proof/logs/vhs-$tag.log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     tail -20 "$proof/logs/vhs-$tag.log" >&2
-    rm -f "$marker"
+    rm -f "$marker"; [ -n "$run" ] && rm -rf "$tmp"
     die "record: vhs failed (exit $rc; 124 = timeout). Full log: $proof/logs/vhs-$tag.log"
   fi
-  sleep 1  # let the bind mount catch up; the last screenshot can land a moment after vhs exits
-  info "stamp: $out/.worktree-rev = $(cat "$out/.worktree-rev"); versions: $out/versions.txt"
+  sleep 1
+  if [ -n "$run" ]; then
+    [ $replace = 1 ] && rm -rf "$final"
+    mv "$tmp" "$final"
+  fi
+  echo "$rev" > "$proof/.worktree-rev"
+  write_versions "$item" "$proof/versions.txt"
+  echo "$rev" > "$proof/.last-build-rev"
+  info "stamp: $final/.worktree-rev = $(cat "$final/.worktree-rev"); versions: $final/versions.txt"
   info "artifacts:"
-  find "$out" -type f -newer "$marker" -not -path '*/logs/*' -not -path '*/tapes/*' | sort
+  find "$final" -type f -newer "$marker" -not -path '*/logs/*' -not -path '*/tapes/*' | sort
   rm -f "$marker"
 }
 
 cmd_reset() {
   local item="${1:-}"; check_item "$item"; need_docker; require_running "$item"
-  local proof; proof=$(proof_dir "$item")
-  stamp "$item" "$(box_worktree "$item")" "$proof"
-  docker exec "$(cname "$item")" box-start --fresh
+  local proof wt; proof=$(proof_dir "$item"); wt=$(box_worktree "$item")
+  recreate_container "$item"
+  stamp "$item" "$wt" "$proof"
+  docker exec "$(cname "$item")" box-start
+  worktree_rev "$wt" > "$proof/.last-build-rev"
 }
 
 cmd_test() {

@@ -83,7 +83,7 @@ RUN cd /work && mkdir -p src examples \
  && rm -rf /work/* && du -sh /cargo-target /usr/local/cargo/registry
 
 # ---------------------------------------------------------------- herdr
-ARG HERDR_VERSION=latest
+ARG HERDR_VERSION=0.9.3
 RUN case "$TARGETARCH" in arm64) a=aarch64;; amd64) a=x86_64;; esac \
  && if [ "$HERDR_VERSION" = latest ]; then u="https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-${a}"; \
     else u="https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION#v}/herdr-linux-${a}"; fi \

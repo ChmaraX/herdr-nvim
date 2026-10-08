@@ -20,6 +20,7 @@ B=~/projects/herdr-nvim/scripts/box/box
 $B build                                    # build image hnv-box:latest (~8 min cold)
 $B up issue-42 <worktree> [--scenario f.json]  # start the box, build herdr-nvim, start herdr
 $B record issue-42 my.tape --run before     # run a tape; outputs go to <proof>/before/
+$B record issue-42 my.tape --run before --replace  # deliberately overwrite a run
 $B test issue-42                            # cargo test + lua tests, inside the box
 $B scenario issue-42 other.json             # swap the mock LLM script
 $B exec issue-42 -- herdr pane list         # run any command in the box
@@ -38,12 +39,16 @@ Proof goes to `~/.cache/hnv-box/<item>/` (set `HNV_BOX_PROOF_DIR` to use another
   - `tapes/`: the tape as recorded, plus `_start.tape`
   - `.worktree-rev`: the worktree commit at record time, with `(dirty)` if it had uncommitted changes
   - `versions.txt`: herdr, pi, nvim and tool versions of the image
+  - `scenario.json`: the mock LLM scenario used for the run (the default scenario if no custom one was set)
+  - `git-diff-head.patch` and `untracked-files.txt` when `--allow-dirty` records dirty `before`/`after` proof
 - Without `--run`, the same files land in the proof dir itself (a second record of the same tape overwrites the first).
-- `.worktree-rev` and `versions.txt` at the top level: rewritten by `up`, `reset` and every `record`.
+- Existing run dirs are refused unless `--replace` is passed. Runs are transactional: a failed `--replace` leaves the previous run dir and stamp untouched.
+- Proof runs named `before` or `after` require a clean worktree unless `--allow-dirty` is passed. Exploratory run names stay allowed.
+- `.worktree-rev` and `versions.txt` at the top level: rewritten by `up`, `reset` and successful `record` runs.
 - `logs/`: box-start, cargo build, herdr, mock LLM, `vhs-<run>-<tape>.log`, `test-*.log`
-- `scenario.json`
+- `scenario.json`: the active scenario for the box; absent means the default scenario applies
 
-After you edit the worktree on the host, run `box reset <item>`, or just `box record`. Both rebuild herdr-nvim. Only the herdr-nvim crate is compiled (about 70 s with release LTO); dependencies are precompiled in the image.
+After you edit the worktree on the host, run `box reset <item>`, or just `box record`. Both recreate the runtime container and rebuild herdr-nvim. `box record --keep-session` keeps state but rebuilds when the worktree revision changed. Only the herdr-nvim crate is compiled (about 70 s with release LTO); dependencies are precompiled in the image.
 
 ## Running the tests
 
@@ -56,7 +61,7 @@ It copies `/work` to a writable snapshot (`~/test-src` in the box, with a fresh 
 A tape is a [VHS](https://github.com/charmbracelet/vhs) script.
 
 - Paths in `Output`, `Screenshot` and `Source` are relative to the run directory (`<proof>/<run>/`, or the proof dir without `--run`).
-- Every `box record` starts from a fresh herdr session, fresh herdr-nvim state, no pi sessions, and a clean `~/demo`. Pass `--keep-session` to continue from the previous state.
+- Every `box record` starts from a fresh runtime container with a fresh herdr session, fresh herdr-nvim state, no pi sessions, a clean `$HOME`, and a clean `~/demo`. Only the cargo target volume/build cache is kept. Pass `--keep-session` to continue from the previous state.
 - herdr's prefix is `ctrl+b`. herdr-nvim's keys are bound as its README says: `prefix+e` toggles the sidebar, `prefix+o` opens the file picker.
 - Start with `Source tapes/_start.tape` right after `Output`. It sets the size and font, then (hidden) starts herdr and runs `cd ~/demo` (a small git repo) in its pane; herdr's first workspace opens in `$HOME`. It ends hidden, so add `Show` after it (and after any extra hidden setup). `box record` copies `smoke/_start.tape` into `<run>/tapes/` next to your tape; a `_*.tape` next to your tape overrides it.
 - Wait for screen text (`Wait+Screen /regex/`), not fixed sleeps. Keep a short `Sleep` before each `Screenshot` and at the end: the drawn frame lags the text.

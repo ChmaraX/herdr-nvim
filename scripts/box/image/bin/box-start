@@ -100,5 +100,6 @@ herdr plugin link "$P" > /proof/logs/plugin-link.log 2>&1 || { cat /proof/logs/p
 # capture first: `grep -q` exits early, SIGPIPEs herdr and fails the pipeline under pipefail
 plugins=$(herdr plugin list 2>&1 || true)
 grep -q "chmarax.herdr-nvim .*enabled \[local:$P\]" <<<"$plugins" || die "plugin not linked from $P: $plugins"
+cat /proof/.worktree-rev > /proof/.last-build-rev 2>/dev/null || true
 log "herdr $(herdr --version | awk '{print $2}') server up, plugin linked: $P -> /work"
 log "ready in $(elapsed "$t0")"
