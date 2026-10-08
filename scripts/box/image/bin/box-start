@@ -7,11 +7,9 @@
 #  3. writes ~/.config/herdr/config.toml with herdr-nvim's documented keybinds
 #  4. starts the herdr server and links the plugin
 #
-# --fresh: first stop herdr and wipe all session state (herdr session, nvim
-# daemons, herdr-nvim state, pi sessions, ~/demo back to its commit), so a
-# recording starts from the same clean state every time.
+# A clean state comes from a fresh container (`box record` / `box reset`
+# recreate it), not from wiping paths here.
 set -euo pipefail
-fresh=0; [ "${1:-}" = --fresh ] && fresh=1
 log() { printf '[box-start] %s\n' "$*"; }
 die() { printf '[box-start] ERROR: %s\n' "$*" >&2; exit 1; }
 t0=$(date +%s.%N)
@@ -19,19 +17,6 @@ elapsed() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1fs", b-a}'; }
 
 [ -f /work/Cargo.toml ] && [ -f /work/herdr-plugin.toml ] \
   || die "/work does not look like a herdr-nvim checkout (no Cargo.toml / herdr-plugin.toml). Pass a worktree path to 'box up'."
-
-if [ $fresh = 1 ]; then
-  log "fresh: stopping herdr and wiping session state"
-  herdr server stop >/dev/null 2>&1 || true
-  for _ in $(seq 50); do pgrep -u box -x herdr >/dev/null || break; sleep 0.1; done
-  pkill -u box -x herdr 2>/dev/null || true
-  pkill -u box -x nvim 2>/dev/null || true
-  pkill -u box -f 'pi-coding-agent|/bin/pi( |$)' 2>/dev/null || true
-  rm -rf ~/.config/herdr/session.json ~/.config/herdr/session-snapshots \
-         ~/.local/state/herdr-nvim /tmp/herdr-nvim ~/.pi/agent/sessions \
-         ~/.config/herdr-nvim ~/.local/state/nvim/swap
-  git -C ~/demo reset -q --hard && git -C ~/demo clean -qfdx
-fi
 
 # mock LLM (started by box-init)
 for _ in $(seq 50); do curl -fsS http://127.0.0.1:4141/health >/dev/null 2>&1 && break; sleep 0.2; done
