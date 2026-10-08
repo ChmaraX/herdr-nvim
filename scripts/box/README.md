@@ -48,7 +48,7 @@ Proof goes to `~/.cache/hnv-box/<item>/` (set `HNV_BOX_PROOF_DIR` to use another
 - `logs/`: box-start, cargo build, herdr, mock LLM, `vhs-<run>-<tape>.log`, `test-*.log`
 - `scenario.json`: the active scenario for the box; absent means the default scenario applies
 
-After you edit the worktree on the host, run `box reset <item>`, or just `box record`. Both recreate the runtime container and rebuild herdr-nvim. `box record --keep-session` keeps state but rebuilds when the worktree revision changed. Only the herdr-nvim crate is compiled (about 70 s with release LTO); dependencies are precompiled in the image.
+After you edit the worktree on the host, run `box reset <item>`, or just `box record`. Both recreate the runtime container and rebuild herdr-nvim; `box reset` uses the same fresh-container path as a default recording. `box record --keep-session` keeps state but rebuilds when the worktree revision changed. Only the herdr-nvim crate is compiled (about 70 s with release LTO); dependencies are precompiled in the image.
 
 ## Running the tests
 
