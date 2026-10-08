@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.1.0...v1.2.0) (2026-10-08)
+
+
+### Features
+
+* **comments:** annotate a sub-line character range, not the whole line ([#46](https://github.com/ChmaraX/herdr-nvim/issues/46)) ([d64ae03](https://github.com/ChmaraX/herdr-nvim/commit/d64ae0389a34519896a154f9bd51bc6fb846ef0f))
+
+
+### Bug Fixes
+
+* **links:** stop file-path handler from grabbing web URLs ([#48](https://github.com/ChmaraX/herdr-nvim/issues/48)) ([02af7db](https://github.com/ChmaraX/herdr-nvim/commit/02af7db660f28faf08f775b179616958826e0230))
+* refresh sidebar pane identity on reopen ([#43](https://github.com/ChmaraX/herdr-nvim/issues/43)) ([e3019c8](https://github.com/ChmaraX/herdr-nvim/commit/e3019c8ad6c8fd871db6da8e394e106284bb360a))
+
 ## [1.1.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.0.1...v1.1.0) (2026-09-25)
 
 
