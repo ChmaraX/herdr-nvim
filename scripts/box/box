@@ -279,12 +279,12 @@ cmd_test() {
     || die "test: could not snapshot /work"
   if [ "$what" != lua ]; then
     info "cargo test --locked --offline in box '$item' (target: /cargo-target/test)"
-    docker exec -w "$S" -e CARGO_TARGET_DIR=/cargo-target/test "$c" cargo test --locked --offline 2>&1 | tee "$proof/logs/test-cargo.log" \
+    docker exec -w "$S" -e CARGO_TARGET_DIR=/cargo-target/test -e HERDR_NVIM_PLUGIN_ROOT="$S" "$c" cargo test --locked --offline 2>&1 | tee "$proof/logs/test-cargo.log" \
       || { rc=1; info "cargo test FAILED (log: $proof/logs/test-cargo.log)"; }
   fi
   if [ "$what" != cargo ]; then
     info "lua tests in box '$item'"
-    docker exec -w "$S" "$c" nvim --headless --noplugin -u NONE -l tests/run.lua 2>&1 | tee "$proof/logs/test-lua.log" \
+    docker exec -w "$S" -e HERDR_NVIM_PLUGIN_ROOT="$S" "$c" nvim --headless --noplugin -u NONE -l tests/run.lua 2>&1 | tee "$proof/logs/test-lua.log" \
       || { rc=1; info "lua tests FAILED (log: $proof/logs/test-lua.log)"; }
     echo  # tests/run.lua ends without a newline
   fi
