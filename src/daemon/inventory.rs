@@ -761,7 +761,7 @@ mod tests {
             .expect("child pid");
         let child_guard = KillOnDrop(child);
         heavy.eval(
-            "luaeval(\"require('herdr-nvim.comments').add(vim.api.nvim_get_current_buf(), 1, 1, 'look')\")",
+            "luaeval(\"require('herdr-nvim.comments').add(vim.api.nvim_get_current_buf(), { start_line = 1, end_line = 1 }, 'look')\")",
         );
         dirty.dirty_a_buffer();
 

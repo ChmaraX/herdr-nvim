@@ -23,13 +23,79 @@ vim.api.nvim_set_hl(0, "HerdrNvimCommentLine", { default = true, link = "CursorL
 
 local decorations = {} -- comment id -> { hl, callout, bufnr }
 
-function M.visual_range()
-  local s = vim.api.nvim_buf_get_mark(0, "<")[1]
-  local e = vim.api.nvim_buf_get_mark(0, ">")[1]
-  if s > e then
-    s, e = e, s
+local function normalized_marks()
+  local sm = vim.api.nvim_buf_get_mark(0, "<")
+  local em = vim.api.nvim_buf_get_mark(0, ">")
+  local s_line, s_col, e_line, e_col = sm[1], sm[2], em[1], em[2]
+  if s_line > e_line or (s_line == e_line and s_col > e_col) then
+    s_line, s_col, e_line, e_col = e_line, e_col, s_line, s_col
   end
-  return s, e
+  return s_line, s_col, e_line, e_col
+end
+
+local function end_exclusive(line, col)
+  local text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
+  return math.min((col - 1) + #vim.fn.strpart(text, col - 1, 1, true), #text)
+end
+
+local function regionpos_span(mode)
+  local opts = { type = mode }
+  if mode == "v" and vim.o.selection == "exclusive" then
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local start_mark = vim.api.nvim_buf_get_mark(0, "<")
+    -- In an exclusive backwards selection, Vim's region helper otherwise drops
+    -- the character where the selection started. Include it so the selected
+    -- token remains the token the user saw highlighted.
+    opts.exclusive = not (cursor[1] == start_mark[1] and cursor[2] == start_mark[2])
+  end
+  local ok, pos = pcall(vim.fn.getregionpos, vim.fn.getpos("'<"), vim.fn.getpos("'>"), opts)
+  if not ok or #pos == 0 then
+    return nil
+  end
+  local first, last = pos[1], pos[#pos]
+  local span = { start_line = first[1][2], end_line = last[2][2] }
+  if mode == "v" then
+    span.cols = { first[1][3] - 1, end_exclusive(last[2][2], last[2][3]) }
+  end
+  return span
+end
+
+local function whole_single_line(span)
+  if not span.cols or span.start_line ~= span.end_line then
+    return false
+  end
+  local line = vim.api.nvim_buf_get_lines(0, span.start_line - 1, span.start_line, false)[1] or ""
+  return span.cols[1] == 0 and span.cols[2] >= #line
+end
+
+-- Returns the last visual selection as one span value:
+-- { start_line = n, end_line = n, cols = { start_col, end_col }? }.
+-- Columns are 0-indexed bytes, end exclusive, and are present only for
+-- characterwise selections that do not collapse to a whole single line.
+function M.visual_region()
+  local mode = vim.fn.visualmode()
+  local span = vim.fn.exists("*getregionpos") == 1 and regionpos_span(mode) or nil
+  if not span then
+    local s_line, s_col, e_line, e_col = normalized_marks()
+    span = { start_line = s_line, end_line = e_line }
+    if mode == "v" then
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      local start_mark = vim.api.nvim_buf_get_mark(0, "<")
+      local include_end = vim.o.selection ~= "exclusive"
+        or (cursor[1] == start_mark[1] and cursor[2] == start_mark[2])
+        or (s_line == e_line and s_col == e_col)
+      span.cols = { s_col, include_end and end_exclusive(e_line, e_col + 1) or e_col }
+    end
+  end
+  if mode ~= "v" or whole_single_line(span) then
+    span.cols = nil
+  end
+  return span
+end
+
+function M.visual_range()
+  local span = M.visual_region()
+  return span.start_line, span.end_line
 end
 
 function M.input_comment(on_done)
