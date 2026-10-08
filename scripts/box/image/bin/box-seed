@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Image-build-time setup for the `box` user: pi config, demo repo, shell.
+set -euo pipefail
+B=/opt/box
+
+# pi: mock provider by default, no telemetry, no update checks (env in image).
+mkdir -p ~/.pi/agent
+cp $B/pi/models.json $B/pi/settings.json ~/.pi/agent/
+
+# ~/demo: small git repo for the agent to work in.
+cp -r $B/demo ~/demo
+cd ~/demo
+git init -q -b main
+git -c user.name=box -c user.email=box@localhost add -A
+git -c user.name=box -c user.email=box@localhost commit -qm "initial demo project"
+git config --global user.name box
+git config --global user.email box@localhost
+git config --global init.defaultBranch main
+git config --global --add safe.directory '*'
+
+# Plain, readable prompt for recordings.
+cat >> ~/.bashrc <<'RC'
+export PS1='\[\e[1;34m\]\w\[\e[0m\] $ '
+RC

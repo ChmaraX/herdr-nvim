@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+# box: isolated, offline test box for herdr-nvim (real herdr + herdr-nvim built
+# from a worktree + real pi on a scripted mock LLM, recorded with VHS).
+# Runs on the host; everything herdr-related happens inside the container.
+# See scripts/box/README.md.
+set -euo pipefail
+
+BOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$BOX_DIR/../.." && pwd)"
+IMAGE="${BOX_IMAGE:-hnv-box}"
+PROOF_ROOT="${HNV_BOX_PROOF_DIR:-$HOME/.cache/hnv-box}"
+LABEL_KEY="hnv.box"
+LABEL="$LABEL_KEY=1"
+DEFAULT_CPUS="${BOX_CPUS:-4}"
+DEFAULT_MEMORY="${BOX_MEMORY:-6g}"
+
+die() { printf 'box: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'box: %s\n' "$*" >&2; }
+
+usage() {
+  cat <<'EOF'
+box - isolated offline test box for herdr-nvim (Docker)
+
+Each box is one container running real herdr + herdr-nvim (built from a
+worktree you pass in) + real pi talking to a scripted mock LLM. No network,
+no credentials. Drive it with VHS tapes (keypresses) and get GIF/PNG proof.
+
+Usage:
+  box build [--src DIR] [--herdr VER] [--pi VER] [--no-cache]
+      Build image hnv-box:latest (+ tag hnv-box:herdr<H>-pi<P>). --src is the
+      herdr-nvim checkout whose Cargo.toml/Cargo.lock get precompiled
+      (default: this repo). VER defaults to the latest release.
+  box up <item> <worktree> [--scenario FILE] [--cpus N] [--memory SIZE]
+      Start box <item>: mount <worktree> read-only at /work, build
+      herdr-nvim, start herdr with the plugin linked. Prints "ready" when done.
+      Proof dir: $HNV_BOX_PROOF_DIR/<item>/ (mounted at /proof).
+  box record <item> <tape> [--run NAME] [--keep-session] [--timeout SEC]
+      Run a VHS tape inside the box. Output/Screenshot paths in the tape are
+      relative to the run dir: /proof/<NAME>/ with --run (e.g. before, after),
+      else /proof. The tape (and smoke/_start.tape) is copied to <run dir>/tapes/.
+      The run dir gets .worktree-rev (commit, "(dirty)") and versions.txt.
+      Prints the files produced. Starts from a fresh herdr session (see
+      reset) unless --keep-session.
+  box reset <item>
+      Stop herdr, wipe herdr/herdr-nvim/pi session state and reset ~/demo,
+      rebuild herdr-nvim if the worktree changed, restart herdr. Re-stamps
+      /proof/.worktree-rev and /proof/versions.txt.
+  box test <item> [cargo|lua]
+      Run the repo's tests inside the box (default: both): cargo test
+      --offline (target: /cargo-target/test in the box's volume) and the lua
+      tests, on a writable snapshot of /work (~/test-src, fresh git repo).
+      Use this for code you did not write (external PRs): it never runs on
+      the host. Logs: <proof>/logs/test-*.log.
+  box scenario <item> <file>
+      Swap the mock LLM scenario (takes effect on pi's next request).
+  box exec <item> [-t] -- <cmd> [args...]
+      Run a command in the box as user `box` (e.g. `herdr pane list`).
+  box shell <item>        Interactive bash in the box.
+  box logs <item>         Show the box's runtime logs (build, herdr, mock LLM).
+  box ls                  List boxes (containers labelled hnv.box=1).
+  box down <item> [--keep-volume]
+      Remove the box container (and its cargo target volume). Proof stays.
+  box down --all          Remove every box container and volume.
+  box versions [<item>]   Versions baked into the image.
+
+<item> is a short id like issue-42 or pr-41 ([a-z0-9][a-z0-9._-]*).
+Env: BOX_CPUS (4), BOX_MEMORY (6g), HNV_BOX_PROOF_DIR (~/.cache/hnv-box).
+EOF
+}
+
+need_docker() {
+  command -v docker >/dev/null || die "docker not found on PATH"
+  docker info >/dev/null 2>&1 || die "docker daemon not reachable (is Docker Desktop running?)"
+}
+
+check_item() {
+  [[ "${1:-}" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]] \
+    || die "invalid item '${1:-}': use lowercase letters, digits, '.', '_', '-' (e.g. issue-42)"
+}
+
+cname() { echo "hnv-box-$1"; }
+vname() { echo "hnv-box-target-$1"; }
+
+# Only ever touch containers/volumes that carry our label.
+has_box_label() { # has_box_label <container|volume> <inspect-labels-path>
+  local v
+  v=$(docker "$1" inspect -f "{{index $3 \"$LABEL_KEY\"}}" "$2" 2>/dev/null || true)
+  [ "$v" = 1 ]
+}
+is_box() { has_box_label container "$1" .Config.Labels; }
+is_box_volume() { has_box_label volume "$1" .Labels; }
+# ids of every container (or volume) with our label
+box_ids() { # box_ids ps|volume
+  if [ "$1" = ps ]; then docker ps -aq --filter "label=$LABEL"; else docker volume ls -q --filter "label=$LABEL"; fi
+}
+
+# Host path bound at <dst> in box <item>'s container (empty if none).
+mount_src() {
+  docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}" "$(cname "$1")" 2>/dev/null || true
+}
+# Host proof dir of <item>: whatever its container mounts at /proof (boxes
+# made with another HNV_BOX_PROOF_DIR keep working), else the default.
+proof_dir() { local p; p=$(mount_src "$1" /proof); echo "${p:-$PROOF_ROOT/$1}"; }
+
+# stamp <item> <worktree> <dir>: record what a build/recording came from.
+# <dir>/.worktree-rev = worktree HEAD (+ "(dirty)"); git stays on the host.
+# <dir>/versions.txt  = the image's /etc/box-versions (box must be running).
+stamp() {
+  local item=$1 wt=$2 dir=$3
+  mkdir -p "$dir"
+  { git -C "$wt" rev-parse HEAD 2>/dev/null || echo unknown
+    git -C "$wt" status --porcelain 2>/dev/null | grep -q . && echo "(dirty)" || true; } | paste -sd' ' - > "$dir/.worktree-rev"
+  docker exec "$(cname "$item")" cat /etc/box-versions > "$dir/versions.txt" 2>/dev/null \
+    || echo "unknown (box not running)" > "$dir/versions.txt"
+}
+# Worktree mounted at /work in <item>'s box.
+box_worktree() { local w; w=$(mount_src "$1" /work); [ -n "$w" ] || w=$(cat "$(proof_dir "$1")/.worktree-path" 2>/dev/null || true); echo "$w"; }
+
+require_running() {
+  local c; c=$(cname "$1")
+  is_box "$c" || die "no box '$1' (run: box up $1 <worktree>; list: box ls)"
+  [ "$(docker inspect -f '{{.State.Running}}' "$c")" = true ] \
+    || die "box '$1' exists but is not running (see: docker logs $c; recreate: box down $1 && box up $1 <worktree>)"
+}
+
+latest_herdr() {
+  curl -fsSI https://github.com/herdrdev/herdr/releases/latest 2>/dev/null \
+    | awk -F/ 'tolower($1) ~ /^location:/ {gsub(/\r/,""); print $NF}' | sed 's/^v//'
+}
+
+cmd_build() {
+  local src="$REPO_DIR" herdr="" pi="" nocache=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --src) src="${2:?--src needs a dir}"; shift 2;;
+      --herdr) herdr="${2:?--herdr needs a version}"; shift 2;;
+      --pi) pi="${2:?--pi needs a version}"; shift 2;;
+      --no-cache) nocache=(--no-cache); shift;;
+      *) die "build: unknown option '$1' (see box --help)";;
+    esac
+  done
+  [ -f "$src/Cargo.toml" ] && [ -f "$src/Cargo.lock" ] || die "build: --src '$src' has no Cargo.toml/Cargo.lock"
+  need_docker
+  if [ -z "$herdr" ]; then herdr=$(latest_herdr) || true; [ -n "$herdr" ] || die "build: could not resolve latest herdr release; pass --herdr X.Y.Z"; fi
+  if [ -z "$pi" ]; then pi=$(npm view @earendil-works/pi-coding-agent version 2>/dev/null) || true; [ -n "$pi" ] || die "build: could not resolve latest pi (npm view failed); pass --pi X.Y.Z"; fi
+  info "building $IMAGE (herdr $herdr, pi $pi, deps from $src)"
+  local t0=$SECONDS
+  docker build ${nocache[@]+"${nocache[@]}"} \
+    --build-context "src=$src" \
+    --build-arg "HERDR_VERSION=$herdr" --build-arg "PI_VERSION=$pi" \
+    --label "$LABEL" \
+    -t "$IMAGE:latest" -t "$IMAGE:herdr$herdr-pi$pi" \
+    "$BOX_DIR"
+  info "built $IMAGE:latest and $IMAGE:herdr$herdr-pi$pi in $((SECONDS - t0))s"
+  # Drop superseded box images (dangling AND labelled ours only).
+  docker image prune -f --filter "label=$LABEL" >/dev/null || true
+  docker run --rm --network none "$IMAGE:latest" cat /etc/box-versions
+}
+
+cmd_up() {
+  local item="${1:-}" wt="${2:-}"; shift 2 || die "up: usage: box up <item> <worktree> [--scenario FILE]"
+  check_item "$item"
+  local scenario="" cpus="$DEFAULT_CPUS" mem="$DEFAULT_MEMORY"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scenario) scenario="${2:?--scenario needs a file}"; shift 2;;
+      --cpus) cpus="${2:?}"; shift 2;;
+      --memory) mem="${2:?}"; shift 2;;
+      *) die "up: unknown option '$1'";;
+    esac
+  done
+  [ -d "$wt" ] || die "up: worktree '$wt' is not a directory"
+  wt="$(cd "$wt" && pwd)"
+  [ -f "$wt/herdr-plugin.toml" ] || die "up: '$wt' is not a herdr-nvim checkout (no herdr-plugin.toml)"
+  [ -z "$scenario" ] || [ -f "$scenario" ] || die "up: scenario '$scenario' not found"
+  need_docker
+  docker image inspect "$IMAGE:latest" >/dev/null 2>&1 || die "up: image $IMAGE:latest missing; run: box build"
+  local c; c=$(cname "$item")
+  if docker inspect "$c" >/dev/null 2>&1; then
+    is_box "$c" || die "up: a container named $c exists but is not a box; refusing to touch it"
+    die "up: box '$item' already exists; use it, or recreate with: box down $item && box up $item $wt"
+  fi
+
+  local proof="$PROOF_ROOT/$item"
+  mkdir -p "$proof/logs" "$proof/tapes"
+  [ -z "$scenario" ] || cp "$scenario" "$proof/scenario.json"
+  echo "$wt" > "$proof/.worktree-path"
+
+  local t0=$SECONDS
+  docker volume create --label "$LABEL" --label "hnv.item=$item" "$(vname "$item")" >/dev/null
+  docker run -d --name "$c" --hostname "$item" \
+    --label "$LABEL" --label "hnv.item=$item" \
+    --network none --cpus "$cpus" --memory "$mem" --pids-limit 4096 --shm-size 1g \
+    --mount "type=bind,src=$wt,dst=/work,readonly" \
+    --mount "type=bind,src=$proof,dst=/proof" \
+    --mount "type=volume,src=$(vname "$item"),dst=/cargo-target" \
+    "$IMAGE:latest" >/dev/null
+  stamp "$item" "$wt" "$proof"
+  info "started $c (network none, $cpus cpus, $mem); building herdr-nvim from $wt @ $(cat "$proof/.worktree-rev")"
+  if ! docker exec "$c" box-start 2>&1 | tee "$proof/logs/box-start.log"; then
+    die "up: in-box setup failed (log: $proof/logs/box-start.log). Fix and rerun: box exec $item -- box-start"
+  fi
+  info "ready: box '$item' in $((SECONDS - t0))s. proof dir: $proof"
+}
+
+cmd_record() {
+  local item="${1:-}" tape="${2:-}"; shift 2 || die "record: usage: box record <item> <tape> [--run NAME]"
+  local timeout=600 keep=0 run=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --timeout) timeout="${2:?}"; shift 2;;
+      --keep-session) keep=1; shift;;
+      --run) run="${2:?--run needs a name, e.g. before or after}"; shift 2;;
+      *) die "record: unknown option '$1'";;
+    esac
+  done
+  check_item "$item"; [ -f "$tape" ] || die "record: tape '$tape' not found"
+  [ -z "$run" ] || [[ "$run" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]] \
+    || die "record: invalid run name '$run' (e.g. before, after)"
+  need_docker; require_running "$item"
+  local proof; proof=$(proof_dir "$item")
+  local out="$proof${run:+/$run}" cwd="/proof${run:+/$run}" name; name=$(basename "$tape")
+  local tag="${run:+$run-}$name"
+  mkdir -p "$proof/logs" "$out/tapes"
+  # Stamp before the reset so box-start logs the commit it is about to build.
+  local wt; wt=$(box_worktree "$item")
+  stamp "$item" "$wt" "$proof"
+  [ -z "$run" ] || cp "$proof/.worktree-rev" "$proof/versions.txt" "$out/"
+  if [ $keep = 0 ]; then
+    docker exec "$(cname "$item")" box-start --fresh >"$proof/logs/reset.log" 2>&1 \
+      || { cat "$proof/logs/reset.log" >&2; die "record: resetting the box failed"; }
+  fi
+  # The tape plus shared helpers (`Source tapes/_start.tape`): smoke/_*.tape,
+  # overridden by _*.tape next to the tape. Paths in a tape are relative to
+  # the run dir, which is VHS's cwd.
+  cp "$BOX_DIR"/smoke/_*.tape "$out/tapes/" 2>/dev/null || true
+  local d; d=$(cd "$(dirname "$tape")" && pwd)
+  [ "$d" = "$BOX_DIR/smoke" ] || cp "$d"/_*.tape "$out/tapes/" 2>/dev/null || true
+  cp "$tape" "$out/tapes/$name"
+  local marker; marker=$(mktemp); sleep 1
+  info "recording $name in box '$item'${run:+ (run $run)} from $wt @ $(cat "$proof/.worktree-rev") (timeout ${timeout}s)"
+  local rc=0
+  docker exec -w "$cwd" "$(cname "$item")" timeout "$timeout" vhs "tapes/$name" >"$proof/logs/vhs-$tag.log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    tail -20 "$proof/logs/vhs-$tag.log" >&2
+    rm -f "$marker"
+    die "record: vhs failed (exit $rc; 124 = timeout). Full log: $proof/logs/vhs-$tag.log"
+  fi
+  sleep 1  # let the bind mount catch up; the last screenshot can land a moment after vhs exits
+  info "stamp: $out/.worktree-rev = $(cat "$out/.worktree-rev"); versions: $out/versions.txt"
+  info "artifacts:"
+  find "$out" -type f -newer "$marker" -not -path '*/logs/*' -not -path '*/tapes/*' | sort
+  rm -f "$marker"
+}
+
+cmd_reset() {
+  local item="${1:-}"; check_item "$item"; need_docker; require_running "$item"
+  local proof; proof=$(proof_dir "$item")
+  stamp "$item" "$(box_worktree "$item")" "$proof"
+  docker exec "$(cname "$item")" box-start --fresh
+}
+
+cmd_test() {
+  local item="${1:-}" what="${2:-all}"; check_item "$item"
+  case "$what" in all|cargo|lua) ;; *) die "test: usage: box test <item> [cargo|lua]";; esac
+  need_docker; require_running "$item"
+  local proof c rc=0; proof=$(proof_dir "$item"); c=$(cname "$item")
+  mkdir -p "$proof/logs"
+  # /work is read-only and, for a git worktree, its .git points at a host
+  # path, so git (used by some tests) fails there. Test a writable snapshot
+  # (mtimes kept, so cargo stays incremental) with a fresh one-commit repo.
+  # Own target dir: cargo does not rebuild when only the package path
+  # changes, and test binaries bake in CARGO_MANIFEST_DIR.
+  local S=/home/box/test-src
+  info "snapshot /work -> $S in box '$item' ($(cat "$proof/.worktree-rev" 2>/dev/null || echo '?'))"
+  docker exec "$c" sh -c "set -e; rm -rf $S; mkdir -p $S
+    cd /work && tar --exclude=./.git --exclude=./target --exclude=./bin -cf - . | tar -xf - -C $S
+    cd $S && git init -q && git add -A && git commit -qm 'box test snapshot of /work'" \
+    || die "test: could not snapshot /work"
+  if [ "$what" != lua ]; then
+    info "cargo test --locked --offline in box '$item' (target: /cargo-target/test)"
+    docker exec -w "$S" -e CARGO_TARGET_DIR=/cargo-target/test "$c" cargo test --locked --offline 2>&1 | tee "$proof/logs/test-cargo.log" \
+      || { rc=1; info "cargo test FAILED (log: $proof/logs/test-cargo.log)"; }
+  fi
+  if [ "$what" != cargo ]; then
+    info "lua tests in box '$item'"
+    docker exec -w "$S" "$c" nvim --headless --noplugin -u NONE -l tests/run.lua 2>&1 | tee "$proof/logs/test-lua.log" \
+      || { rc=1; info "lua tests FAILED (log: $proof/logs/test-lua.log)"; }
+    echo  # tests/run.lua ends without a newline
+  fi
+  [ $rc = 0 ] || die "tests failed (logs: $proof/logs/test-*.log)"
+  info "tests passed (logs: $proof/logs/test-*.log)"
+}
+
+cmd_scenario() {
+  local item="${1:-}" file="${2:-}"
+  check_item "$item"; [ -f "$file" ] || die "scenario: file '$file' not found"
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d.get("turns"),list), "\"turns\" must be a list"' "$file" \
+    || die "scenario: '$file' is not valid scenario JSON (needs {\"turns\": [...]})"
+  local proof; proof=$(proof_dir "$item")
+  mkdir -p "$proof"; cp "$file" "$proof/scenario.json"
+  info "scenario for '$item' set to $file (pi's next request uses it)"
+}
+
+cmd_exec() {
+  local item="${1:-}"; shift || true
+  check_item "$item"
+  local tty=()
+  while [ $# -gt 0 ]; do
+    case "$1" in -t) tty=(-t); shift;; --) shift; break;; *) break;; esac
+  done
+  [ $# -gt 0 ] || die "exec: usage: box exec <item> [-t] -- <cmd> [args...]"
+  need_docker; require_running "$item"
+  exec docker exec -i ${tty[@]+"${tty[@]}"} -w /home/box "$(cname "$item")" "$@"
+}
+
+cmd_shell() {
+  local item="${1:-}"; check_item "$item"; need_docker; require_running "$item"
+  exec docker exec -it -w /home/box "$(cname "$item")" bash -l
+}
+
+cmd_logs() {
+  local item="${1:-}"; check_item "$item"
+  local d; d="$(proof_dir "$item")/logs"; [ -d "$d" ] || die "logs: no logs for '$item' ($d)"
+  for f in "$d"/*; do printf '==> %s <==\n' "$f"; tail -n 30 "$f"; echo; done
+}
+
+cmd_ls() {
+  need_docker
+  local ids; ids=$(box_ids ps)
+  [ -n "$ids" ] || { info "no boxes"; return; }
+  # shellcheck disable=SC2086
+  { printf 'ITEM\tNAMES\tSTATUS\tIMAGE\n'
+    docker ps -a $(printf -- '--filter id=%s ' $ids) \
+      --format '{{.Label "hnv.item"}}\t{{.Names}}\t{{.Status}}\t{{.Image}}'
+  } | column -t -s $'\t'
+}
+
+cmd_down() {
+  need_docker
+  if [ "${1:-}" = --all ]; then
+    local ids; ids=$(box_ids ps)
+    [ -z "$ids" ] || docker rm -f $ids >/dev/null
+    local vols; vols=$(box_ids volume)
+    [ -z "$vols" ] || docker volume rm $vols >/dev/null
+    info "removed all boxes ($(echo $ids | wc -w | tr -d ' ') containers, $(echo $vols | wc -w | tr -d ' ') volumes)"
+    return
+  fi
+  local item="${1:-}" keep=0; check_item "$item"
+  [ "${2:-}" = --keep-volume ] && keep=1
+  local c proof; c=$(cname "$item"); proof=$(proof_dir "$item")
+  if docker inspect "$c" >/dev/null 2>&1; then
+    is_box "$c" || die "down: $c is not a box container; refusing to remove it"
+    docker rm -f "$c" >/dev/null
+    info "removed $c"
+  else
+    info "no container for '$item'"
+  fi
+  if [ $keep = 0 ]; then
+    local v; v=$(vname "$item")
+    if is_box_volume "$v"; then
+      docker volume rm "$v" >/dev/null && info "removed volume $v"
+    fi
+  fi
+  info "proof kept in $proof"
+}
+
+cmd_versions() {
+  need_docker
+  if [ -n "${1:-}" ]; then check_item "$1"; require_running "$1"; docker exec "$(cname "$1")" cat /etc/box-versions
+  else docker run --rm --network none "$IMAGE:latest" cat /etc/box-versions; fi
+}
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  build) cmd_build "$@";;
+  up) cmd_up "$@";;
+  record) cmd_record "$@";;
+  reset) cmd_reset "$@";;
+  test) cmd_test "$@";;
+  scenario) cmd_scenario "$@";;
+  exec) cmd_exec "$@";;
+  shell) cmd_shell "$@";;
+  logs) cmd_logs "$@";;
+  ls) cmd_ls "$@";;
+  down) cmd_down "$@";;
+  versions) cmd_versions "$@";;
+  ""|-h|--help|help) usage;;
+  *) usage >&2; die "unknown command '$sub'";;
+esac

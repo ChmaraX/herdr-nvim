@@ -1,0 +1,8 @@
+{
+  "defaultProvider": "mock",
+  "defaultModel": "mock-1",
+  "defaultThinkingLevel": "off",
+  "enabledModels": ["mock/mock-1"],
+  "enableInstallTelemetry": false,
+  "enableAnalytics": false
+}

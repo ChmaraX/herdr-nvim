@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Print the versions baked into this image (written to /etc/box-versions).
+set -u
+echo "image_built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "arch=$(uname -m)"
+echo "debian=$(cat /etc/debian_version)"
+echo "herdr=$(herdr --version 2>&1 | awk '{print $2}')"
+echo "pi=$(npm ls -g --depth=0 @earendil-works/pi-coding-agent 2>/dev/null | sed -n 's/.*pi-coding-agent@//p')"
+echo "nvim=$(nvim --version | head -1 | awk '{print $2}')"
+echo "node=$(node --version)"
+echo "rustc=$(rustc --version | awk '{print $2}')"
+echo "cargo=$(cargo --version | awk '{print $2}')"
+echo "vhs=$(vhs --version 2>&1 | awk '{print $3}')"
+echo "ttyd=$(ttyd --version 2>&1 | awk '{print $3}')"
+echo "chromium=$(chromium --version 2>/dev/null | awk '{print $2}')"
+echo "ffmpeg=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')"
