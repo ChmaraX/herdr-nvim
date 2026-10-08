@@ -9,6 +9,10 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 
 https://github.com/user-attachments/assets/9a6092b4-6851-4e47-a4b7-d09fda1f5121
 
+> **Pairs well with**
+> - [herdr-gitview](https://github.com/ChmaraX/herdr-gitview): review, stage, and commit agent changes
+> - [pi-declutter](https://github.com/ChmaraX/pi-declutter): see what the agent did at a glance
+
 ## Features
 
 - **Full-height nvim sidebar, one key to toggle.** Your panes move into the
