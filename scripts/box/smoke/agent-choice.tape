@@ -36,7 +36,7 @@ Screenshot agent-choice.png
 # Count both pi panes in the recording; if the counts are wrong, the final
 # Wait+Screen times out and the run fails.
 Ctrl+C
-Type "j=$(herdr pane list); p1=$(echo \"$j\" | jq -r '.result.panes[] | select(.tab_id==\"w1:t1\" and .agent==\"pi\") | .pane_id'); p2=$(echo \"$j\" | jq -r '.result.panes[] | select(.tab_id==\"w1:t2\" and .agent==\"pi\") | .pane_id'); c1=$(herdr pane read $p1 --source visible | grep -c 'src/greet.js:2-3'); c2=$(herdr pane read $p2 --source visible | grep -c 'src/greet.js:2-3'); echo agent-choice-counts t1=$c1 t2=$c2; [ \"$c1:$c2\" = 1:0 ] && echo agent-choice-counts-ok"
+Type 'j=$(herdr pane list); p1=$(echo "$j" | jq -r ".result.panes[] | select(.tab_id==\"w1:t1\" and .agent==\"pi\") | .pane_id"); p2=$(echo "$j" | jq -r ".result.panes[] | select(.tab_id==\"w1:t2\" and .agent==\"pi\") | .pane_id"); c1=$(herdr pane read $p1 --source visible | grep -c src/greet[.]js:2-3); c2=$(herdr pane read $p2 --source visible | grep -c src/greet[.]js:2-3); echo agent-choice-counts t1=$c1 t2=$c2; [ "$c1:$c2" = 1:0 ] && echo agent-choice-counts-ok'
 Enter
 Wait+Screen /agent-choice-counts t1=1 t2=0/
 Wait+Screen /agent-choice-counts-ok/
