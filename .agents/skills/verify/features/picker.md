@@ -27,5 +27,5 @@ Press `prefix+o` from the agent pane or from any pane in the same tab, the sideb
 - The workspace needs a pane that herdr detects as an agent. In a plain shell the key does nothing visible; the plugin log says "no agent panes found". An agent that has touched nothing opens the picker with "0 files", and typing still searches the repo.
 - Each touched file can appear twice in the list (once plain, once with `+N -M`), and "N files" counts both. Treat it as a known defect, not a recipe failure.
 - When the sidebar is already open but another pane has focus, `Enter` loads the file but focus stays where it was (herdr 0.9.3 refuses to focus a non-agent pane).
-- Only pi exists in the box. Claude and agy sessions cannot be tested, and codex sessions are not read at all.
+- Only pi exists in the box by default. For Claude detection/session checks, opt in with `box exec <item> -- box-claude-setup`, run `claude` in the pane, and inspect with `box exec <item> -- box-claude-state`. The stand-in uses herdr's real Claude hook but a scripted transcript, not a real Claude model. On main it proves herdr detects `agent: claude` with a session id; sub-agent file picker support is absent until that feature lands. agy sessions cannot be tested, and codex sessions are not read at all.
 - The box has no fff.nvim history, so frecency cannot be tested unless you seed one.

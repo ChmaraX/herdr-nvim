@@ -15,7 +15,8 @@ Run the commands in a shell while herdr is running. Install goes through the her
 
 ## Driving it in the box
 
-- Doctor: `box exec <item> -- /opt/herdr-nvim/bin/herdr-nvim doctor`. Takes about 3 s and ends with "all doctor checks OK", exit 0.
+- Box health: run `box doctor <item>` first if anything looks stale or broken. It checks the container, worktree/build stamps, herdr server, plugin link, mock LLM and free disk, and prints the recovery command on failures.
+- Product doctor: `box exec <item> -- /opt/herdr-nvim/bin/herdr-nvim doctor`. Takes about 3 s and ends with "all doctor checks OK", exit 0.
 - Daemons: `box exec <item> -- /opt/herdr-nvim/bin/herdr-nvim daemons [--json]`. Open a sidebar first (`herdr plugin action invoke toggle --plugin chmarax.herdr-nvim`), or the output is "no nvim daemons running".
 - Unsaved work: `box exec <item> -- nvim --server /tmp/herdr-nvim/w1_t1.sock --remote-send 'ggix<Esc>'` dirties the sidebar buffer of tab `w1:t1`. `daemons` then shows "alive · 1 unsaved", `daemons stop w1:t1` refuses with exit 1, and `--force` stops it.
 - Install: only the `plugin link` path with a local build, which `box up` / `box reset` already do. Running the binary with no args prints usage and exits 2. Not possible in the box: the release download (offline), other glibc versions, macOS and Windows.

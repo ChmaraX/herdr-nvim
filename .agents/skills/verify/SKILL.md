@@ -23,10 +23,11 @@ and `nvim --headless --noplugin -u NONE -l tests/run.lua` are fine.
 ## Loop
 1. **List the failure cases:** name the error, empty, edge, and state-that-must-survive cases the fix could affect. Keep this list and cover it in proof or explain why a case is out of scope.
 2. **Start:** `scripts/box/box up <item> <worktree>`
-   (add `--scenario s.json` if the bug involves an agent).
-   Check it built from the right commit (`<proof>/.worktree-rev`) and herdr
-   is up. If anything looks off, read `box logs <item>` before recording.
-   Proof from a stale build is no proof.
+   (add `--scenario s.json` if the bug involves an agent). Run
+   `scripts/box/box doctor <item>` first whenever anything looks off or before
+   trusting proof from an existing box. Proof from a stale build is no proof.
+   Box helper mechanics (`box-click-link`, `box-agent-input`,
+   `box-claude-setup`) are in `scripts/box/README.md`.
 3. **Explore** step by step until you know how a user hits the bug:
    `box exec <item> -- herdr pane list | pane read <pane> | pane send-keys …`,
    or any command to check state (files, logs, env, transcripts).
@@ -58,3 +59,5 @@ and `nvim --headless --noplugin -u NONE -l tests/run.lua` are fine.
 - Never commit media.
 - If the bug needs something the box lacks (see Limits in the box README),
   say so and cover the closest real path instead of faking it.
+- When a change alters how a feature works, update the matching
+  `features/*.md` file in the same commit.
