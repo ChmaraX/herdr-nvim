@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Opt-in Claude Code stand-in for the test box. Installs herdr's real Claude
+# hook plus a scripted `claude` executable on PATH.
+set -euo pipefail
+mkdir -p ~/.claude ~/.local/libexec/box-claude ~/.local/bin
+rm -rf ~/.claude/projects ~/notes
+herdr integration install claude
+cp /bin/bash ~/.local/libexec/box-claude/claude
+cat > ~/.local/bin/claude <<'SCRIPT'
+#!/home/box/.local/libexec/box-claude/claude
+set -eu
+sid=$(cat /proc/sys/kernel/random/uuid)
+aid=a$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
+cwd=$PWD
+slug=$(printf %s "$cwd" | tr '/' '-')
+proj=$HOME/.claude/projects/$slug
+parent=$proj/$sid.jsonl
+subdir=$proj/$sid/subagents
+mkdir -p "$subdir" "$HOME/notes"
+printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"SessionStart","source":"startup"}' \
+  "$sid" "$parent" "$cwd" | bash "$HOME/.claude/hooks/herdr-agent-state.sh" session
+now=$(date +%s)
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+t_prompt=$(iso $((now - 120))); t_read=$(iso $((now - 118))); t_agent=$(iso $((now - 115)))
+t_sub_prompt=$(iso $((now - 114))); t_write=$(iso $((now - 100))); t_edit=$(iso $((now - 90))); t_done=$(iso $((now - 80)))
+printf 'old todo\n' > "$HOME/notes/todo.md"
+printf '# Plan\n\n1. Add farewell()\n' > "$HOME/notes/plan.md"
+printf 'new todo: review plan.md\n' > "$HOME/notes/todo.md"
+common="\"sessionId\":\"$sid\",\"cwd\":\"$cwd\",\"version\":\"2.1.291\",\"gitBranch\":\"main\",\"userType\":\"external\""
+cat > "$parent" <<EOF
+{"parentUuid":null,"isSidechain":false,$common,"type":"user","message":{"role":"user","content":"Plan a farewell feature. Have a sub-agent write the plan to ~/notes/plan.md and update ~/notes/todo.md."},"uuid":"p-0001","timestamp":"$t_prompt"}
+{"parentUuid":"p-0001","isSidechain":false,$common,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p_read","name":"Read","input":{"file_path":"$cwd/src/greet.js"}}]},"uuid":"p-0002","timestamp":"$t_read"}
+{"parentUuid":"p-0002","isSidechain":false,$common,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p_read","content":"export function greet(name) { ... }"}]},"uuid":"p-0003","timestamp":"$t_read"}
+{"parentUuid":"p-0003","isSidechain":false,$common,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p_agent","name":"Agent","input":{"description":"Write the farewell plan","prompt":"Write the plan to ~/notes/plan.md and update ~/notes/todo.md","subagent_type":"general-purpose"}}]},"uuid":"p-0004","timestamp":"$t_agent"}
+{"parentUuid":"p-0004","isSidechain":false,$common,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p_agent","content":[{"type":"text","text":"Wrote the plan and updated the todo list."}]}]},"uuid":"p-0005","timestamp":"$t_done"}
+{"parentUuid":"p-0005","isSidechain":false,$common,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. The sub-agent wrote the plan and updated the todo list."}]},"uuid":"p-0006","timestamp":"$t_done"}
+EOF
+cat > "$subdir/agent-$aid.jsonl" <<EOF
+{"parentUuid":null,"isSidechain":true,"agentId":"$aid",$common,"type":"user","message":{"role":"user","content":"Write the plan to ~/notes/plan.md and update ~/notes/todo.md"},"uuid":"s-0001","timestamp":"$t_sub_prompt"}
+{"parentUuid":"s-0001","isSidechain":true,"agentId":"$aid",$common,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_s_write","name":"Write","input":{"file_path":"$HOME/notes/plan.md","content":"# Plan\n\n1. Add farewell()\n"}}]},"uuid":"s-0002","timestamp":"$t_write"}
+{"parentUuid":"s-0002","isSidechain":true,"agentId":"$aid",$common,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s_write","content":"File created successfully"}]},"uuid":"s-0003","timestamp":"$t_write"}
+{"parentUuid":"s-0003","isSidechain":true,"agentId":"$aid",$common,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_s_edit","name":"Edit","input":{"file_path":"$HOME/notes/todo.md","old_string":"old todo","new_string":"new todo: review plan.md"}}]},"uuid":"s-0004","timestamp":"$t_edit"}
+{"parentUuid":"s-0004","isSidechain":true,"agentId":"$aid",$common,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s_edit","content":"The file has been updated."}]},"uuid":"s-0005","timestamp":"$t_edit"}
+EOF
+printf '{"agentType":"general-purpose","description":"Write the farewell plan"}\n' > "$subdir/agent-$aid.meta.json"
+clear
+printf '\n \033[38;5;173m✻\033[0m Claude Code (box stand-in: real herdr hook, scripted transcript)\n\n'
+printf '> Plan a farewell feature with a sub-agent\n\n'
+printf '\033[38;5;173m●\033[0m Read 1 file\n\n'
+printf '\033[38;5;173m●\033[0m Agent(Write the farewell plan)\n  ⎿  Done (2 tool uses)\n\n'
+printf '\033[38;5;173m●\033[0m Done. The sub-agent wrote the plan and updated the todo list.\n\n'
+printf '────────────────────────────────────────────────────────────\n❯ '
+while IFS= read -r _line; do printf '❯ '; done
+SCRIPT
+chmod +x ~/.local/bin/claude
+echo "installed: $(command -v claude)"
+head -1 ~/.local/bin/claude

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Drive herdr's pane.link.activate API for a cell in a pane and print the result.
+set -euo pipefail
+usage() { echo 'usage: box-click-link [--pane PANE] (--row ROW [--col COL] | --text TEXT [--col-offset N])' >&2; exit 2; }
+pane=${HERDR_PANE_ID:-}
+row= col=3 text= off=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pane) pane=${2:?}; shift 2;;
+    --row) row=${2:?}; shift 2;;
+    --col) col=${2:?}; shift 2;;
+    --text) text=${2:?}; shift 2;;
+    --col-offset) off=${2:?}; shift 2;;
+    -h|--help) usage;;
+    *) usage;;
+  esac
+done
+[ -n "$pane" ] || pane=$(herdr pane list | jq -r '.result.panes[] | select(.focused==true) | .pane_id' | head -1)
+[ -n "$pane" ] && [ "$pane" != null ] || { echo 'box-click-link: no pane supplied and no focused pane found' >&2; exit 2; }
+if [ -n "$text" ]; then
+  mapfile -t lines < <(herdr pane read "$pane" --source visible)
+  found=0
+  for i in "${!lines[@]}"; do
+    line=${lines[$i]}
+    prefix=${line%%"$text"*}
+    if [ "$prefix" != "$line" ]; then
+      row=$((i + 1))
+      col=$(python3 - "$prefix" "$off" <<'PY'
+import sys
+print(len(sys.argv[1].encode()) + 1 + int(sys.argv[2]))
+PY
+)
+      found=1
+      break
+    fi
+  done
+  [ "$found" = 1 ] || { echo "box-click-link: text not visible in pane $pane: $text" >&2; exit 1; }
+fi
+[ -n "$row" ] || usage
+before=$(herdr plugin log list | jq '.result.logs|length')
+resp=$(herdr-api pane.link.activate "{\"pane_id\":\"$pane\",\"viewport_row\":$row,\"col\":$col}")
+printf '%s\n' "$resp" | jq -c '.result | {url, handled}'
+sleep 1
+after=$(herdr plugin log list | jq '.result.logs|length')
+if [ "$after" -gt "$before" ]; then
+  herdr plugin log list | jq -c '.result.logs[-1] | {plugin_handler:.action_id, exit_code, stdout, stderr}'
+else
+  echo '{"plugin_handler":null}'
+fi
+echo "pane=$pane row=$row col=$col panes=$(herdr pane list | jq '.result.panes|length')"

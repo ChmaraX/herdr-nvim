@@ -54,6 +54,9 @@ Usage:
       tests, on a writable snapshot of /work (~/test-src, fresh git repo).
       Use this for code you did not write (external PRs): it never runs on
       the host. Logs: <proof>/logs/test-*.log.
+  box doctor <item>
+      Read-only health check for a running box: container, /work mount and
+      stamps, herdr server, linked plugin, mock LLM and free disk.
   box scenario <item> <file>
       Swap the mock LLM scenario (takes effect on pi's next request).
   box exec <item> [-t] -- <cmd> [args...]
@@ -370,6 +373,64 @@ cmd_test() {
   info "tests passed (logs: $proof/logs/test-*.log)"
 }
 
+cmd_doctor() {
+  local item="${1:-}"; check_item "$item"; need_docker
+  local c proof rc=0; c=$(cname "$item"); proof=$(proof_dir "$item")
+  ok() { printf 'OK   %s\n' "$*"; }
+  warn() { printf 'WARN %s\n' "$*"; }
+  fail() { printf 'FAIL %s\n' "$*"; rc=1; }
+
+  if ! docker inspect "$c" >/dev/null 2>&1; then
+    fail "container: missing ($c). Start it: box up $item <worktree>"
+    return $rc
+  fi
+  if ! is_box "$c"; then
+    fail "container: $c exists but is not labelled as a box; refusing checks"
+    return $rc
+  fi
+  if [ "$(docker inspect -f '{{.State.Running}}' "$c")" != true ]; then
+    fail "container: stopped. Recreate it: box down $item && box up $item <worktree>"
+    return $rc
+  fi
+  ok "container: running ($c)"
+
+  local wt head stamp buildstamp mounted
+  wt=$(mount_src "$item" /work)
+  mounted=$(docker exec "$c" sh -c '[ -f /work/Cargo.toml ] && [ -f /work/herdr-plugin.toml ]' >/dev/null 2>&1 && echo yes || echo no)
+  if [ -n "$wt" ] && [ -d "$wt" ] && [ "$mounted" = yes ]; then
+    head=$(worktree_rev "$wt")
+    stamp=$(cat "$proof/.worktree-rev" 2>/dev/null || true)
+    buildstamp=$(cat "$proof/.last-build-rev" 2>/dev/null || true)
+    if [ "$stamp" = "$head" ]; then ok "/work: mounted from $wt at $head"; else fail "/work: HEAD is $head but $proof/.worktree-rev is ${stamp:-missing}. Restamp/rebuild: box reset $item"; fi
+    if [ "$buildstamp" = "$head" ]; then ok "build: current ($buildstamp)"; else fail "build: stale or missing (.last-build-rev=${buildstamp:-missing}, HEAD=$head). Rebuild: box reset $item"; fi
+  else
+    fail "/work: not mounted or not a herdr-nvim checkout. Recreate: box down $item && box up $item <worktree>"
+  fi
+
+  if docker exec "$c" sh -lc "herdr status server 2>/dev/null | grep -q '^status: running'"; then
+    ok "herdr server: running"
+  else
+    fail "herdr server: not running. Restart in the box: box exec $item -- box-start (or box reset $item)"
+  fi
+  if docker exec "$c" sh -lc "herdr plugin list 2>/dev/null | grep -q 'chmarax.herdr-nvim .*enabled \[local:/opt/herdr-nvim\]'"; then
+    ok "plugin: linked from /opt/herdr-nvim"
+  else
+    fail "plugin: not linked/enabled. Relink by running: box exec $item -- box-start"
+  fi
+  if docker exec "$c" curl -fsS http://127.0.0.1:4141/health >/dev/null 2>&1; then
+    ok "mock LLM: healthy"
+  else
+    fail "mock LLM: /health failed. Recreate the runtime: box reset $item"
+  fi
+  local avail_k avail_h
+  avail_k=$(docker exec "$c" df -Pk / | awk 'NR==2{print $4}' 2>/dev/null || echo 0)
+  avail_h=$(docker exec "$c" df -Ph / | awk 'NR==2{print $4}' 2>/dev/null || echo '?')
+  if [ "${avail_k:-0}" -lt 2097152 ]; then warn "disk: only $avail_h free in container (<2G). Free Docker space before rebuilding."; else ok "disk: $avail_h free in container"; fi
+
+  if [ $rc = 0 ]; then ok "doctor: box '$item' healthy"; else printf 'FAIL doctor: box %s has problems\n' "$item"; fi
+  return $rc
+}
+
 cmd_scenario() {
   local item="${1:-}" file="${2:-}"
   check_item "$item"; [ -f "$file" ] || die "scenario: file '$file' not found"
@@ -456,6 +517,7 @@ case "$sub" in
   record) cmd_record "$@";;
   reset) cmd_reset "$@";;
   test) cmd_test "$@";;
+  doctor) cmd_doctor "$@";;
   scenario) cmd_scenario "$@";;
   exec) cmd_exec "$@";;
   shell) cmd_shell "$@";;

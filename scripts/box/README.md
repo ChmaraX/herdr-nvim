@@ -22,6 +22,7 @@ $B up issue-42 <worktree> [--scenario f.json]  # start the box, build herdr-nvim
 $B record issue-42 my.tape --run before     # run a tape; outputs go to <proof>/before/
 $B record issue-42 my.tape --run before --replace  # deliberately overwrite a run
 $B test issue-42                            # cargo test + lua tests, inside the box
+$B doctor issue-42                          # read-only health check for stale/broken boxes
 $B scenario issue-42 other.json             # swap the mock LLM script
 $B exec issue-42 -- herdr pane list         # run any command in the box
 $B shell issue-42                           # interactive shell in the box
@@ -49,6 +50,27 @@ Proof goes to `~/.cache/hnv-box/<item>/` (set `HNV_BOX_PROOF_DIR` to use another
 - `scenario.json`: the active scenario for the box; absent means the default scenario applies
 
 After you edit the worktree on the host, run `box reset <item>`, or just `box record`. Both recreate the runtime container and rebuild herdr-nvim; `box reset` uses the same fresh-container path as a default recording. `box record --keep-session` keeps state but rebuilds when the worktree revision changed. Only the herdr-nvim crate is compiled (about 70 s with release LTO); dependencies are precompiled in the image.
+
+## Health checks
+
+Run `box doctor <item>` first whenever a box behaves strangely or proof might be stale. It prints one line per check and exits non-zero for failures:
+
+- container exists and is running;
+- `/work` is mounted and the host HEAD matches `<proof>/.worktree-rev` and `<proof>/.last-build-rev`;
+- herdr server is running;
+- herdr-nvim is linked from `/opt/herdr-nvim`;
+- mock LLM `/health` answers;
+- container disk has at least 2G free (warning only).
+
+Each failing line includes the command to recover, usually `box reset <item>` or `box exec <item> -- box-start`.
+
+## In-box verification helpers
+
+These commands are on PATH inside the box and are meant to be called with `box exec <item> -- …`:
+
+- Link click: `box-click-link --pane w1:p1 --text 'https://example.com/index.html'` (or `--row ROW --col COL`). It calls herdr's `pane.link.activate` API and prints compact JSON for `{url, handled}`, the plugin handler/exit code if one ran, and the clicked cell. `handled:false` with `plugin_handler:null` means herdr will use its default browser path.
+- Agent input: `box-agent-input` prints the last prompt pi sent to the mock LLM from `/proof/logs/mock-llm.jsonl`.
+- Claude stand-in: opt in with `box exec <item> -- box-claude-setup`, then run `claude` in a herdr pane. The stand-in uses herdr's real Claude hook and writes a scripted Claude transcript: a parent session reads `src/greet.js`, delegates to a sub-agent, and the sub-agent writes `~/notes/plan.md` and edits `~/notes/todo.md`. `box-claude-state` dumps the detected Claude session, transcript paths, touched files and picker handoff candidates.
 
 ## Running the tests
 
