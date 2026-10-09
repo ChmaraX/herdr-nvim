@@ -45,9 +45,9 @@ Usage:
       Prints the files produced. Starts from a fresh container/session unless
       --keep-session.
   box reset <item>
-      Stop herdr, wipe herdr/herdr-nvim/pi session state and reset ~/demo,
-      rebuild herdr-nvim if the worktree changed, restart herdr. Re-stamps
-      /proof/.worktree-rev and /proof/versions.txt.
+      Recreate the box container (fresh herdr/herdr-nvim/pi state and ~/demo;
+      the cargo target volume is kept), rebuild herdr-nvim from the worktree,
+      restart herdr. Re-stamps /proof/.worktree-rev and /proof/versions.txt.
   box test <item> [cargo|lua]
       Run the repo's tests inside the box (default: both): cargo test
       --offline (target: /cargo-target/test in the box's volume) and the lua

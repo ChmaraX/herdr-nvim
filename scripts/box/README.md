@@ -25,7 +25,7 @@ $B test issue-42                            # cargo test + lua tests, inside the
 $B scenario issue-42 other.json             # swap the mock LLM script
 $B exec issue-42 -- herdr pane list         # run any command in the box
 $B shell issue-42                           # interactive shell in the box
-$B reset issue-42                           # fresh herdr/pi state; rebuilds if the worktree changed
+$B reset issue-42                           # fresh container (herdr/pi state, ~/demo); rebuilds herdr-nvim
 $B logs issue-42                            # build, herdr, mock-LLM and vhs logs
 $B ls                                       # list boxes
 $B down issue-42                            # remove the box (proof is kept)
