@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Drive herdr's pane.link.activate API for a cell in a pane and print the result.
+# --row/--col are herdr viewport cells, 0-indexed (row 0 = top visible line).
 set -euo pipefail
 usage() { echo 'usage: box-click-link [--pane PANE] (--row ROW [--col COL] | --text TEXT [--col-offset N])' >&2; exit 2; }
 pane=${HERDR_PANE_ID:-}
@@ -22,16 +23,16 @@ if [ -n "$text" ]; then
   found=0
   for i in "${!lines[@]}"; do
     line=${lines[$i]}
+    case "$line" in *box-click-link*) continue;; esac  # our own command line
     prefix=${line%%"$text"*}
     if [ "$prefix" != "$line" ]; then
-      row=$((i + 1))
+      row=$i
       col=$(python3 - "$prefix" "$off" <<'PY'
 import sys
-print(len(sys.argv[1].encode()) + 1 + int(sys.argv[2]))
+print(len(sys.argv[1]) + int(sys.argv[2]))
 PY
 )
-      found=1
-      break
+      found=1  # keep going: use the last match (the newest output)
     fi
   done
   [ "$found" = 1 ] || { echo "box-click-link: text not visible in pane $pane: $text" >&2; exit 1; }
@@ -40,6 +41,10 @@ fi
 before=$(herdr plugin log list | jq '.result.logs|length')
 resp=$(herdr-api pane.link.activate "{\"pane_id\":\"$pane\",\"viewport_row\":$row,\"col\":$col}")
 printf '%s\n' "$resp" | jq -c '.result | {url, handled}'
+if [ -n "$text" ]; then
+  got=$(printf '%s\n' "$resp" | jq -r '.result.url // empty')
+  [ "$got" = "$text" ] || { echo "box-click-link: clicked link is '$got', expected '$text' (wrong cell? try --row/--col)" >&2; exit 1; }
+fi
 sleep 1
 after=$(herdr plugin log list | jq '.result.logs|length')
 if [ "$after" -gt "$before" ]; then

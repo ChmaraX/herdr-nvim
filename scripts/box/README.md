@@ -66,9 +66,9 @@ Each failing line includes the command to recover, usually `box reset <item>` or
 
 ## In-box verification helpers
 
-These commands are on PATH inside the box and are meant to be called with `box exec <item> -- …`:
+These commands are on PATH inside the box. Call them from a tape (as the user's shell would), or with `box exec <item> -- …` after a `box record … --keep-session` run: herdr only has panes while a client session is attached, so right after `box up` there is nothing to click.
 
-- Link click: `box-click-link --pane w1:p1 --text 'https://example.com/index.html'` (or `--row ROW --col COL`). It calls herdr's `pane.link.activate` API and prints compact JSON for `{url, handled}`, the plugin handler/exit code if one ran, and the clicked cell. `handled:false` with `plugin_handler:null` means herdr will use its default browser path.
+- Link click: `box-click-link --pane w1:p1 --text 'https://example.com/index.html'` (or `--row ROW --col COL`, 0-indexed viewport cells). With `--text` it clicks the last visible match, skipping its own command line, and fails unless herdr reports exactly that URL. It calls herdr's `pane.link.activate` API and prints compact JSON for `{url, handled}`, the plugin handler/exit code if one ran, and the clicked cell. `handled:false` with `plugin_handler:null` means herdr will use its default browser path.
 - Agent input: `box-agent-input` prints the last prompt pi sent to the mock LLM from `/proof/logs/mock-llm.jsonl`.
 - Claude stand-in: opt in with `box exec <item> -- box-claude-setup`, then run `claude` in a herdr pane. The stand-in uses herdr's real Claude hook and writes a scripted Claude transcript: a parent session reads `src/greet.js`, delegates to a sub-agent, and the sub-agent writes `~/notes/plan.md` and edits `~/notes/todo.md`. `box-claude-state` dumps the detected Claude session, transcript paths, touched files and picker handoff candidates.
 
