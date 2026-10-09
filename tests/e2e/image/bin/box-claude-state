@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Dump Claude stand-in state after launching claude and opening the picker.
+set -euo pipefail
+echo "== herdr agent list"
+herdr agent list | jq -c '.result.agents[] | {pane_id, agent, agent_session}'
+sid=$(herdr agent list | jq -r '.result.agents[] | select(.agent=="claude") | .agent_session.value' | head -1)
+if [ -n "$sid" ] && [ "$sid" != null ]; then
+  proj=~/.claude/projects/-home-box-demo
+  echo; echo "== Claude transcript layout"
+  find "$proj" -path "*$sid*" | sort || true
+  echo; echo "== file tool calls"
+  grep -h -o '"name":"[A-Za-z]*","input":{"file_path":"[^"]*"' "$proj/$sid.jsonl" "$proj/$sid"/subagents/*.jsonl 2>/dev/null || true
+fi
+echo; echo "== touched files"
+ls -l ~/notes 2>/dev/null || true
+echo; echo "== picker handoff candidates"
+h=$(ls -t /tmp/herdr-nvim-handoff-*.json 2>/dev/null | head -1 || true)
+if [ -n "$h" ]; then echo "$h"; jq -c '.candidates[] | {path, is_edit, newly_created, session}' "$h"; else echo '(no handoff file: picker not open)'; fi

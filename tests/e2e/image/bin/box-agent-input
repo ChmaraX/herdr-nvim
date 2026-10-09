@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Print the last prompt sent by pi to the mock LLM (= what pi received).
+set -euo pipefail
+log=${1:-/proof/logs/mock-llm.jsonl}
+[ -f "$log" ] || { echo "box-agent-input: no mock LLM log at $log" >&2; exit 1; }
+tail -n 1 "$log" | jq -r '"turn: \(.turn)", (.lastUser | if type=="array" then map(select(.type=="text").text) | join("") else . end)'

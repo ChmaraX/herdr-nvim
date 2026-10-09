@@ -1,0 +1,6 @@
+{
+  "fallback": "(mock LLM) No scripted turn left for this request.",
+  "turns": [
+    { "text": "Hello from the box's mock LLM. No scenario was loaded, so this is the default reply." }
+  ]
+}

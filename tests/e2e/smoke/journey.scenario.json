@@ -1,0 +1,28 @@
+{
+  "fallback": "(mock) Nothing more scripted.",
+  "turns": [
+    {
+      "text": "I'll add a `farewell` function next to `greet` in src/greet.js.",
+      "tools": [
+        {
+          "name": "edit",
+          "args": {
+            "path": "src/greet.js",
+            "edits": [
+              {
+                "oldText": "  return `Hello, ${name}!`;\n}\n",
+                "newText": "  return `Hello, ${name}!`;\n}\n\nexport function farewell(name) {\n  return `Goodbye, ${name}!`;\n}\n"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "text": "Done: src/greet.js now exports `farewell(name)`, which returns \"Goodbye, <name>!\"."
+    },
+    {
+      "text": "Thanks for the review. I read your comment on src/greet.js and will rename `farewell` to `goodbye`."
+    }
+  ]
+}

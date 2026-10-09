@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Container main process (PID 1 is tini). Starts the mock LLM and keeps the
+# container alive. Everything else is done by `box-start` (via `box up`).
+set -u
+mkdir -p /proof/logs
+(
+  while true; do
+    MOCK_LLM_LOG=/proof/logs/mock-llm.jsonl node /opt/box/mock-llm/server.mjs >>/proof/logs/mock-llm.out 2>&1
+    echo "mock LLM exited ($?); restarting" >>/proof/logs/mock-llm.out
+    sleep 1
+  done
+) &
+exec sleep infinity

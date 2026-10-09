@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# In-box runtime setup, run once by `box up` (idempotent; rerun = rebuild +
+# relink, e.g. after the worktree changed: `box exec <item> -- box-start`).
+#
+#  1. builds herdr-nvim from /work (read-only mount) into $CARGO_TARGET_DIR
+#  2. assembles the plugin root /opt/herdr-nvim (symlinks into /work + local bin/)
+#  3. writes ~/.config/herdr/config.toml with herdr-nvim's documented keybinds
+#  4. starts the herdr server and links the plugin
+#
+# A clean state comes from a fresh container (`box record` / `box reset`
+# recreate it), not from wiping paths here.
+set -euo pipefail
+log() { printf '[box-start] %s\n' "$*"; }
+die() { printf '[box-start] ERROR: %s\n' "$*" >&2; exit 1; }
+t0=$(date +%s.%N)
+elapsed() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1fs", b-a}'; }
+
+[ -f /work/Cargo.toml ] && [ -f /work/herdr-plugin.toml ] \
+  || die "/work does not look like a herdr-nvim checkout (no Cargo.toml / herdr-plugin.toml). Pass a worktree path to 'box up'."
+
+# mock LLM (started by box-init)
+for _ in $(seq 50); do curl -fsS http://127.0.0.1:4141/health >/dev/null 2>&1 && break; sleep 0.2; done
+curl -fsS http://127.0.0.1:4141/health >/dev/null || die "mock LLM did not start; see /proof/logs/mock-llm.out"
+log "mock LLM up ($(curl -fsS http://127.0.0.1:4141/health))"
+
+# 1. build
+tb=$(date +%s.%N)
+log "cargo build --release --offline (worktree: /work @ $(cat /proof/.worktree-rev 2>/dev/null || echo unknown))"
+if ! (cd /work && cargo build --release --locked --offline 2>&1 | tee /proof/logs/cargo-build.log | grep -E '^(error|warning: unused|\s+Compiling|\s+Finished)' ); then
+  die "cargo build failed; full log: /proof/logs/cargo-build.log. If it says a crate is missing/offline, the worktree's Cargo.lock has deps the image did not prefetch: run 'box build --src <worktree>'."
+fi
+[ -x "$CARGO_TARGET_DIR/release/herdr-nvim" ] || die "build finished but $CARGO_TARGET_DIR/release/herdr-nvim is missing"
+log "built herdr-nvim in $(elapsed "$tb")"
+
+# 2. plugin root: the worktree is read-only and may be shared by several
+# boxes, so bin/ (and target/) are box-local.
+P=/opt/herdr-nvim
+find "$P" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+for e in /work/* /work/.[!.]*; do
+  [ -e "$e" ] || continue
+  case "$(basename "$e")" in bin|target|.git) continue;; esac
+  ln -s "$e" "$P/$(basename "$e")"
+done
+# herdr resolves the manifest's real path to find the plugin root, so the
+# manifest must be a real file here (re-copied on every box-start).
+rm "$P/herdr-plugin.toml" && cp /work/herdr-plugin.toml "$P/herdr-plugin.toml"
+mkdir -p "$P/bin"
+install -m755 "$CARGO_TARGET_DIR/release/herdr-nvim" "$P/bin/herdr-nvim"
+ln -s "$CARGO_TARGET_DIR" "$P/target"
+
+# 3. herdr config (README keybinds; no onboarding, no network checks)
+mkdir -p ~/.config/herdr
+cat > ~/.config/herdr/config.toml <<'TOML'
+onboarding = false
+
+[update]
+version_check = false
+manifest_check = false
+
+[[keys.command]]
+key = "prefix+e"
+type = "plugin_action"
+command = "chmarax.herdr-nvim.toggle"
+description = "nvim sidebar"
+
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "chmarax.herdr-nvim.pick-file"
+description = "open file from agent output"
+TOML
+
+# 4. herdr server + plugin
+server_up() { herdr status server 2>/dev/null | grep -q '^status: running'; }
+if server_up; then
+  log "herdr server already running; reloading config"
+  herdr server reload-config >/dev/null 2>&1 || true
+else
+  (cd ~/demo && setsid nohup herdr server >/proof/logs/herdr-server.out 2>&1 &)
+  for _ in $(seq 100); do server_up && break; sleep 0.1; done
+  server_up || die "herdr server did not start; see /proof/logs/herdr-server.out and ~/.config/herdr/herdr-server.log"
+fi
+herdr plugin unlink chmarax.herdr-nvim >/dev/null 2>&1 || true
+herdr plugin link "$P" > /proof/logs/plugin-link.log 2>&1 || { cat /proof/logs/plugin-link.log >&2; die "herdr plugin link failed"; }
+# capture first: `grep -q` exits early, SIGPIPEs herdr and fails the pipeline under pipefail
+plugins=$(herdr plugin list 2>&1 || true)
+grep -q "chmarax.herdr-nvim .*enabled \[local:$P\]" <<<"$plugins" || die "plugin not linked from $P: $plugins"
+cat /proof/.worktree-rev > /proof/.last-build-rev 2>/dev/null || true
+log "herdr $(herdr --version | awk '{print $2}') server up, plugin linked: $P -> /work"
+log "ready in $(elapsed "$t0")"

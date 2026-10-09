@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Minimal herdr socket API client: herdr-api <method> [params-json]."""
+import json
+import os
+import socket
+import sys
+
+if len(sys.argv) < 2:
+    print("usage: herdr-api <method> [params-json]", file=sys.stderr)
+    sys.exit(2)
+
+params = {}
+if len(sys.argv) > 2:
+    params = json.loads(sys.argv[2])
+
+path = os.environ.get("HERDR_SOCKET_PATH", os.path.expanduser("~/.config/herdr/herdr.sock"))
+req = {"id": "box", "method": sys.argv[1], "params": params}
+with socket.socket(socket.AF_UNIX) as s:
+    s.connect(path)
+    s.sendall((json.dumps(req) + "\n").encode())
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+print(buf.decode().strip())
