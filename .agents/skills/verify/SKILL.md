@@ -40,6 +40,16 @@ and `nvim --headless --noplugin -u NONE -l tests/run.lua` are fine.
    tape** with `--run after` (it rebuilds from the worktree first). Check `after/.worktree-rev` names the fix commit.
    For a PR, also run `box test <item>`.
 
+## Tests and the box
+- The box is the proof. Whenever a user can hit the bug, `before` and
+  `after` come from the same box tape.
+- If a cheap, clear test (cargo or lua) shows the same failure, write it too
+  and commit it **before** the fix, so history shows it failing first. Skip
+  it when it would be expensive, integration-heavy, or unclear.
+- A passing test shows one code path works, not that the user's bug is gone.
+  It never replaces the `after` recording.
+- Quick host scripts are fine for exploring your own code. They are not proof.
+
 ## Driving
 - Use the keys a user presses (`ctrl+b e`, `ctrl+b o`, `\ac`…). Use `box exec`
   to inspect state after the user steps, not to replace them.
