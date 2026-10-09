@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
@@ -28,12 +28,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
+      # Pinned, not `stable`: on macOS `stable` means `brew install neovim`,
+      # and Homebrew no longer ships bottles for the macos-13/14 runners, so it
+      # builds from source and fails at `brew link` (v1.2.0 shipped without
+      # macOS binaries). A pinned version downloads Neovim's own release
+      # tarball on every OS instead.
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
-          version: stable
+          version: v0.12.5
       - run: rustup target add ${{ matrix.target }}
+      # Short TMPDIR: test sandboxes put nvim listen sockets under the temp
+      # dir, and macOS's default /var/folders/... TMPDIR can push them past
+      # the 104-byte sun_path limit, which nvim >= 0.12.5 rejects.
       - run: cargo test
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: nvim --headless --noplugin -u NONE -l tests/run.lua
       - run: cargo build --release --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/herdr-nvim herdr-nvim-${{ matrix.target }}
