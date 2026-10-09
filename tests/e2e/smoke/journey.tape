@@ -1,7 +1,7 @@
 # Core loop: pi edits a file -> prefix+o picker -> open in the sidebar ->
 # comment on lines (\ac) -> submit to pi (\aS) -> pi's reply.
-# Run: box up <item> <worktree> --scenario scripts/box/smoke/journey.scenario.json
-#      box record <item> scripts/box/smoke/journey.tape
+# Run: box up <item> <worktree> --scenario tests/e2e/smoke/journey.scenario.json
+#      box record <item> tests/e2e/smoke/journey.tape
 # Waits match terminal text, but screenshots are taken from the drawn frame,
 # which lags it: keep a short Sleep around each Screenshot.
 Output journey.gif

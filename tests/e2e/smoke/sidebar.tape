@@ -1,5 +1,5 @@
 # Sidebar smoke test: herdr starts, prefix+e toggles the herdr-nvim sidebar.
-# Run: box record <item> scripts/box/smoke/sidebar.tape
+# Run: box record <item> tests/e2e/smoke/sidebar.tape
 # Output paths are relative to the run dir (/proof, or /proof/<run> with --run).
 # Waits match terminal text, but screenshots are taken from the drawn frame,
 # which lags it: keep a short Sleep around each Screenshot.

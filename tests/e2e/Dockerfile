@@ -4,12 +4,12 @@
 # Real herdr + herdr-nvim (built from a mounted worktree) + real pi agent
 # talking to a local scripted mock LLM, recorded with VHS. Runs offline.
 #
-# Build with `scripts/box/box build` (it passes the build contexts/args).
+# Build with `tests/e2e/box build` (it passes the build contexts/args).
 # Layers are ordered by change frequency: OS/tools -> precompiled crate
 # deps -> herdr -> box scripts -> pi (last, so a "latest pi" rebuild is cheap).
 #
 # Build contexts:
-#   .    = scripts/box (this directory)
+#   .    = tests/e2e (this directory)
 #   src  = a herdr-nvim checkout (only Cargo.toml + Cargo.lock are read)
 
 ARG RUST_IMAGE=rust:1-bookworm

@@ -1,4 +1,4 @@
-# Run: box record <item> scripts/box/smoke/agent-choice.tape (no scenario needed)
+# Run: box record <item> tests/e2e/smoke/agent-choice.tape (no scenario needed)
 # Two agents in the workspace, one per tab: \as from tab 1 must send to
 # tab 1's pi without asking ("Send to agent" list must NOT appear).
 # Target check: the prompt must show up in tab 1's pi input (on screen here),

@@ -1,7 +1,7 @@
 # Agent flow: pi (on the mock LLM) edits a file, then herdr-nvim's picker
 # (prefix+o) shows the touched file and opens it in the nvim sidebar.
-# Run: box up <item> <worktree> --scenario scripts/box/smoke/agent.scenario.json
-#      box record <item> scripts/box/smoke/agent.tape
+# Run: box up <item> <worktree> --scenario tests/e2e/smoke/agent.scenario.json
+#      box record <item> tests/e2e/smoke/agent.tape
 # Waits match terminal text, but screenshots are taken from the drawn frame,
 # which lags it: keep a short Sleep around each Screenshot.
 Output agent.gif

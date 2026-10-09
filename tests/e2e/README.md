@@ -1,4 +1,6 @@
-# box: isolated test box for herdr-nvim
+# box: isolated end-to-end test box for herdr-nvim
+
+Run by hand or by agents (see `.agents/skills/verify/`); CI does not run it.
 
 A box is one Docker container that runs the real stack, offline:
 
@@ -16,7 +18,7 @@ Use it to reproduce a bug and to verify a fix.
 ## Commands
 
 ```sh
-B=~/projects/herdr-nvim/scripts/box/box
+B=~/projects/herdr-nvim/tests/e2e/box
 $B build                                    # build image hnv-box:latest (~8 min cold)
 $B up issue-42 <worktree> [--scenario f.json]  # start the box, build herdr-nvim, start herdr
 $B record issue-42 my.tape --run before     # run a tape; outputs go to <proof>/before/

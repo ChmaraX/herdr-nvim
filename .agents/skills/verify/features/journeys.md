@@ -12,7 +12,7 @@ Ask the agent for a change, press `prefix+o`, open the file it touched, select t
 
 ## Driving it in the box
 
-- `box up <item> <worktree> --scenario scripts/box/smoke/journey.scenario.json`, then `box record <item> scripts/box/smoke/journey.tape`. On a running box, `box scenario <item> scripts/box/smoke/journey.scenario.json` first.
+- `box up <item> <worktree> --scenario tests/e2e/smoke/journey.scenario.json`, then `box record <item> tests/e2e/smoke/journey.tape`. On a running box, `box scenario <item> tests/e2e/smoke/journey.scenario.json` first.
 - The scenario has three turns: 0 edits `src/greet.js` (adds `farewell` on lines 5-7), 1 says "Done: …", 2 is the reply to the review ("Thanks for the review…").
 - Proof: `journey-1-picker.png` (the picker lists `src/greet.js`), `journey-2-comment.png` (callout "💬 Rename to goodbye" over lines 5-7), `journey-3-reply.png` (the review prompt and pi's reply in pi's pane).
 - The tape itself checks pi's input: after `\aS` it waits for `src/greet.js:5-7`, `Comment: Rename to goodbye` and "Please address each comment" in pi's pane before the reply. The mock answers turn 2 to any third request, so the reply alone proves nothing about the content.

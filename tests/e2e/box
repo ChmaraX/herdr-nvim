@@ -2,7 +2,7 @@
 # box: isolated, offline test box for herdr-nvim (real herdr + herdr-nvim built
 # from a worktree + real pi on a scripted mock LLM, recorded with VHS).
 # Runs on the host; everything herdr-related happens inside the container.
-# See scripts/box/README.md.
+# See tests/e2e/README.md.
 set -euo pipefail
 
 BOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

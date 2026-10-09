@@ -9,7 +9,7 @@
 // turns[0] and sends the results back, the reply is turns[1]; and so on. A new
 // pi session starts again at turns[0]. Past the end -> `fallback` text.
 //
-// Scenario format (see scripts/box/README.md):
+// Scenario format (see tests/e2e/README.md):
 //   {
 //     "fallback": "optional text for requests past the last turn",
 //     "turns": [
