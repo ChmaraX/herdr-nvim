@@ -13,7 +13,9 @@ mod unix {
             return;
         }
 
-        let sandbox = Sandbox::new("sidebar-refreshes-pane-id");
+        // Keep the name short: the daemon socket lives under it, and macOS
+        // caps socket paths at 104 bytes (nvim >= 0.12.5 refuses longer).
+        let sandbox = Sandbox::new("sidebar-pane-id");
         let daemon = Daemon::spawn(&sandbox, "w1:t1");
         daemon
             .eval("setenv('HERDR_PANE_ID', 'w1:p2')")

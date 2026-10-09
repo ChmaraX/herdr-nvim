@@ -38,7 +38,12 @@ jobs:
           neovim: true
           version: v0.12.5
       - run: rustup target add ${{ matrix.target }}
+      # Short TMPDIR: test sandboxes put nvim listen sockets under the temp
+      # dir, and macOS's default /var/folders/... TMPDIR can push them past
+      # the 104-byte sun_path limit, which nvim >= 0.12.5 rejects.
       - run: cargo test
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: nvim --headless --noplugin -u NONE -l tests/run.lua
       - run: cargo build --release --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/herdr-nvim herdr-nvim-${{ matrix.target }}
