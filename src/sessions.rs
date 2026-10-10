@@ -51,19 +51,18 @@ pub(crate) fn load_session_text(
         // slug is the cwd with `/` mapped to `-`.
         let projects_dir = home.join(".claude/projects");
         let slug = cwd.to_string_lossy().replace('/', "-");
-        let direct = projects_dir
-            .join(&slug)
-            .join(format!("{}.jsonl", session.value));
+        let file_name = format!("{}.jsonl", session.value);
+        let direct = projects_dir.join(&slug).join(&file_name);
         if let Ok(text) = std::fs::read_to_string(&direct) {
-            return Some(text);
+            return Some(with_claude_subagents(&direct, text));
         }
         // The slug encoding drifts across Claude versions (dots/underscores
         // are also mapped to `-`), so fall back to scanning every project dir
         // for `<id>.jsonl`. Session ids are unique, so the first hit is right.
         for entry in std::fs::read_dir(&projects_dir).ok()?.flatten() {
-            let candidate = entry.path().join(format!("{}.jsonl", session.value));
+            let candidate = entry.path().join(&file_name);
             if let Ok(text) = std::fs::read_to_string(&candidate) {
-                return Some(text);
+                return Some(with_claude_subagents(&candidate, text));
             }
         }
         None
@@ -102,6 +101,37 @@ pub(crate) fn load_session_text(
     } else {
         None
     }
+}
+
+/// Append the transcripts of a Claude Code session's sub-agents to the
+/// session's own text. Claude Code writes each sub-agent (Task/Agent tool)
+/// to `<id>/subagents/agent-*.jsonl` beside `<id>.jsonl`, in the same record
+/// format, so files edited by delegated work are only visible there.
+/// `mine_session` restores time order across the appended files.
+fn with_claude_subagents(session_file: &Path, mut text: String) -> String {
+    let Some(stem) = session_file.file_stem() else {
+        return text;
+    };
+    let subagents_dir = session_file.with_file_name(stem).join("subagents");
+    let Ok(entries) = std::fs::read_dir(&subagents_dir) else {
+        return text;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort();
+    for file in files {
+        let Ok(sub) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&sub);
+    }
+    text
 }
 
 /// Per-agent session file shape: everything that differs between agents'
@@ -286,7 +316,7 @@ pub(crate) struct Mined {
 pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
     let raw: Vec<RawEvent> = match agent_kind {
         "pi" => parse_session(text, &PI_DIALECT),
-        "claude" => parse_session(text, &CLAUDE_DIALECT),
+        "claude" => order_chronologically(parse_session(text, &CLAUDE_DIALECT)),
         _ if is_agy(agent_kind) => parse_session(text, &AGY_DIALECT),
         _ => Vec::new(),
     };
@@ -335,6 +365,25 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
         touches,
         first_op_unix,
     }
+}
+
+/// Stable-sort events by timestamp. Sub-agent transcripts are appended after
+/// the parent session's, so file order alone no longer means time order. An
+/// event without a timestamp takes the one before it, so it stays next to
+/// the events it was recorded between.
+fn order_chronologically(events: Vec<RawEvent>) -> Vec<RawEvent> {
+    let mut last_ts = 0;
+    let mut keyed: Vec<(u64, RawEvent)> = events
+        .into_iter()
+        .map(|event| {
+            if let Some(ts) = event.unix_ts {
+                last_ts = ts;
+            }
+            (last_ts, event)
+        })
+        .collect();
+    keyed.sort_by_key(|(ts, _)| *ts);
+    keyed.into_iter().map(|(_, event)| event).collect()
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff]Z` (UTC only) into unix seconds. `None`
@@ -529,6 +578,78 @@ mod tests {
         assert!(!touch.newly_created);
         // 2026-07-22T11:08:00.000Z, verified via `date -u -r 1784718480`.
         assert_eq!(touch.last_touch_unix, Some(1784718480));
+    }
+
+    fn claude_subagents_fixture() -> String {
+        let session_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude_subagents/sess-1.jsonl");
+        let text = std::fs::read_to_string(&session_file).unwrap();
+        with_claude_subagents(&session_file, text)
+    }
+
+    #[test]
+    fn claude_subagent_transcripts_are_appended() {
+        let events = parse_session(&claude_subagents_fixture(), &CLAUDE_DIALECT);
+        let paths: Vec<&str> = events.iter().map(|e| e.path.as_str()).collect();
+        // Parent Read + Edit, then the sub-agent's Write + Edit; the Agent
+        // and Bash tool calls and the `.meta.json` sidecar are ignored.
+        assert_eq!(
+            paths,
+            [
+                "/repo/plans/design.md",
+                "/repo/src/lib.rs",
+                "/repo/plans/design.md",
+                "/repo/plans/notes.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn claude_subagent_edits_are_mined_in_time_order() {
+        let mined = mine_session("claude", &claude_subagents_fixture());
+        let paths: Vec<&str> = mined.touches.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/repo/plans/design.md",
+                "/repo/plans/notes.md",
+                "/repo/src/lib.rs",
+            ]
+        );
+        // The sub-agent wrote design.md (10:01) before the parent read it
+        // (10:05), so it counts as created this session.
+        let design = &mined.touches[0];
+        assert!(design.newly_created);
+        assert!(design.was_edited);
+        // 2026-07-19T10:05:00Z, verified via `date -u -r 1784455500`.
+        assert_eq!(design.last_touch_unix, Some(1784455500));
+        assert!(mined.touches[1].was_edited);
+        // 2026-07-19T10:01:00Z, verified via `date -u -r 1784455260`.
+        assert_eq!(mined.first_op_unix, Some(1784455260));
+    }
+
+    #[test]
+    fn claude_session_without_subagents_dir_is_unchanged() {
+        let session_file =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/session_claude_basic.jsonl");
+        let text = std::fs::read_to_string(&session_file).unwrap();
+        assert_eq!(with_claude_subagents(&session_file, text.clone()), text);
+    }
+
+    #[test]
+    fn untimed_event_keeps_its_neighbours_when_ordering() {
+        let event = |path: &str, unix_ts| RawEvent {
+            path: path.to_owned(),
+            op: RawOp::Read,
+            unix_ts,
+        };
+        let ordered = order_chronologically(vec![
+            event("/b", Some(20)),
+            event("/b-untimed", None),
+            event("/a", Some(10)),
+        ]);
+        let paths: Vec<&str> = ordered.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["/a", "/b", "/b-untimed"]);
     }
 
     #[test]
