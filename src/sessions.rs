@@ -5,7 +5,7 @@
 //! files.
 
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RawOp {
@@ -43,7 +43,7 @@ pub(crate) fn load_session_text(
     if session.kind == "path" {
         return std::fs::read_to_string(&session.value).ok();
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let home = crate::home::home_dir()?;
     let agent = session.agent.as_str();
 
     if agent == "claude" {

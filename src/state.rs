@@ -97,7 +97,7 @@ fn state_dir() -> PathBuf {
             env::var_os("XDG_STATE_HOME").map(|path| PathBuf::from(path).join("herdr-nvim"))
         })
         .or_else(|| {
-            env::var_os("HOME").map(|path| PathBuf::from(path).join(".local/state/herdr-nvim"))
+            crate::home::home_dir().map(|path| path.join(".local/state/herdr-nvim"))
         })
         .unwrap_or_else(|| PathBuf::from(".herdr-nvim-state"))
 }

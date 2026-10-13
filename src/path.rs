@@ -71,7 +71,7 @@ pub(crate) fn augment_path() {
         let existing: Vec<PathBuf> = env::var_os("PATH")
             .map(|path| env::split_paths(&path).collect())
             .unwrap_or_default();
-        let home = env::var_os("HOME").map(PathBuf::from);
+        let home = crate::home::home_dir();
         let herdr_bin = env::var_os("HERDR_BIN_PATH").map(PathBuf::from);
 
         let dirs = augmented_path_dirs(&existing, home.as_deref(), herdr_bin.as_deref());

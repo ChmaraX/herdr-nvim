@@ -142,8 +142,8 @@ impl Drop for FffIndex {
 /// or anything fails; a torn copy (fff.nvim writing mid-copy) fails the
 /// open and lands here too.
 fn open_frecency_copy() -> Option<(FrecencyTracker, PathBuf)> {
-    let home = std::env::var("HOME").ok()?;
-    let src = Path::new(&home).join(".cache/nvim/fff_nvim");
+    let home = crate::home::home_dir()?;
+    let src = home.join(".cache/nvim/fff_nvim");
     if !src.is_dir() {
         return None;
     }
