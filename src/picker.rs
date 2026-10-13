@@ -325,7 +325,7 @@ pub fn picker_cmd() -> Result<()> {
     let mut handoff: Handoff =
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
-    let home = std::env::var("HOME").ok();
+    let home = crate::home::home_dir().map(|home| home.to_string_lossy().into_owned());
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

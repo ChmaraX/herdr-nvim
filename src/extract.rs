@@ -137,7 +137,9 @@ pub(crate) fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
 /// Resolve a path token to an absolute, lexically-normalized [`PathBuf`].
 pub(crate) fn resolve(path: &str, cwd: &Path) -> PathBuf {
     let expanded = if let Some(rest) = path.strip_prefix('~') {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = crate::home::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_default();
         PathBuf::from(format!("{home}{rest}"))
     } else if Path::new(path).is_absolute() || path.starts_with('/') {
         PathBuf::from(path)
