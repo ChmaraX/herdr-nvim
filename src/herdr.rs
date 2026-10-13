@@ -153,7 +153,13 @@ fn parse_pane_scroll(value: &Value) -> Option<PaneScroll> {
 /// meaningful chunk of the pick-file action phase's latency -- into one.
 fn parse_pane_snapshot(value: &Value) -> Result<PaneSnapshot> {
     Ok(PaneSnapshot {
-        cwd: PathBuf::from(string_at(value, "/result/pane/foreground_cwd")?),
+        // `foreground_cwd` is absent when herdr cannot resolve the foreground
+        // process directory (herdr 0.9.3 on Windows never sets it for agent
+        // panes); fall back to the pane cwd so the picker still works there.
+        cwd: PathBuf::from(
+            string_at(value, "/result/pane/foreground_cwd")
+                .or_else(|_| string_at(value, "/result/pane/cwd"))?,
+        ),
         agent_session: parse_agent_session(value),
         scroll: parse_pane_scroll(value),
     })
@@ -462,10 +468,10 @@ impl Herdr for CliHerdr {
 
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(PathBuf::from(string_at(
-            &value,
-            "/result/pane/foreground_cwd",
-        )?))
+        Ok(PathBuf::from(
+            string_at(&value, "/result/pane/foreground_cwd")
+                .or_else(|_| string_at(&value, "/result/pane/cwd"))?,
+        ))
     }
 
     fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
