@@ -97,7 +97,13 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
     }
 
     recover(h, &ctx.tab)?;
-    open(h, ctx, config.sidebar.position, &SidebarSize::from_config(&config.sidebar))
+    open(
+        h,
+        ctx,
+        config.sidebar.position,
+        &SidebarSize::from_config(&config.sidebar),
+        &config.sidebar.grow_window,
+    )
 }
 
 /// The three sizing knobs of `[sidebar]`, resolved against the tab's actual
@@ -115,6 +121,16 @@ impl SidebarSize {
             width: sidebar.width(),
             min_cols: sidebar.min_cols,
             anchor_min_cols: sidebar.anchor_min_cols,
+        }
+    }
+
+    /// Cells needed along the split axis for both minima to fit; `0` when no
+    /// minimum is configured.
+    pub(crate) fn required(&self) -> u32 {
+        if self.min_cols == 0 || self.anchor_min_cols == 0 {
+            0
+        } else {
+            self.min_cols + self.anchor_min_cols
         }
     }
 
@@ -172,22 +188,92 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition, size: &SidebarSize) -> Result<()> {
-    // Best-effort: clear out ready markers abandoned by earlier opens (see
-    // `sweep_stale_markers`) before this open adds its own.
-    state::sweep_stale_markers();
-
-    let rects = h.pane_rects(&ctx.tab)?;
-    // Tab extent along the split axis, for the min_cols/anchor_min_cols rule.
-    let total = rects
+/// Tab extent along the split axis of `position`, from its pane rects.
+fn tab_extent(rects: &[PaneRect], position: SidebarPosition) -> u32 {
+    rects
         .iter()
         .map(|r| match position {
             SidebarPosition::Left | SidebarPosition::Right => r.x + r.w,
             SidebarPosition::Top | SidebarPosition::Bottom => r.y + r.h,
         })
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// Run the configured `grow_window` command, then poll the tab size (10 ×
+/// 200 ms) until it reaches `required` or stops changing. Returns the latest
+/// rects. Never fails the maneuver: a command that cannot be spawned, or a
+/// window that does not grow, just leaves the tab as it is (reported on
+/// stderr).
+fn grow_window(
+    h: &mut dyn Herdr,
+    tab: &str,
+    position: SidebarPosition,
+    command: &[String],
+    required: u32,
+    mut rects: Vec<PaneRect>,
+) -> Vec<PaneRect> {
+    let Some((program, args)) = command.split_first() else {
+        return rects;
+    };
+    let before = tab_extent(&rects, position);
+    match std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("herdr-nvim: grow_window {program:?} could not run: {error}");
+            return rects;
+        }
+    }
+    let mut last = before;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let Ok(fresh) = h.pane_rects(tab) else { break };
+        let extent = tab_extent(&fresh, position);
+        rects = fresh;
+        if extent >= required || extent == last {
+            if extent >= required {
+                break;
+            }
+        }
+        last = extent;
+    }
+    let after = tab_extent(&rects, position);
+    eprintln!("herdr-nvim: tab was {before} cells, needed {required}: grow_window → {after}");
+    rects
+}
+
+fn open(
+    h: &mut dyn Herdr,
+    ctx: &Ctx,
+    position: SidebarPosition,
+    size: &SidebarSize,
+    grow: &[String],
+) -> Result<()> {
+    // Best-effort: clear out ready markers abandoned by earlier opens (see
+    // `sweep_stale_markers`) before this open adds its own.
+    state::sweep_stale_markers();
+
+    let mut rects = h.pane_rects(&ctx.tab)?;
+    // Tab extent along the split axis, for the min_cols/anchor_min_cols rule.
+    // Too small for both minima: let the configured command enlarge the
+    // terminal window first, then lay out against the fresh size.
+    let required = size.required();
+    let mut total = tab_extent(&rects, position);
+    if required > 0 && total < required && !grow.is_empty() {
+        rects = grow_window(h, &ctx.tab, position, grow, required, rects);
+        total = tab_extent(&rects, position);
+    }
     let width = size.share(total);
+    eprintln!(
+        "herdr-nvim: sidebar share {:.3} of {total} cells (width {}, min {}, anchor min {})",
+        width, size.width, size.min_cols, size.anchor_min_cols
+    );
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
         phase: Phase::Open,
@@ -501,7 +587,7 @@ mod tests {
     fn open_on_multi_pane_tab_emits_validated_sequence() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5), &[]).unwrap();
             assert_eq!(
                 normalize_marker(&h.ops),
                 vec![
@@ -529,7 +615,7 @@ mod tests {
     fn open_writes_ready_marker_only_after_placeholder_close() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5), &[]).unwrap();
 
             // `close_pane` records this synthetic op itself (see MockHerdr) by
             // checking on-disk marker existence at the moment it's called.
@@ -564,7 +650,7 @@ mod tests {
     fn open_on_single_pane_tab_skips_evacuation() {
         with_state_dir(|| {
             let mut h = mock_1pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5), &[]).unwrap();
             assert!(h.ops.iter().all(|op| !op.starts_with("create_tab")));
             assert!(h
                 .ops
@@ -599,7 +685,7 @@ mod tests {
                         h.create_tab_results
                             .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                     }
-                    open(&mut h, &ctx(), position, &SidebarSize::plain(0.5)).unwrap();
+                    open(&mut h, &ctx(), position, &SidebarSize::plain(0.5), &[]).unwrap();
 
                     // The resync happens, on the sidebar pane, exactly once.
                     let sync = h
@@ -671,7 +757,7 @@ mod tests {
                     h.create_tab_results
                         .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                 }
-                open(&mut h, &ctx(), position, &SidebarSize::plain(0.5)).unwrap();
+                open(&mut h, &ctx(), position, &SidebarSize::plain(0.5), &[]).unwrap();
                 assert!(
                     h.ops
                         .iter()
@@ -947,7 +1033,7 @@ mod tests {
                 mock_1pane()
             };
             let _ = state::remove("wT:t1");
-            open(&mut h, &ctx(), position, &SidebarSize::plain(width)).unwrap();
+            open(&mut h, &ctx(), position, &SidebarSize::plain(width), &[]).unwrap();
             let resize = h.ops.iter().find(|op| op.starts_with("resize wT:p99 "));
             match expected {
                 Some((want_dir, want_amount)) => {
@@ -977,5 +1063,43 @@ mod tests {
         // No minima: plain width, whatever the size.
         assert_eq!(SidebarSize::plain(0.4).share(165), (66.0_f64 / 165.0).clamp(0.05, 0.95));
         assert_eq!(SidebarSize::plain(0.4).share(0), 0.4);
+    }
+
+    #[test]
+    fn required_cells_only_when_both_minima_are_set() {
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 }.required(), 165);
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 0 }.required(), 0);
+        assert_eq!(SidebarSize::plain(0.5).required(), 0);
+    }
+
+    #[test]
+    fn tab_extent_follows_the_split_axis() {
+        let rects = vec![rect("wT:p1", 0, 0, 40, 100), rect("wT:p2", 40, 0, 60, 30)];
+        assert_eq!(tab_extent(&rects, SidebarPosition::Right), 100);
+        assert_eq!(tab_extent(&rects, SidebarPosition::Bottom), 100);
+        assert_eq!(tab_extent(&[], SidebarPosition::Right), 0);
+    }
+
+    #[test]
+    fn grow_window_polls_rects_after_the_command() {
+        // A command that exists everywhere and exits at once; the mock then
+        // serves one fresh rects result (the "grown" tab) and the function
+        // returns it once the required size is reached.
+        let cmd: Vec<String> = if cfg!(windows) {
+            vec!["cmd.exe".into(), "/c".into(), "exit".into()]
+        } else {
+            vec!["true".into()]
+        };
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 200, 50)])]),
+            ..Default::default()
+        };
+        let small = vec![rect("wT:p1", 0, 0, 49, 50)];
+        let grown = grow_window(&mut h, "wT:t1", SidebarPosition::Right, &cmd, 165, small);
+        assert_eq!(tab_extent(&grown, SidebarPosition::Right), 200);
+        // Unknown command: the original rects come back untouched.
+        let cmd = vec!["herdr-nvim-no-such-command-xyz".to_string()];
+        let same = grow_window(&mut h, "wT:t1", SidebarPosition::Right, &cmd, 165, vec![rect("wT:p1", 0, 0, 49, 50)]);
+        assert_eq!(tab_extent(&same, SidebarPosition::Right), 49);
     }
 }

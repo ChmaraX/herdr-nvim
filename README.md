@@ -210,6 +210,10 @@ min_cols = 0          # never fewer cells than this for the sidebar (0 = off)
 anchor_min_cols = 0   # never fewer cells than this for the agent's pane
                       # (0 = off). When both minima cannot fit, the agent's
                       # pane keeps its minimum and the sidebar takes the rest.
+grow_window = []      # command (argv) run first when the tab is smaller than
+                      # min_cols + anchor_min_cols — e.g. a script that
+                      # maximizes the terminal window; the tab size is then
+                      # re-read before the layout is built
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape

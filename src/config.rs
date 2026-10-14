@@ -55,6 +55,14 @@ pub struct Sidebar {
     /// pane), in cells. `0` (default) disables.
     #[serde(default)]
     pub anchor_min_cols: u32,
+    /// Command (argv) run BEFORE the layout is built when the tab is too
+    /// small for `min_cols + anchor_min_cols`: typically something that
+    /// maximizes or widens the terminal window. The plugin then re-reads the
+    /// tab size (polling up to ~2 s) and lays out against the new size. Empty
+    /// (default) disables. Exit status and output are ignored; a failure to
+    /// spawn is reported on stderr.
+    #[serde(default)]
+    pub grow_window: Vec<String>,
 }
 
 impl Default for Sidebar {
@@ -66,6 +74,7 @@ impl Default for Sidebar {
             width: default_width(),
             min_cols: 0,
             anchor_min_cols: 0,
+            grow_window: Vec::new(),
         }
     }
 }
@@ -324,6 +333,7 @@ mod tests {
             width: 0.5,
             min_cols: 0,
             anchor_min_cols: 0,
+            grow_window: Vec::new(),
         };
         assert_eq!(
             side.env_override(),
