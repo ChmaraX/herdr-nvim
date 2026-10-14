@@ -152,7 +152,9 @@ floor_cols = 40           # minimum for both panes once collapsed; below that, h
 ```
 
 `open` splits the anchor and the editor evenly (the tree on top). A tree
-closed by hand (`extra 0`) stays closed.
+closed by hand (`extra 0`) stays closed, and `fit --want <cells>` carries the
+size the user asked for, respected even below `tree_cols` (a tree squeezed to
+1 by hand stays at 1; one collapsed by the rule reopens when the tab allows).
 
 ### Measure-only mode
 

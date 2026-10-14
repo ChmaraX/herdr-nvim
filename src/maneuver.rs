@@ -162,15 +162,17 @@ impl ClampRules {
     pub(crate) fn open_cells(&self, total: u32) -> u32 {
         let tree = self.open_tree(total);
         let even = tree + total.saturating_sub(tree) / 2;
-        match self.plan(total, even, tree).sidebar {
+        match self.plan(total, even, tree, 0).sidebar {
             Some(cells) => cells,
             None => even,
         }
     }
 
     /// Pure: `total` tab cells, `current` sidebar cells, `extra` tree cells
-    /// the sidebar reports (`0` = the user closed the tree: left closed).
-    pub(crate) fn plan(&self, total: u32, current: u32, extra: u32) -> ClampPlan {
+    /// the sidebar reports (`0` = the user closed the tree: left closed),
+    /// `want` the tree size the user asked for (`0` = standard): respected
+    /// even when narrower than standard, only capped by the minima.
+    pub(crate) fn plan(&self, total: u32, current: u32, extra: u32, want: u32) -> ClampPlan {
         let collapsed = self.collapsed(total);
         let (anchor_min, editor_min) = if collapsed {
             (self.floor, self.floor)
@@ -182,10 +184,11 @@ impl ClampRules {
         } else if collapsed {
             self.tree_collapsed
         } else {
-            // The user may widen the tree past its standard size as long as
-            // both panes keep their minima; never narrower than standard.
+            // The user's size (narrow or wide), capped so both panes keep
+            // their minima.
             let room = total.saturating_sub(anchor_min + editor_min);
-            extra.clamp(self.tree_std, room.max(self.tree_std))
+            let want = if want == 0 { self.tree_std } else { want };
+            want.min(room.max(1)).max(1)
         };
         let lo = editor_min + tree;
         let hi = total.saturating_sub(anchor_min);
@@ -576,15 +579,21 @@ pub fn fit_cmd() -> Result<()> {
             reclaim: config.sidebar.reclaim_window.clone(),
             close_below: config.sidebar.close_below_cols,
             extra,
+            want: cells_arg(env::args(), "--want"),
         },
     )
 }
 
 /// `fit --extra <cells>`: what the sidebar currently shows beside its editor
 /// (its file tree, typically), reported by the sidebar's nvim. Default 0.
-fn extra_arg(mut args: impl Iterator<Item = String>) -> u32 {
+fn extra_arg(args: impl Iterator<Item = String>) -> u32 {
+    cells_arg(args, "--extra")
+}
+
+/// `fit --want <cells>` (clamp mode): the tree size the user asked for.
+fn cells_arg(mut args: impl Iterator<Item = String>, flag: &str) -> u32 {
     while let Some(arg) = args.next() {
-        if arg == "--extra" {
+        if arg == flag {
             return args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
         }
     }
@@ -598,6 +607,9 @@ pub(crate) struct FitPolicy {
     pub close_below: u32,
     /// Cells the sidebar currently shows beside its editor (see `fit --extra`).
     pub extra: u32,
+    /// Clamp mode: the tree size the user asked for (`fit --want`), which may
+    /// be narrower than `tree_cols`; `0` = the standard size.
+    pub want: u32,
 }
 
 /// Run `reclaim_window`; `Some(true)` when it reports having changed
@@ -790,7 +802,7 @@ fn fit_clamp(
     }) else {
         return Ok(());
     };
-    let plan = rules.plan(total, current, policy.extra);
+    let plan = rules.plan(total, current, policy.extra, policy.want);
     let mut what = String::from("libre");
     if let Some(target) = plan.sidebar {
         let grow = target > current;
@@ -1623,7 +1635,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0, want: 0 }).unwrap();
         assert!(h.ops.iter().any(|op| op == "close wT:p99"), "{:?}", h.ops);
         assert!(state::load("wT:t1").unwrap().is_none());
         // 130 cells (above close_below): degraded rule, no close.
@@ -1632,7 +1644,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 58, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0, want: 0 }).unwrap();
         assert!(h.ops.iter().all(|op| op != "close wT:p99"), "{:?}", h.ops);
         // A reclaim command that reports success defers everything to the next resize.
         save();
@@ -1641,7 +1653,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: ok_cmd, close_below: 112, extra: 0 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: ok_cmd, close_below: 112, extra: 0, want: 0 }).unwrap();
         assert!(h.ops.iter().all(|op| !op.starts_with("close") && !op.starts_with("resize")), "{:?}", h.ops);
         assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_total, Some(100));
     }
@@ -1683,7 +1695,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 64, 43), rect("wT:p99", 64, 0, 99, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 0, extra: 0 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 0, extra: 0, want: 0 }).unwrap();
         assert!(h.ops.iter().any(|op| op.starts_with("resize wT:p99 right")), "{:?}", h.ops);
         assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_extra, Some(0));
     }
@@ -1697,33 +1709,37 @@ mod tests {
     fn clamp_leaves_a_split_inside_the_minima_alone() {
         let r = atelier_rules();
         // 160, sidebar 80 = editor 50 + tree 30: the editor minimum (55) pushes it to 85.
-        assert_eq!(r.plan(160, 80, 30), ClampPlan { tree: 30, sidebar: Some(85) });
+        assert_eq!(r.plan(160, 80, 30, 30), ClampPlan { tree: 30, sidebar: Some(85) });
         // Claude 65 / editor 65 / tree 30 (the standard) and Claude 55 / editor 71 / tree 34: free.
-        assert_eq!(r.plan(160, 95, 30), ClampPlan { tree: 30, sidebar: None });
-        assert_eq!(r.plan(160, 105, 34), ClampPlan { tree: 34, sidebar: None });
+        assert_eq!(r.plan(160, 95, 30, 0), ClampPlan { tree: 30, sidebar: None });
+        assert_eq!(r.plan(160, 105, 34, 34), ClampPlan { tree: 34, sidebar: None });
         // Claude squeezed under 55: the sidebar gives back.
-        assert_eq!(r.plan(160, 110, 30), ClampPlan { tree: 30, sidebar: Some(105) });
+        assert_eq!(r.plan(160, 110, 30, 30), ClampPlan { tree: 30, sidebar: Some(105) });
         // Tree widened too far for the minima at 160: narrowed to what fits (50), split follows.
-        assert_eq!(r.plan(160, 110, 60), ClampPlan { tree: 50, sidebar: Some(105) });
+        assert_eq!(r.plan(160, 110, 60, 60), ClampPlan { tree: 50, sidebar: Some(105) });
         // Tree closed by the user: stays closed, editor min still enforced.
-        assert_eq!(r.plan(160, 40, 0), ClampPlan { tree: 0, sidebar: Some(55) });
+        assert_eq!(r.plan(160, 40, 0, 30), ClampPlan { tree: 0, sidebar: Some(55) });
+        // The user collapsed the tree to 1 by hand on a wide tab: respected.
+        assert_eq!(r.plan(160, 95, 1, 1), ClampPlan { tree: 1, sidebar: None });
+        // ...and a tree at 1 with a standard wish (a rule collapse that no longer applies): back to 30.
+        assert_eq!(r.plan(160, 95, 1, 30), ClampPlan { tree: 30, sidebar: None });
     }
 
     #[test]
     fn clamp_collapses_the_tree_below_140_and_keeps_the_floor() {
         let r = atelier_rules();
         // 140: the minimal balance 55/55/30 is free.
-        assert_eq!(r.plan(140, 85, 30), ClampPlan { tree: 30, sidebar: None });
+        assert_eq!(r.plan(140, 85, 30, 30), ClampPlan { tree: 30, sidebar: None });
         // 139: the tree collapses to 1, floor 40 for both — a 70/69 split is free.
-        assert_eq!(r.plan(139, 69, 30), ClampPlan { tree: 1, sidebar: None });
+        assert_eq!(r.plan(139, 69, 30, 30), ClampPlan { tree: 1, sidebar: None });
         // 100: Claude 40 / editor 59 / tree 1 is the user's example, free.
-        assert_eq!(r.plan(100, 60, 1), ClampPlan { tree: 1, sidebar: None });
+        assert_eq!(r.plan(100, 60, 1, 30), ClampPlan { tree: 1, sidebar: None });
         // 100 with Claude at 30: pushed back to 40.
-        assert_eq!(r.plan(100, 70, 1), ClampPlan { tree: 1, sidebar: Some(60) });
+        assert_eq!(r.plan(100, 70, 1, 30), ClampPlan { tree: 1, sidebar: Some(60) });
         // 70: nothing fits, half/half around the collapsed tree.
-        assert_eq!(r.plan(70, 50, 1), ClampPlan { tree: 1, sidebar: Some(35) });
+        assert_eq!(r.plan(70, 50, 1, 30), ClampPlan { tree: 1, sidebar: Some(35) });
         // Back above 140 with a collapsed tree: it reopens to 30 and the editor keeps 55.
-        assert_eq!(r.plan(160, 60, 1), ClampPlan { tree: 30, sidebar: Some(85) });
+        assert_eq!(r.plan(160, 60, 1, 30), ClampPlan { tree: 30, sidebar: Some(85) });
     }
 
     #[test]
