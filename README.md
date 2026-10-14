@@ -237,6 +237,11 @@ reclaim_window = []   # command (argv) run by `fit` when the tab is too small,
                       # exit 0 = changed something, non-zero = nothing left
 close_below_cols = 0  # `fit` closes the sidebar when the tab is below this
                       # and nothing could be reclaimed (0 = off)
+tree_cols = 0         # cells the sidebar's nvim shows beside its editor (a
+                      # file tree). Below the minima the agent's pane and the
+                      # editor shrink 50/50 with the tree on top; the nvim
+                      # side reports what it currently shows with
+                      # `herdr-nvim fit --extra <cells>`
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape

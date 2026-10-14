@@ -113,6 +113,9 @@ pub(crate) struct SidebarSize {
     pub width: f64,
     pub min_cols: u32,
     pub anchor_min_cols: u32,
+    /// Cells the sidebar shows beside its editor (a file tree); used by
+    /// `open` to decide what `fit --extra` will later report. `0` = none.
+    pub tree_cols: u32,
 }
 
 impl SidebarSize {
@@ -121,6 +124,7 @@ impl SidebarSize {
             width: sidebar.width(),
             min_cols: sidebar.min_cols,
             anchor_min_cols: sidebar.anchor_min_cols,
+            tree_cols: sidebar.tree_cols,
         }
     }
 
@@ -140,6 +144,7 @@ impl SidebarSize {
             width,
             min_cols: 0,
             anchor_min_cols: 0,
+            tree_cols: 0,
         }
     }
 
@@ -148,22 +153,38 @@ impl SidebarSize {
     /// fewer than `anchor_min_cols` cells; when both minima cannot fit, the
     /// anchor keeps its minimum and the sidebar gets what remains (at least
     /// 20 cells, or half the tab if even that is impossible). Pure.
-    pub(crate) fn share(&self, total: u32) -> f64 {
+    pub(crate) fn share(&self, total: u32, extra: u32) -> f64 {
         if total == 0 {
             return self.width;
         }
         let total_f = f64::from(total);
-        let mut cells = (total_f * self.width).round();
-        if self.min_cols > 0 {
-            cells = cells.max(f64::from(self.min_cols));
-        }
-        if self.anchor_min_cols > 0 {
-            cells = cells.min(total_f - f64::from(self.anchor_min_cols));
-        }
+        let required = self.required();
+        let mut cells = if required > 0 && total < required {
+            // Below the minima the anchor and the sidebar's *editor* shrink
+            // together, 50/50: the sidebar keeps `extra` cells (what it shows
+            // beside the editor, e.g. a file tree) on top of the anchor's size.
+            ((total_f + f64::from(extra)) / 2.0).round()
+        } else {
+            let mut cells = (total_f * self.width).round();
+            if self.min_cols > 0 {
+                cells = cells.max(f64::from(self.min_cols));
+            }
+            if self.anchor_min_cols > 0 {
+                cells = cells.min(total_f - f64::from(self.anchor_min_cols));
+            }
+            cells
+        };
         if cells < 20.0 {
             cells = if total_f >= 40.0 { 20.0 } else { (total_f / 2.0).floor() };
         }
         (cells / total_f).clamp(0.05, 0.95)
+    }
+
+    /// Editor cells the sidebar would keep beside `extra` at `total`, under
+    /// the same rule as [`SidebarSize::share`].
+    pub(crate) fn editor_cells(&self, total: u32, extra: u32) -> u32 {
+        let cells = (self.share(total, extra) * f64::from(total)).round() as u32;
+        cells.saturating_sub(extra)
     }
 }
 
@@ -271,9 +292,16 @@ fn open(
         rects = grow_window(h, &ctx.tab, position, grow, required, rects);
         total = tab_extent(&rects, position);
     }
-    let width = size.share(total);
+    // What the sidebar will show beside its editor at open time: its tree
+    // (`tree_cols`) if the editor keeps at least twice that, else nothing.
+    let extra = if size.tree_cols > 0 && size.editor_cells(total, size.tree_cols) >= 2 * size.tree_cols {
+        size.tree_cols
+    } else {
+        0
+    };
+    let width = size.share(total, extra);
     eprintln!(
-        "herdr-nvim: sidebar share {:.3} of {total} cells (width {}, min {}, anchor min {})",
+        "herdr-nvim: sidebar share {:.3} of {total} cells (width {}, min {}, anchor min {}, extra {extra})",
         width, size.width, size.min_cols, size.anchor_min_cols
     );
     let plan = plan_rebuild(&rects)?;
@@ -425,6 +453,7 @@ fn open(
 /// under one cell. Never grows the window: that is `open`'s job.
 pub fn fit_cmd() -> Result<()> {
     let tab = env::var("HERDR_TAB_ID").context("HERDR_TAB_ID is not set")?;
+    let extra = extra_arg(env::args());
     let mut herdr = CliHerdr;
     let config = crate::config::load();
     fit(
@@ -435,8 +464,20 @@ pub fn fit_cmd() -> Result<()> {
         &FitPolicy {
             reclaim: config.sidebar.reclaim_window.clone(),
             close_below: config.sidebar.close_below_cols,
+            extra,
         },
     )
+}
+
+/// `fit --extra <cells>`: what the sidebar currently shows beside its editor
+/// (its file tree, typically), reported by the sidebar's nvim. Default 0.
+fn extra_arg(mut args: impl Iterator<Item = String>) -> u32 {
+    while let Some(arg) = args.next() {
+        if arg == "--extra" {
+            return args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        }
+    }
+    0
 }
 
 /// What `fit` may do beyond resizing when the tab is too small.
@@ -444,6 +485,8 @@ pub fn fit_cmd() -> Result<()> {
 pub(crate) struct FitPolicy {
     pub reclaim: Vec<String>,
     pub close_below: u32,
+    /// Cells the sidebar currently shows beside its editor (see `fit --extra`).
+    pub extra: u32,
 }
 
 /// Run `reclaim_window`; `Some(true)` when it reports having changed
@@ -515,10 +558,11 @@ pub(crate) fn fit(
     }) else {
         return Ok(());
     };
-    if let Some((direction, amount)) = fit_step(total, current, position, size) {
+    if let Some((direction, amount)) = fit_step(total, current, position, size, policy.extra) {
         eprintln!(
-            "herdr-nvim: fit: tab now {total} cells, sidebar {current} → {:.0}: resize {direction} {amount:.3}",
-            size.share(total) * f64::from(total)
+            "herdr-nvim: fit: tab now {total} cells (extra {}), sidebar {current} → {:.0}: resize {direction} {amount:.3}",
+            policy.extra,
+            size.share(total, policy.extra) * f64::from(total)
         );
         h.resize_pane(&sidebar, direction, amount)?;
     }
@@ -534,11 +578,12 @@ pub(crate) fn fit_step(
     current: u32,
     position: SidebarPosition,
     size: &SidebarSize,
+    extra: u32,
 ) -> Option<(&'static str, f64)> {
     if total == 0 {
         return None;
     }
-    let target = (size.share(total) * f64::from(total)).round();
+    let target = (size.share(total, extra) * f64::from(total)).round();
     let delta = target - f64::from(current);
     if delta.abs() < 1.0 {
         return None;
@@ -1194,23 +1239,26 @@ mod tests {
     #[test]
     fn sidebar_share_applies_minima_against_the_tab_size() {
         // 45 % of 165 cells = 74, raised to min_cols 95, anchor keeps 70.
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
-        assert!((size.share(165) - 95.0 / 165.0).abs() < 1e-9);
-        // Narrow tab: both minima cannot fit, the anchor keeps 70, sidebar gets the rest (50).
-        assert!((size.share(120) - 50.0 / 120.0).abs() < 1e-9);
-        // Very narrow: the sidebar floor of 20 cells wins over the anchor minimum.
-        assert!((size.share(80) - 20.0 / 80.0).abs() < 1e-9);
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
+        assert!((size.share(165, 0) - 95.0 / 165.0).abs() < 1e-9);
+        // Narrow tab: both minima cannot fit, the anchor and the editor split 50/50
+        // around the extra cells (none here): 60 each.
+        assert!((size.share(120, 0) - 60.0 / 120.0).abs() < 1e-9);
+        // With a 34-cell tree beside the editor: sidebar 77, anchor 43 = editor 43.
+        assert!((size.share(120, 34) - 77.0 / 120.0).abs() < 1e-9);
+        // Very narrow: still 50/50 (40 each).
+        assert!((size.share(80, 0) - 40.0 / 80.0).abs() < 1e-9);
         // Wide tab: plain width applies (45 % of 400 = 180 > 95).
-        assert!((size.share(400) - 180.0 / 400.0).abs() < 1e-9);
+        assert!((size.share(400, 0) - 180.0 / 400.0).abs() < 1e-9);
         // No minima: plain width, whatever the size.
-        assert_eq!(SidebarSize::plain(0.4).share(165), (66.0_f64 / 165.0).clamp(0.05, 0.95));
-        assert_eq!(SidebarSize::plain(0.4).share(0), 0.4);
+        assert_eq!(SidebarSize::plain(0.4).share(165, 0), (66.0_f64 / 165.0).clamp(0.05, 0.95));
+        assert_eq!(SidebarSize::plain(0.4).share(0, 0), 0.4);
     }
 
     #[test]
     fn required_cells_only_when_both_minima_are_set() {
-        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 }.required(), 165);
-        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 0 }.required(), 0);
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 }.required(), 165);
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 0, tree_cols: 0 }.required(), 0);
         assert_eq!(SidebarSize::plain(0.5).required(), 0);
     }
 
@@ -1247,24 +1295,25 @@ mod tests {
 
     #[test]
     fn fit_step_moves_the_sidebar_to_the_share_of_the_new_tab_size() {
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
-        // Tab shrank to 157 with the sidebar still at 161 cells: target 87, shrink by 74.
-        let (dir, amount) = fit_step(157, 161, SidebarPosition::Right, &size).unwrap();
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
+        // Tab shrank to 157 (below the 165 the minima need) with the sidebar still at
+        // 161 cells: 50/50 below the minima, target 79, shrink by 82.
+        let (dir, amount) = fit_step(157, 161, SidebarPosition::Right, &size, 0).unwrap();
         assert_eq!(dir, "right");
-        assert!((amount - 74.0 / 157.0).abs() < 1e-9);
+        assert!((amount - 82.0 / 157.0).abs() < 1e-9);
         // Tab grew to 357 with the sidebar at 87: target 161, grow by 74.
-        let (dir, amount) = fit_step(357, 87, SidebarPosition::Right, &size).unwrap();
+        let (dir, amount) = fit_step(357, 87, SidebarPosition::Right, &size, 0).unwrap();
         assert_eq!(dir, "left");
         assert!((amount - 74.0 / 357.0).abs() < 1e-9);
         // Already there: nothing.
-        assert!(fit_step(357, 161, SidebarPosition::Right, &size).is_none());
-        assert!(fit_step(0, 10, SidebarPosition::Right, &size).is_none());
+        assert!(fit_step(357, 161, SidebarPosition::Right, &size, 0).is_none());
+        assert!(fit_step(0, 10, SidebarPosition::Right, &size, 0).is_none());
     }
 
     #[test]
     fn fit_skips_when_the_tab_extent_did_not_change() {
         let _env = TestEnv::new();
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
         state::save(&StateFile {
             phase: Phase::Open,
             workspace: "wT".into(),
@@ -1297,7 +1346,7 @@ mod tests {
     #[test]
     fn fit_closes_the_sidebar_below_close_below_when_nothing_can_be_reclaimed() {
         let _env = TestEnv::new();
-        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72 };
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 0 };
         let save = || {
             state::save(&StateFile {
                 phase: Phase::Open,
@@ -1318,7 +1367,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0 }).unwrap();
         assert!(h.ops.iter().any(|op| op == "close wT:p99"), "{:?}", h.ops);
         assert!(state::load("wT:t1").unwrap().is_none());
         // 130 cells (above close_below): degraded rule, no close.
@@ -1327,7 +1376,7 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 58, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112, extra: 0 }).unwrap();
         assert!(h.ops.iter().all(|op| op != "close wT:p99"), "{:?}", h.ops);
         // A reclaim command that reports success defers everything to the next resize.
         save();
@@ -1336,8 +1385,23 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: ok_cmd, close_below: 112 }).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: ok_cmd, close_below: 112, extra: 0 }).unwrap();
         assert!(h.ops.iter().all(|op| !op.starts_with("close") && !op.starts_with("resize")), "{:?}", h.ops);
         assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_total, Some(100));
+    }
+
+    #[test]
+    fn extra_arg_is_parsed_from_fit_args() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
+        assert_eq!(extra_arg(args(&["herdr-nvim", "fit", "--extra", "34"])), 34);
+        assert_eq!(extra_arg(args(&["herdr-nvim", "fit"])), 0);
+        assert_eq!(extra_arg(args(&["herdr-nvim", "fit", "--extra", "x"])), 0);
+    }
+
+    #[test]
+    fn editor_cells_follow_the_share() {
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34 };
+        assert_eq!(size.editor_cells(208, 34), 107 - 34);
+        assert_eq!(size.editor_cells(120, 34), 77 - 34);
     }
 }

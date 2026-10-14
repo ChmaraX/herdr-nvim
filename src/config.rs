@@ -78,6 +78,12 @@ pub struct Sidebar {
     /// (default) disables.
     #[serde(default)]
     pub close_below_cols: u32,
+    /// Cells the sidebar's nvim shows beside its editor (a file tree). Used
+    /// below the minima, where the agent's pane and the editor shrink 50/50
+    /// with the tree on top; and by `open` to guess what `fit --extra` will
+    /// report. `0` (default) = no tree.
+    #[serde(default)]
+    pub tree_cols: u32,
 }
 
 impl Default for Sidebar {
@@ -92,6 +98,7 @@ impl Default for Sidebar {
             grow_window: Vec::new(),
             reclaim_window: Vec::new(),
             close_below_cols: 0,
+            tree_cols: 0,
         }
     }
 }
@@ -353,6 +360,7 @@ mod tests {
             grow_window: Vec::new(),
             reclaim_window: Vec::new(),
             close_below_cols: 0,
+            tree_cols: 0,
         };
         assert_eq!(
             side.env_override(),
