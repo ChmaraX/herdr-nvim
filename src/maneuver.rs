@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::{
     config::SidebarPosition,
     daemon,
-    herdr::{CliHerdr, Dir, Herdr},
+    herdr::{CliHerdr, Dir, Herdr, PaneRect},
     layout::plan_rebuild,
     state::{self, Phase, StateFile},
 };
