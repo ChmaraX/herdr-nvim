@@ -309,7 +309,7 @@ fn wait_for_layout_ready() {
 /// the prefix; a no-op elsewhere.
 fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
-    match text.strip_prefix(r"\?\") {
+    match text.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
         _ => path.to_path_buf(),
     }
