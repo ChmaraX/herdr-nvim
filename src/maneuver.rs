@@ -179,16 +179,22 @@ impl ClampRules {
         } else {
             (self.anchor_min, self.editor_min)
         };
+        // `want` = 0: the rule's default (standard, or collapsed below
+        // `collapse_below`). Explicit: the user's size, narrow or wide — also
+        // below `collapse_below`, where a tree opened by hand to pick a file
+        // must stay open until the user puts it back; capped by the minima.
+        let room = total.saturating_sub(anchor_min + editor_min);
         let tree = if extra == 0 {
             0
+        } else if want > 0 && collapsed {
+            // Temporary by nature (picking a file): only the tab itself caps it.
+            want.min(total.saturating_sub(2)).max(1)
+        } else if want > 0 {
+            want.min(room.max(1)).max(1)
         } else if collapsed {
             self.tree_collapsed
         } else {
-            // The user's size (narrow or wide), capped so both panes keep
-            // their minima.
-            let room = total.saturating_sub(anchor_min + editor_min);
-            let want = if want == 0 { self.tree_std } else { want };
-            want.min(room.max(1)).max(1)
+            self.tree_std.min(room.max(1)).max(1)
         };
         let lo = editor_min + tree;
         let hi = total.saturating_sub(anchor_min);
@@ -780,8 +786,11 @@ fn fit_clamp(
     }
     let required = rules.tab_min;
     // reclaim_window costs a process: only when the tab extent changed (a window
-    // resize or the multiplexer's own sidebar toggling), not on every split drag.
-    if state_file.fitted_total != Some(total) && run_reclaim(&policy.reclaim, required, total) == Some(true) {
+    // resize or the multiplexer's own sidebar toggling), not on every split drag,
+    // and only where it can act: below `tab_min` (fold) or 30 cells above it
+    // (an unfold needs the window to carry the bar on top of `tab_min`).
+    let reclaim_may_act = total < required || total >= required + 30;
+    if state_file.fitted_total != Some(total) && reclaim_may_act && run_reclaim(&policy.reclaim, required, total) == Some(true) {
         eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
         state::write_status(
             &format!("fit · {total} col (besoin {required}) · barre repliée/dépliée · {} ms", started.elapsed().as_millis()),
@@ -803,6 +812,8 @@ fn fit_clamp(
         return Ok(());
     };
     let plan = rules.plan(total, current, policy.extra, policy.want);
+    // The sidebar's nvim resets an explicit tree size when the regime changes.
+    eprintln!("herdr-nvim: fit: regime {}", if rules.collapsed(total) { "collapsed" } else { "normal" });
     let mut what = String::from("libre");
     if let Some(target) = plan.sidebar {
         let grow = target > current;
@@ -1721,25 +1732,29 @@ mod tests {
         assert_eq!(r.plan(160, 40, 0, 30), ClampPlan { tree: 0, sidebar: Some(55) });
         // The user collapsed the tree to 1 by hand on a wide tab: respected.
         assert_eq!(r.plan(160, 95, 1, 1), ClampPlan { tree: 1, sidebar: None });
-        // ...and a tree at 1 with a standard wish (a rule collapse that no longer applies): back to 30.
-        assert_eq!(r.plan(160, 95, 1, 30), ClampPlan { tree: 30, sidebar: None });
+        // ...and a tree at 1 with no explicit wish (a rule collapse that no longer applies): back to 30.
+        assert_eq!(r.plan(160, 95, 1, 0), ClampPlan { tree: 30, sidebar: None });
     }
 
     #[test]
     fn clamp_collapses_the_tree_below_140_and_keeps_the_floor() {
         let r = atelier_rules();
         // 140: the minimal balance 55/55/30 is free.
-        assert_eq!(r.plan(140, 85, 30, 30), ClampPlan { tree: 30, sidebar: None });
+        assert_eq!(r.plan(140, 85, 30, 0), ClampPlan { tree: 30, sidebar: None });
         // 139: the tree collapses to 1, floor 40 for both — a 70/69 split is free.
-        assert_eq!(r.plan(139, 69, 30, 30), ClampPlan { tree: 1, sidebar: None });
+        assert_eq!(r.plan(139, 69, 30, 0), ClampPlan { tree: 1, sidebar: None });
         // 100: Claude 40 / editor 59 / tree 1 is the user's example, free.
-        assert_eq!(r.plan(100, 60, 1, 30), ClampPlan { tree: 1, sidebar: None });
+        assert_eq!(r.plan(100, 60, 1, 0), ClampPlan { tree: 1, sidebar: None });
         // 100 with Claude at 30: pushed back to 40.
-        assert_eq!(r.plan(100, 70, 1, 30), ClampPlan { tree: 1, sidebar: Some(60) });
+        assert_eq!(r.plan(100, 70, 1, 0), ClampPlan { tree: 1, sidebar: Some(60) });
         // 70: nothing fits, half/half around the collapsed tree.
-        assert_eq!(r.plan(70, 50, 1, 30), ClampPlan { tree: 1, sidebar: Some(35) });
+        assert_eq!(r.plan(70, 50, 1, 0), ClampPlan { tree: 1, sidebar: Some(35) });
         // Back above 140 with a collapsed tree: it reopens to 30 and the editor keeps 55.
-        assert_eq!(r.plan(160, 60, 1, 30), ClampPlan { tree: 30, sidebar: Some(85) });
+        assert_eq!(r.plan(160, 60, 1, 0), ClampPlan { tree: 30, sidebar: Some(85) });
+        // 100, the user opens the tree to 30 by hand to pick a file: respected (the
+        // floor cannot hold for both: half/half around the tree), until put back to 1.
+        assert_eq!(r.plan(100, 60, 30, 30), ClampPlan { tree: 30, sidebar: Some(65) });
+        assert_eq!(r.plan(100, 65, 30, 1), ClampPlan { tree: 1, sidebar: Some(60) });
     }
 
     #[test]

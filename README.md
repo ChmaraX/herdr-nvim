@@ -152,9 +152,12 @@ floor_cols = 40           # minimum for both panes once collapsed; below that, h
 ```
 
 `open` splits the anchor and the editor evenly (the tree on top). A tree
-closed by hand (`extra 0`) stays closed, and `fit --want <cells>` carries the
-size the user asked for, respected even below `tree_cols` (a tree squeezed to
-1 by hand stays at 1; one collapsed by the rule reopens when the tab allows).
+closed by hand (`extra 0`) stays closed. `fit --want <cells>` carries an
+explicit size the user asked for (`0` = the rule's default): respected even
+below `tree_cols`, and even below `collapse_below_cols` (a tree opened by hand
+to pick a file stays open until put back). `fit` prints `regime collapsed` or
+`regime normal` so the nvim side can drop the explicit size when the regime
+changes.
 
 ### Measure-only mode
 
