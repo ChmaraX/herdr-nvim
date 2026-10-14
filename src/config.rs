@@ -18,7 +18,7 @@ fn is_valid_env_key(key: &str) -> bool {
     !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-#[derive(Deserialize, Default, PartialEq, Eq, Debug)]
+#[derive(Deserialize, Default, PartialEq, Debug)]
 pub struct Config {
     #[serde(default)]
     pub sidebar: Sidebar,
@@ -26,7 +26,7 @@ pub struct Config {
     pub picker: Picker,
 }
 
-#[derive(Deserialize, Clone, PartialEq, Eq, Debug)]
+#[derive(Deserialize, Clone, PartialEq, Debug)]
 pub struct Sidebar {
     #[serde(default = "default_nvim_bin")]
     pub nvim_bin: String,
@@ -39,6 +39,13 @@ pub struct Sidebar {
     pub nvim_env: Vec<String>,
     #[serde(default)]
     pub position: SidebarPosition,
+    /// Share of the tab the sidebar takes along its split axis (width for
+    /// left/right, height for top/bottom), as a fraction. herdr opens the
+    /// split at 50 %; any other value is applied with one `pane resize`
+    /// right after the layout is built. Clamped to `0.15..=0.85` by
+    /// [`Sidebar::width`]; `0.5` (the default) means no resize at all.
+    #[serde(default = "default_width")]
+    pub width: f64,
 }
 
 impl Default for Sidebar {
@@ -47,11 +54,27 @@ impl Default for Sidebar {
             nvim_bin: default_nvim_bin(),
             nvim_env: Vec::new(),
             position: SidebarPosition::default(),
+            width: default_width(),
         }
     }
 }
 
+fn default_width() -> f64 {
+    0.5
+}
+
 impl Sidebar {
+    /// The configured sidebar share, clamped to a usable range (a NaN or an
+    /// out-of-range value falls back to the 50 % default rather than
+    /// producing an unusable or invisible pane).
+    pub fn width(&self) -> f64 {
+        if self.width.is_finite() && (0.15..=0.85).contains(&self.width) {
+            self.width
+        } else {
+            default_width()
+        }
+    }
+
     /// The configured environment overrides as parsed `(key, value)` pairs,
     /// applied to every `nvim_cmd` caller. Each is an env var on the child
     /// (an unordered set; duplicate keys resolve to the last value written).
@@ -248,6 +271,7 @@ mod tests {
             vec![("NVIM_APPNAME", "myapp"), ("WEIRD", "1")]
         );
         assert_eq!(config.sidebar.position, SidebarPosition::Bottom);
+        assert_eq!(config.sidebar.width(), 0.5, "width defaults to the 50 % split");
         assert_eq!(config.picker.scan_lines, 500);
         assert_eq!(config.picker.max_files, 50);
     }
@@ -286,6 +310,7 @@ mod tests {
                 "EMPTY=".to_owned(),
             ],
             position: SidebarPosition::Right,
+            width: 0.5,
         };
         assert_eq!(
             side.env_override(),
@@ -330,5 +355,14 @@ mod tests {
 
         let config = load();
         assert!(!config.picker.frecency);
+    }
+
+    #[test]
+    fn sidebar_width_is_parsed_and_clamped() {
+        let parse = |toml: &str| toml::from_str::<Config>(toml).unwrap().sidebar.width();
+        assert_eq!(parse("[sidebar]\nwidth = 0.4\n"), 0.4);
+        assert_eq!(parse("[sidebar]\nwidth = 0.05\n"), 0.5, "too small: back to default");
+        assert_eq!(parse("[sidebar]\nwidth = 1.5\n"), 0.5, "too large: back to default");
+        assert_eq!(parse("[sidebar]\nposition = \"left\"\n"), 0.5, "absent: default");
     }
 }

@@ -97,7 +97,7 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
     }
 
     recover(h, &ctx.tab)?;
-    open(h, ctx, config.sidebar.position)
+    open(h, ctx, config.sidebar.position, config.sidebar.width())
 }
 
 /// The pane id of `tab`'s sidebar if state records it as fully Open and its
@@ -121,7 +121,7 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
+fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition, width: f64) -> Result<()> {
     // Best-effort: clear out ready markers abandoned by earlier opens (see
     // `sweep_stale_markers`) before this open adds its own.
     state::sweep_stale_markers();
@@ -226,6 +226,23 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     }
     if let Some((_, placeholder)) = parking {
         h.close_pane(&placeholder)?;
+    }
+    // `[sidebar] width`: the split opens at 50 %, so move the sidebar's inner
+    // edge by the difference, toward the anchor to grow and away from it to
+    // shrink. Best-effort like the resync below: a failed resize leaves a
+    // working 50 % sidebar, which must still be recorded as Open.
+    let delta = width - 0.5;
+    if delta.abs() > 1e-6 {
+        let grow = delta > 0.0;
+        let direction = match (position, grow) {
+            (SidebarPosition::Right, true) | (SidebarPosition::Left, false) => "left",
+            (SidebarPosition::Right, false) | (SidebarPosition::Left, true) => "right",
+            (SidebarPosition::Bottom, true) | (SidebarPosition::Top, false) => "up",
+            (SidebarPosition::Bottom, false) | (SidebarPosition::Top, true) => "down",
+        };
+        if let Err(error) = h.resize_pane(&sidebar, direction, delta.abs()) {
+            eprintln!("herdr-nvim: could not resize the sidebar to {width}: {error}");
+        }
     }
     // Every branch must end with an explicit winsize resync (see
     // `Herdr::sync_pane_sizes`): on a single-pane tab with a Right/Bottom
@@ -423,7 +440,7 @@ mod tests {
     fn open_on_multi_pane_tab_emits_validated_sequence() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
             assert_eq!(
                 normalize_marker(&h.ops),
                 vec![
@@ -451,7 +468,7 @@ mod tests {
     fn open_writes_ready_marker_only_after_placeholder_close() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
 
             // `close_pane` records this synthetic op itself (see MockHerdr) by
             // checking on-disk marker existence at the moment it's called.
@@ -486,7 +503,7 @@ mod tests {
     fn open_on_single_pane_tab_skips_evacuation() {
         with_state_dir(|| {
             let mut h = mock_1pane();
-            open(&mut h, &ctx(), SidebarPosition::Right).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
             assert!(h.ops.iter().all(|op| !op.starts_with("create_tab")));
             assert!(h
                 .ops
@@ -521,7 +538,7 @@ mod tests {
                         h.create_tab_results
                             .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                     }
-                    open(&mut h, &ctx(), position).unwrap();
+                    open(&mut h, &ctx(), position, 0.5).unwrap();
 
                     // The resync happens, on the sidebar pane, exactly once.
                     let sync = h
@@ -593,7 +610,7 @@ mod tests {
                     h.create_tab_results
                         .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                 }
-                open(&mut h, &ctx(), position).unwrap();
+                open(&mut h, &ctx(), position, 0.5).unwrap();
                 assert!(
                     h.ops
                         .iter()
@@ -849,5 +866,39 @@ mod tests {
         let ctx = read_ctx(&mut h).unwrap();
         assert_eq!(ctx.cwd, PathBuf::from("/repo/from-cli"));
         assert_eq!(h.ops, vec!["pane_cwd wA:p1"]);
+    }
+
+    #[test]
+    fn sidebar_width_resizes_once_after_layout() {
+        let _env = TestEnv::new();
+        for (position, width, expected) in [
+            (SidebarPosition::Right, 0.4, Some(("right", 0.1))),
+            (SidebarPosition::Right, 0.7, Some(("left", 0.2))),
+            (SidebarPosition::Left, 0.4, Some(("left", 0.1))),
+            (SidebarPosition::Bottom, 0.3, Some(("down", 0.2))),
+            (SidebarPosition::Right, 0.5, None),
+        ] {
+            let mut h = if matches!(position, SidebarPosition::Left | SidebarPosition::Top) {
+                let mut h = mock_1pane();
+                h.create_tab_results = VecDeque::from([Ok(("wT:t9".into(), "wT:p90".into()))]);
+                h
+            } else {
+                mock_1pane()
+            };
+            let _ = state::remove("wT:t1");
+            open(&mut h, &ctx(), position, width).unwrap();
+            let resize = h.ops.iter().find(|op| op.starts_with("resize wT:p99 "));
+            match expected {
+                Some((want_dir, want_amount)) => {
+                    let op = resize.unwrap_or_else(|| panic!("{position:?} {width}: no resize op in {:?}", h.ops));
+                    let rest = op.trim_start_matches("resize wT:p99 ");
+                    let (dir, amount) = rest.split_once(' ').unwrap();
+                    assert_eq!(dir, want_dir, "{position:?} {width}");
+                    let got: f64 = amount.parse().unwrap();
+                    assert!((got - want_amount).abs() < 1e-9, "{position:?} {width}: {op}");
+                }
+                None => assert!(resize.is_none(), "0.5 must not resize: {:?}", h.ops),
+            }
+        }
     }
 }

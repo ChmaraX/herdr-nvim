@@ -215,6 +215,11 @@ pub trait Herdr {
     /// moving the layout: `herdr plugin pane open --placement split` inserts
     /// the new pane but does not resync pty winsizes for it or its sibling.
     fn sync_pane_sizes(&mut self, pane: &str) -> Result<()>;
+    /// `herdr pane resize --direction <direction> --amount <amount>`: moves
+    /// the pane's edge facing `direction` by `amount` (a fraction of the tab
+    /// area) in that direction. Used once, right after the layout is built,
+    /// to apply a non-default `[sidebar] width`.
+    fn resize_pane(&mut self, pane: &str, direction: &str, amount: f64) -> Result<()>;
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
@@ -439,6 +444,20 @@ impl Herdr for CliHerdr {
 
     fn close_pane(&mut self, pane: &str) -> Result<()> {
         Self::run(&args(&["pane", "close", pane]))?;
+        Ok(())
+    }
+
+    fn resize_pane(&mut self, pane: &str, direction: &str, amount: f64) -> Result<()> {
+        Self::run(&args(&[
+            "pane",
+            "resize",
+            "--direction",
+            direction,
+            "--amount",
+            &amount.to_string(),
+            "--pane",
+            pane,
+        ]))?;
         Ok(())
     }
 
@@ -675,6 +694,11 @@ impl Herdr for MockHerdr {
 
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()> {
         self.ops.push(format!("run {pane} {cmd}"));
+        Ok(())
+    }
+
+    fn resize_pane(&mut self, pane: &str, direction: &str, amount: f64) -> Result<()> {
+        self.ops.push(format!("resize {pane} {direction} {amount}"));
         Ok(())
     }
 

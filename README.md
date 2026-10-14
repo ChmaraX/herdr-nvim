@@ -203,6 +203,9 @@ nvim_env = []         # env overrides for that nvim, applied to the daemon,
                       # sidebar under the config in ~/.config/myapp instead
                       # of vanilla nvim (replace myapp with your app name).
 position = "right"    # right (default), left, top, or bottom
+width = 0.5           # share of the tab the sidebar takes (0.15..0.85);
+                      # herdr opens the split at 50 %, other values are
+                      # applied with one resize right after it opens
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape
