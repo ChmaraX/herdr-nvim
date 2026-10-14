@@ -490,15 +490,16 @@ pub(crate) fn fit(
         return Ok(());
     }
     let required = size.required();
+    // Let reclaim_window see every size change (cells needed, cells now): it
+    // reclaims space inside the window when the tab is too small, and may give
+    // it back when there is plenty. If it changed something, the next resize
+    // event brings us back here with the new tab size; nothing more to do now.
+    if run_reclaim(&policy.reclaim, required, total) == Some(true) {
+        eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
+        state_file.fitted_total = Some(total);
+        return state::save(&state_file);
+    }
     if required > 0 && total < required {
-        // Too small for both minima: first try to reclaim space inside the
-        // window. If that changed something, the next resize event brings
-        // us back here with a bigger tab; nothing more to do now.
-        if run_reclaim(&policy.reclaim, required, total) == Some(true) {
-            eprintln!("herdr-nvim: fit: tab {total} < {required} cells, reclaim_window changed something; waiting for the next resize");
-            state_file.fitted_total = Some(total);
-            return state::save(&state_file);
-        }
         if policy.close_below > 0 && total < policy.close_below {
             eprintln!(
                 "herdr-nvim: fit: tab {total} cells < close_below {}: closing the sidebar",
