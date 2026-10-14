@@ -443,6 +443,7 @@ fn open(
     state_file.parked.clear();
     state_file.sidebar_pane = Some(sidebar);
     state_file.fitted_total = Some(total);
+    state_file.fitted_extra = Some(extra);
     state::save(&state_file)
 }
 
@@ -530,7 +531,7 @@ pub(crate) fn fit(
     };
     let rects = h.pane_rects(tab)?;
     let total = tab_extent(&rects, position);
-    if total == 0 || state_file.fitted_total == Some(total) {
+    if total == 0 || (state_file.fitted_total == Some(total) && state_file.fitted_extra == Some(policy.extra)) {
         return Ok(());
     }
     let required = size.required();
@@ -541,6 +542,7 @@ pub(crate) fn fit(
     if run_reclaim(&policy.reclaim, required, total) == Some(true) {
         eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
         state_file.fitted_total = Some(total);
+        state_file.fitted_extra = Some(policy.extra);
         return state::save(&state_file);
     }
     if required > 0 && total < required {
@@ -568,6 +570,7 @@ pub(crate) fn fit(
         h.resize_pane(&sidebar, direction, amount)?;
     }
     state_file.fitted_total = Some(total);
+    state_file.fitted_extra = Some(policy.extra);
     state::save(&state_file)
 }
 
@@ -1327,7 +1330,7 @@ mod tests {
             plan_steps: vec![],
             sidebar_pane: Some("wT:p99".into()),
             fitted_total: Some(157),
-            fitted_extra: None,
+            fitted_extra: Some(0),
         })
         .unwrap();
         // Same extent (157), sidebar moved by hand to 120: left alone.
@@ -1408,5 +1411,32 @@ mod tests {
         let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34 };
         assert_eq!(size.editor_cells(208, 34), 107 - 34);
         assert_eq!(size.editor_cells(120, 34), 77 - 34);
+    }
+
+    #[test]
+    fn fit_reapplies_when_only_extra_changed() {
+        let _env = TestEnv::new();
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34 };
+        state::save(&StateFile {
+            phase: Phase::Open,
+            workspace: "wT".into(),
+            tab: "wT:t1".into(),
+            anchor: "wT:p1".into(),
+            parking_tab: None,
+            parked: vec![],
+            plan_steps: vec![],
+            sidebar_pane: Some("wT:p99".into()),
+            fitted_total: Some(163),
+            fitted_extra: Some(34),
+        })
+        .unwrap();
+        // Same extent, the tree just got hidden (extra 0): 50/50 re-applied (99 -> 82).
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 64, 43), rect("wT:p99", 64, 0, 99, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 0, extra: 0 }).unwrap();
+        assert!(h.ops.iter().any(|op| op.starts_with("resize wT:p99 right")), "{:?}", h.ops);
+        assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_extra, Some(0));
     }
 }
