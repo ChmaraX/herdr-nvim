@@ -206,6 +206,10 @@ position = "right"    # right (default), left, top, or bottom
 width = 0.5           # share of the tab the sidebar takes (0.15..0.85);
                       # herdr opens the split at 50 %, other values are
                       # applied with one resize right after it opens
+min_cols = 0          # never fewer cells than this for the sidebar (0 = off)
+anchor_min_cols = 0   # never fewer cells than this for the agent's pane
+                      # (0 = off). When both minima cannot fit, the agent's
+                      # pane keeps its minimum and the sidebar takes the rest.
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape

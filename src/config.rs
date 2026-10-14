@@ -46,6 +46,15 @@ pub struct Sidebar {
     /// [`Sidebar::width`]; `0.5` (the default) means no resize at all.
     #[serde(default = "default_width")]
     pub width: f64,
+    /// Minimum sidebar size in cells along the split axis. When `width` of
+    /// the tab gives fewer cells than this, the sidebar grows to `min_cols`
+    /// as long as the anchor keeps `anchor_min_cols`. `0` (default) disables.
+    #[serde(default)]
+    pub min_cols: u32,
+    /// Minimum size kept by the pane the sidebar splits off (the agent's
+    /// pane), in cells. `0` (default) disables.
+    #[serde(default)]
+    pub anchor_min_cols: u32,
 }
 
 impl Default for Sidebar {
@@ -55,6 +64,8 @@ impl Default for Sidebar {
             nvim_env: Vec::new(),
             position: SidebarPosition::default(),
             width: default_width(),
+            min_cols: 0,
+            anchor_min_cols: 0,
         }
     }
 }
@@ -311,6 +322,8 @@ mod tests {
             ],
             position: SidebarPosition::Right,
             width: 0.5,
+            min_cols: 0,
+            anchor_min_cols: 0,
         };
         assert_eq!(
             side.env_override(),

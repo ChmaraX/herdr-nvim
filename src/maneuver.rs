@@ -97,7 +97,58 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
     }
 
     recover(h, &ctx.tab)?;
-    open(h, ctx, config.sidebar.position, config.sidebar.width())
+    open(h, ctx, config.sidebar.position, &SidebarSize::from_config(&config.sidebar))
+}
+
+/// The three sizing knobs of `[sidebar]`, resolved against the tab's actual
+/// size at open time by [`SidebarSize::share`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SidebarSize {
+    pub width: f64,
+    pub min_cols: u32,
+    pub anchor_min_cols: u32,
+}
+
+impl SidebarSize {
+    pub(crate) fn from_config(sidebar: &crate::config::Sidebar) -> Self {
+        Self {
+            width: sidebar.width(),
+            min_cols: sidebar.min_cols,
+            anchor_min_cols: sidebar.anchor_min_cols,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn plain(width: f64) -> Self {
+        Self {
+            width,
+            min_cols: 0,
+            anchor_min_cols: 0,
+        }
+    }
+
+    /// Share of `total` cells the sidebar should take: `width` of the tab,
+    /// raised to `min_cols` when that is larger, but never leaving the anchor
+    /// fewer than `anchor_min_cols` cells; when both minima cannot fit, the
+    /// anchor keeps its minimum and the sidebar gets what remains (at least
+    /// 20 cells, or half the tab if even that is impossible). Pure.
+    pub(crate) fn share(&self, total: u32) -> f64 {
+        if total == 0 {
+            return self.width;
+        }
+        let total_f = f64::from(total);
+        let mut cells = (total_f * self.width).round();
+        if self.min_cols > 0 {
+            cells = cells.max(f64::from(self.min_cols));
+        }
+        if self.anchor_min_cols > 0 {
+            cells = cells.min(total_f - f64::from(self.anchor_min_cols));
+        }
+        if cells < 20.0 {
+            cells = if total_f >= 40.0 { 20.0 } else { (total_f / 2.0).floor() };
+        }
+        (cells / total_f).clamp(0.05, 0.95)
+    }
 }
 
 /// The pane id of `tab`'s sidebar if state records it as fully Open and its
@@ -121,12 +172,22 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition, width: f64) -> Result<()> {
+fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition, size: &SidebarSize) -> Result<()> {
     // Best-effort: clear out ready markers abandoned by earlier opens (see
     // `sweep_stale_markers`) before this open adds its own.
     state::sweep_stale_markers();
 
     let rects = h.pane_rects(&ctx.tab)?;
+    // Tab extent along the split axis, for the min_cols/anchor_min_cols rule.
+    let total = rects
+        .iter()
+        .map(|r| match position {
+            SidebarPosition::Left | SidebarPosition::Right => r.x + r.w,
+            SidebarPosition::Top | SidebarPosition::Bottom => r.y + r.h,
+        })
+        .max()
+        .unwrap_or(0);
+    let width = size.share(total);
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
         phase: Phase::Open,
@@ -440,7 +501,7 @@ mod tests {
     fn open_on_multi_pane_tab_emits_validated_sequence() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
             assert_eq!(
                 normalize_marker(&h.ops),
                 vec![
@@ -468,7 +529,7 @@ mod tests {
     fn open_writes_ready_marker_only_after_placeholder_close() {
         with_state_dir(|| {
             let mut h = mock_3pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
 
             // `close_pane` records this synthetic op itself (see MockHerdr) by
             // checking on-disk marker existence at the moment it's called.
@@ -503,7 +564,7 @@ mod tests {
     fn open_on_single_pane_tab_skips_evacuation() {
         with_state_dir(|| {
             let mut h = mock_1pane();
-            open(&mut h, &ctx(), SidebarPosition::Right, 0.5).unwrap();
+            open(&mut h, &ctx(), SidebarPosition::Right, &SidebarSize::plain(0.5)).unwrap();
             assert!(h.ops.iter().all(|op| !op.starts_with("create_tab")));
             assert!(h
                 .ops
@@ -538,7 +599,7 @@ mod tests {
                         h.create_tab_results
                             .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                     }
-                    open(&mut h, &ctx(), position, 0.5).unwrap();
+                    open(&mut h, &ctx(), position, &SidebarSize::plain(0.5)).unwrap();
 
                     // The resync happens, on the sidebar pane, exactly once.
                     let sync = h
@@ -610,7 +671,7 @@ mod tests {
                     h.create_tab_results
                         .push_back(Ok(("wT:t9".into(), "wT:p90".into())));
                 }
-                open(&mut h, &ctx(), position, 0.5).unwrap();
+                open(&mut h, &ctx(), position, &SidebarSize::plain(0.5)).unwrap();
                 assert!(
                     h.ops
                         .iter()
@@ -886,7 +947,7 @@ mod tests {
                 mock_1pane()
             };
             let _ = state::remove("wT:t1");
-            open(&mut h, &ctx(), position, width).unwrap();
+            open(&mut h, &ctx(), position, &SidebarSize::plain(width)).unwrap();
             let resize = h.ops.iter().find(|op| op.starts_with("resize wT:p99 "));
             match expected {
                 Some((want_dir, want_amount)) => {
@@ -900,5 +961,21 @@ mod tests {
                 None => assert!(resize.is_none(), "0.5 must not resize: {:?}", h.ops),
             }
         }
+    }
+
+    #[test]
+    fn sidebar_share_applies_minima_against_the_tab_size() {
+        // 45 % of 165 cells = 74, raised to min_cols 95, anchor keeps 70.
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
+        assert!((size.share(165) - 95.0 / 165.0).abs() < 1e-9);
+        // Narrow tab: both minima cannot fit, the anchor keeps 70, sidebar gets the rest (50).
+        assert!((size.share(120) - 50.0 / 120.0).abs() < 1e-9);
+        // Very narrow: the sidebar floor of 20 cells wins over the anchor minimum.
+        assert!((size.share(80) - 20.0 / 80.0).abs() < 1e-9);
+        // Wide tab: plain width applies (45 % of 400 = 180 > 95).
+        assert!((size.share(400) - 180.0 / 400.0).abs() < 1e-9);
+        // No minima: plain width, whatever the size.
+        assert_eq!(SidebarSize::plain(0.4).share(165), (66.0_f64 / 165.0).clamp(0.05, 0.95));
+        assert_eq!(SidebarSize::plain(0.4).share(0), 0.4);
     }
 }
