@@ -30,6 +30,11 @@ pub struct StateFile {
     /// moved (the user resizing the sidebar by hand).
     #[serde(default)]
     pub fitted_total: Option<u32>,
+    /// `extra` the share was last applied with (see `fit --extra`): a change
+    /// of what the sidebar shows beside its editor re-applies the share even
+    /// at the same tab extent.
+    #[serde(default)]
+    pub fitted_extra: Option<u32>,
 }
 
 /// Sanitize a key (workspace or tab id) for use as a filename. Tab ids
@@ -252,6 +257,7 @@ mod tests {
                 }],
                 sidebar_pane: Some("wT:p9".into()),
                 fitted_total: None,
+                fitted_extra: None,
             };
             save(&s).unwrap();
             let loaded = load("wT:t1").unwrap().unwrap();

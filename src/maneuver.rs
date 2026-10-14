@@ -315,6 +315,7 @@ fn open(
         plan_steps: plan.steps.clone(),
         sidebar_pane: None,
         fitted_total: None,
+        fitted_extra: None,
     };
 
     let mut parking = if rects.len() > 1 {
@@ -735,6 +736,7 @@ mod tests {
             plan_steps: vec![],
             sidebar_pane: Some("wT:p99".into()),
             fitted_total: None,
+            fitted_extra: None,
         }
     }
 
@@ -762,6 +764,7 @@ mod tests {
             ],
             sidebar_pane: None,
             fitted_total: None,
+            fitted_extra: None,
         }
     }
 
@@ -1324,6 +1327,7 @@ mod tests {
             plan_steps: vec![],
             sidebar_pane: Some("wT:p99".into()),
             fitted_total: Some(157),
+            fitted_extra: None,
         })
         .unwrap();
         // Same extent (157), sidebar moved by hand to 120: left alone.
@@ -1358,6 +1362,7 @@ mod tests {
                 plan_steps: vec![],
                 sidebar_pane: Some("wT:p99".into()),
                 fitted_total: Some(200),
+                fitted_extra: None,
             })
             .unwrap()
         };
