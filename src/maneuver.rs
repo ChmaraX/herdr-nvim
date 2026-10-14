@@ -304,6 +304,10 @@ fn open(
         "herdr-nvim: sidebar share {:.3} of {total} cells (width {}, min {}, anchor min {}, extra {extra})",
         width, size.width, size.min_cols, size.anchor_min_cols
     );
+    state::write_status(&format!(
+        "open · {total} col · nvim {:.0} · extra {extra}",
+        width * f64::from(total)
+    ));
     let plan = plan_rebuild(&rects)?;
     let mut state_file = StateFile {
         phase: Phase::Open,
@@ -520,6 +524,22 @@ pub(crate) fn fit(
     size: &SidebarSize,
     policy: &FitPolicy,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
+    let outcome = fit_inner(h, tab, position, size, policy, started);
+    if let Err(error) = &outcome {
+        state::write_status(&format!("fit ✗ {error} ({} ms)", started.elapsed().as_millis()));
+    }
+    outcome
+}
+
+fn fit_inner(
+    h: &mut dyn Herdr,
+    tab: &str,
+    position: SidebarPosition,
+    size: &SidebarSize,
+    policy: &FitPolicy,
+    started: std::time::Instant,
+) -> Result<()> {
     let Some(mut state_file) = state::load(tab)? else {
         return Ok(());
     };
@@ -532,6 +552,11 @@ pub(crate) fn fit(
     let rects = h.pane_rects(tab)?;
     let total = tab_extent(&rects, position);
     if total == 0 || (state_file.fitted_total == Some(total) && state_file.fitted_extra == Some(policy.extra)) {
+        state::write_status(&format!(
+            "fit · {total} col · extra {} · inchangé · {} ms",
+            policy.extra,
+            started.elapsed().as_millis()
+        ));
         return Ok(());
     }
     let required = size.required();
@@ -541,6 +566,10 @@ pub(crate) fn fit(
     // event brings us back here with the new tab size; nothing more to do now.
     if run_reclaim(&policy.reclaim, required, total) == Some(true) {
         eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
+        state::write_status(&format!(
+            "fit · {total} col (besoin {required}) · barre repliée/dépliée · {} ms",
+            started.elapsed().as_millis()
+        ));
         state_file.fitted_total = Some(total);
         state_file.fitted_extra = Some(policy.extra);
         return state::save(&state_file);
@@ -561,14 +590,23 @@ pub(crate) fn fit(
     }) else {
         return Ok(());
     };
+    let target = (size.share(total, policy.extra) * f64::from(total)).round() as u32;
+    let mut what = "déjà en place".to_string();
     if let Some((direction, amount)) = fit_step(total, current, position, size, policy.extra) {
         eprintln!(
-            "herdr-nvim: fit: tab now {total} cells (extra {}), sidebar {current} → {:.0}: resize {direction} {amount:.3}",
-            policy.extra,
-            size.share(total, policy.extra) * f64::from(total)
+            "herdr-nvim: fit: tab now {total} cells (extra {}), sidebar {current} → {target}: resize {direction} {amount:.3}",
+            policy.extra
         );
         h.resize_pane(&sidebar, direction, amount)?;
+        what = format!("resize {direction} {current}→{target}");
     }
+    state::write_status(&format!(
+        "fit · {total} col · nvim {target} (éditeur {}) / autre {} · extra {} · {what} · {} ms",
+        target.saturating_sub(policy.extra),
+        total.saturating_sub(target),
+        policy.extra,
+        started.elapsed().as_millis()
+    ));
     state_file.fitted_total = Some(total);
     state_file.fitted_extra = Some(policy.extra);
     state::save(&state_file)
