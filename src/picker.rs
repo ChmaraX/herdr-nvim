@@ -204,18 +204,37 @@ pub fn fmt_age(now: u64, then: u64) -> String {
 }
 
 /// The default (empty-query) view: only session candidates, in their given
-/// (recency) order, unscored. Pure, unit tested.
-pub fn default_view(cands: &[Candidate]) -> Vec<FilterMatch> {
-    cands
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.session)
-        .map(|(index, _)| FilterMatch {
-            index,
-            score: 0,
-            highlights: Vec::new(),
-        })
-        .collect()
+/// (recency) order, unscored -- except that files inside the agent's cwd
+/// (relative display path) come before files outside it (`~/...` or
+/// absolute), each group keeping its recency order. An agent's scratch
+/// files under `$TMPDIR` or `~/.cache` are touched just as often as the
+/// project's, but they are rarely what the user wants to open, and their
+/// long paths used to crowd the project's files out of the capped default
+/// view. Pure, unit tested.
+pub fn default_view(cands: &[Candidate], displays: &[String]) -> Vec<FilterMatch> {
+    let session = |inside: bool| {
+        cands
+            .iter()
+            .enumerate()
+            .filter(move |(index, c)| c.session && is_inside_cwd(&displays[*index]) == inside)
+            .map(|(index, _)| FilterMatch {
+                index,
+                score: 0,
+                highlights: Vec::new(),
+            })
+    };
+    session(true).chain(session(false)).collect()
+}
+
+/// Whether a display path (see [`display_path`]) is relative to the cwd:
+/// not `~`-shortened and not absolute (POSIX `/...`, Windows `C:\...` or
+/// `\\...`).
+fn is_inside_cwd(display: &str) -> bool {
+    let bytes = display.as_bytes();
+    !(display.starts_with('~')
+        || display.starts_with('/')
+        || display.starts_with('\\')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'))
 }
 
 /// Fuzzy-rank only the session (agent-touched) candidates for `query`.
@@ -411,7 +430,7 @@ fn run_overlay(
 
     loop {
         let matches = match (fff, query.is_empty()) {
-            (_, true) => default_view(cands),
+            (_, true) => default_view(cands, &displays),
             (Some(index), false) => compute_matches_fff(cands, &displays, &query, index),
             (None, false) => session_tier_matches(cands, &displays, &query),
         };
@@ -860,9 +879,39 @@ mod tests {
     #[test]
     fn empty_query_shows_only_session_candidates() {
         let cands = vec![cand("/r/a.rs"), repo_cand("/r/b.rs")];
-        let m = default_view(&cands);
+        let displays = displays_of(&cands, "/r");
+        let m = default_view(&cands, &displays);
         assert_eq!(m.len(), 1, "repo-only candidates hidden from default view");
         assert_eq!(m[0].index, 0);
+    }
+
+    #[test]
+    fn empty_query_puts_files_inside_cwd_before_files_outside_it() {
+        // Recency order: a scratch file, a project file, another scratch file,
+        // another project file. Project files first, each group in order.
+        let cands = vec![
+            cand("/tmp/scratch1.py"),
+            cand("/r/src/a.rs"),
+            cand("/home/u/.cache/x.json"),
+            cand("/r/src/b.rs"),
+        ];
+        let displays: Vec<String> = cands
+            .iter()
+            .map(|c| display_path(&c.path, "/r", Some("/home/u")))
+            .collect();
+        let m = default_view(&cands, &displays);
+        let order: Vec<usize> = m.iter().map(|m| m.index).collect();
+        assert_eq!(order, vec![1, 3, 0, 2]);
+    }
+
+    #[test]
+    fn is_inside_cwd_recognizes_relative_display_paths_only() {
+        assert!(is_inside_cwd("src/main.rs"));
+        assert!(is_inside_cwd(r"src\main.rs"));
+        assert!(!is_inside_cwd("~/x"));
+        assert!(!is_inside_cwd("/var/log/x"));
+        assert!(!is_inside_cwd(r"C:\Users\u\x"));
+        assert!(!is_inside_cwd(r"\\server\share\x"));
     }
 
     #[test]
