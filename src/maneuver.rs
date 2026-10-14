@@ -767,7 +767,9 @@ fn fit_clamp(
         return Ok(());
     }
     let required = rules.tab_min;
-    if run_reclaim(&policy.reclaim, required, total) == Some(true) {
+    // reclaim_window costs a process: only when the tab extent changed (a window
+    // resize or the multiplexer's own sidebar toggling), not on every split drag.
+    if state_file.fitted_total != Some(total) && run_reclaim(&policy.reclaim, required, total) == Some(true) {
         eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
         state::write_status(
             &format!("fit · {total} col (besoin {required}) · barre repliée/dépliée · {} ms", started.elapsed().as_millis()),
