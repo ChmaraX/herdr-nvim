@@ -117,6 +117,15 @@ fn path_for_key(key: &str) -> PathBuf {
     state_dir().join(format!("{key}.json"))
 }
 
+/// One-line, human-readable record of the last `open`/`fit` decision
+/// (`<state dir>/fit.status`), for status bars and debugging. Best-effort:
+/// never fails the caller.
+pub fn write_status(line: &str) {
+    let dir = state_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("fit.status"), format!("{line}\n"));
+}
+
 pub fn state_path(tab: &str) -> PathBuf {
     path_for_key(&tab_key(tab))
 }
