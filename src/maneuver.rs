@@ -551,6 +551,27 @@ fn fit_inner(
     };
     let rects = h.pane_rects(tab)?;
     let total = tab_extent(&rects, position);
+    if state::measure_only() {
+        // fit.off: report, never act (the user is sizing panes by hand).
+        let current = rects
+            .iter()
+            .find(|r| r.pane_id == sidebar)
+            .map(|r| match position {
+                SidebarPosition::Left | SidebarPosition::Right => r.w,
+                SidebarPosition::Top | SidebarPosition::Bottom => r.h,
+            })
+            .unwrap_or(0);
+        let line = format!(
+            "📏 Claude {} · éditeur {} · explo {} · onglet {total}",
+            total.saturating_sub(current),
+            current.saturating_sub(policy.extra),
+            policy.extra
+        );
+        eprintln!("herdr-nvim: fit: measure only (fit.off): {line}");
+        state::write_status(&format!("mesure (fit.off) · {line} · aucun recalage"), None);
+        state::write_ms(&line);
+        return Ok(());
+    }
     if total == 0 || (state_file.fitted_total == Some(total) && state_file.fitted_extra == Some(policy.extra)) {
         state::write_status(
             &format!("fit · {total} col · extra {} · inchangé · {} ms", policy.extra, started.elapsed().as_millis()),

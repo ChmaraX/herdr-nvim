@@ -131,6 +131,22 @@ tab_bar_right = [
 ]
 ```
 
+### Measure-only mode
+
+Create `<state dir>/fit.off` and `fit` stops acting: no resize, no
+`reclaim_window`, no close. It only writes the current widths to `fit.status`
+and `fit.ms` (`📏 Claude 82 · éditeur 73 · explo 34 · onglet 189`), so you can
+size the panes by hand and read the numbers off a status bar. Delete the file
+to resume. A herdr keybinding that toggles the file:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+m"
+type = "shell"
+command = 'f=~/.local/state/herdr-nvim/fit.off; if [ -e "$f" ]; then rm "$f"; else mkdir -p "${f%/*}"; : > "$f"; fi'
+description = "nvim sidebar: measure-only mode"
+```
+
 ## The file picker
 
 `prefix+o` pops a fuzzy file picker. It has two modes:

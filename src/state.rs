@@ -126,8 +126,22 @@ pub fn write_status(line: &str, elapsed: Option<std::time::Duration>) {
     let _ = fs::create_dir_all(&dir);
     let _ = fs::write(dir.join("fit.status"), format!("{line}\n"));
     if let Some(elapsed) = elapsed {
-        let _ = fs::write(dir.join("fit.ms"), format!("{} ms\n", elapsed.as_millis()));
+        write_ms(&format!("{} ms", elapsed.as_millis()));
     }
+}
+
+/// The compact status-bar line (`<state dir>/fit.ms`). Best-effort.
+pub fn write_ms(text: &str) {
+    let dir = state_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("fit.ms"), format!("{text}\n"));
+}
+
+/// Measure-only mode: while `<state dir>/fit.off` exists, `fit` never resizes,
+/// reclaims or closes anything; it only reports the current widths. Meant for
+/// sizing the panes by hand and reading the numbers off a status bar.
+pub fn measure_only() -> bool {
+    state_dir().join("fit.off").exists()
 }
 
 pub fn state_path(tab: &str) -> PathBuf {
