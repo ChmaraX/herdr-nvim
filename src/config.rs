@@ -63,6 +63,21 @@ pub struct Sidebar {
     /// spawn is reported on stderr.
     #[serde(default)]
     pub grow_window: Vec<String>,
+    /// Command (argv) run by `fit` when the tab is too small for both minima,
+    /// with the same two extra arguments as `grow_window` (cells needed,
+    /// cells now). Meant to reclaim space inside the window without
+    /// resizing it: e.g. collapse the terminal multiplexer's own sidebar. It
+    /// must exit 0 when it changed something (the next resize event will
+    /// re-run `fit`) and non-zero when there was nothing left to reclaim.
+    /// Empty (default) disables.
+    #[serde(default)]
+    pub reclaim_window: Vec<String>,
+    /// When `fit` finds the tab below this many cells and nothing could be
+    /// reclaimed, it closes the sidebar instead of squeezing it (the anchor
+    /// keeps its minimum, there is no room left for a usable editor). `0`
+    /// (default) disables.
+    #[serde(default)]
+    pub close_below_cols: u32,
 }
 
 impl Default for Sidebar {
@@ -75,6 +90,8 @@ impl Default for Sidebar {
             min_cols: 0,
             anchor_min_cols: 0,
             grow_window: Vec::new(),
+            reclaim_window: Vec::new(),
+            close_below_cols: 0,
         }
     }
 }
@@ -334,6 +351,8 @@ mod tests {
             min_cols: 0,
             anchor_min_cols: 0,
             grow_window: Vec::new(),
+            reclaim_window: Vec::new(),
+            close_below_cols: 0,
         };
         assert_eq!(
             side.env_override(),

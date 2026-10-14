@@ -231,6 +231,12 @@ grow_window = []      # command (argv) run first when the tab is smaller than
                       # the terminal window. It receives two extra arguments:
                       # the cells needed and the cells the tab has now. The
                       # tab size is then re-read before the layout is built.
+reclaim_window = []   # command (argv) run by `fit` when the tab is too small,
+                      # same two extra arguments, to reclaim space INSIDE the
+                      # window (e.g. collapse the multiplexer's sidebar);
+                      # exit 0 = changed something, non-zero = nothing left
+close_below_cols = 0  # `fit` closes the sidebar when the tab is below this
+                      # and nothing could be reclaimed (0 = off)
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape

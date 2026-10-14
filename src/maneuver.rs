@@ -427,10 +427,54 @@ pub fn fit_cmd() -> Result<()> {
     let tab = env::var("HERDR_TAB_ID").context("HERDR_TAB_ID is not set")?;
     let mut herdr = CliHerdr;
     let config = crate::config::load();
-    fit(&mut herdr, &tab, config.sidebar.position, &SidebarSize::from_config(&config.sidebar))
+    fit(
+        &mut herdr,
+        &tab,
+        config.sidebar.position,
+        &SidebarSize::from_config(&config.sidebar),
+        &FitPolicy {
+            reclaim: config.sidebar.reclaim_window.clone(),
+            close_below: config.sidebar.close_below_cols,
+        },
+    )
 }
 
-pub(crate) fn fit(h: &mut dyn Herdr, tab: &str, position: SidebarPosition, size: &SidebarSize) -> Result<()> {
+/// What `fit` may do beyond resizing when the tab is too small.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FitPolicy {
+    pub reclaim: Vec<String>,
+    pub close_below: u32,
+}
+
+/// Run `reclaim_window`; `Some(true)` when it reports having changed
+/// something (exit 0), `Some(false)` when nothing was left to reclaim,
+/// `None` when it could not run (reported on stderr).
+fn run_reclaim(command: &[String], required: u32, total: u32) -> Option<bool> {
+    let (program, args) = command.split_first()?;
+    match std::process::Command::new(program)
+        .args(args)
+        .arg(required.to_string())
+        .arg(total.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) => Some(status.success()),
+        Err(error) => {
+            eprintln!("herdr-nvim: reclaim_window {program:?} could not run: {error}");
+            None
+        }
+    }
+}
+
+pub(crate) fn fit(
+    h: &mut dyn Herdr,
+    tab: &str,
+    position: SidebarPosition,
+    size: &SidebarSize,
+    policy: &FitPolicy,
+) -> Result<()> {
     let Some(mut state_file) = state::load(tab)? else {
         return Ok(());
     };
@@ -444,6 +488,25 @@ pub(crate) fn fit(h: &mut dyn Herdr, tab: &str, position: SidebarPosition, size:
     let total = tab_extent(&rects, position);
     if total == 0 || state_file.fitted_total == Some(total) {
         return Ok(());
+    }
+    let required = size.required();
+    if required > 0 && total < required {
+        // Too small for both minima: first try to reclaim space inside the
+        // window. If that changed something, the next resize event brings
+        // us back here with a bigger tab; nothing more to do now.
+        if run_reclaim(&policy.reclaim, required, total) == Some(true) {
+            eprintln!("herdr-nvim: fit: tab {total} < {required} cells, reclaim_window changed something; waiting for the next resize");
+            state_file.fitted_total = Some(total);
+            return state::save(&state_file);
+        }
+        if policy.close_below > 0 && total < policy.close_below {
+            eprintln!(
+                "herdr-nvim: fit: tab {total} cells < close_below {}: closing the sidebar",
+                policy.close_below
+            );
+            h.close_pane(&sidebar)?;
+            return state::remove(tab);
+        }
     }
     let Some(current) = rects.iter().find(|r| r.pane_id == sidebar).map(|r| match position {
         SidebarPosition::Left | SidebarPosition::Right => r.w,
@@ -1164,7 +1227,7 @@ mod tests {
         // serves one fresh rects result (the "grown" tab) and the function
         // returns it once the required size is reached.
         let cmd: Vec<String> = if cfg!(windows) {
-            vec!["cmd.exe".into(), "/c".into(), "exit".into()]
+            vec!["cmd.exe".into(), "/c".into(), "rem".into()]
         } else {
             vec!["true".into()]
         };
@@ -1218,15 +1281,62 @@ mod tests {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 37, 43), rect("wT:p99", 37, 0, 120, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy::default()).unwrap();
         assert!(h.ops.iter().all(|op| !op.starts_with("resize")), "{:?}", h.ops);
         // New extent (357): re-applied, and the new extent is remembered.
         let mut h = MockHerdr {
             pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 237, 43), rect("wT:p99", 237, 0, 120, 43)])]),
             ..Default::default()
         };
-        fit(&mut h, "wT:t1", SidebarPosition::Right, &size).unwrap();
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy::default()).unwrap();
         assert!(h.ops.iter().any(|op| op.starts_with("resize wT:p99 left")), "{:?}", h.ops);
         assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_total, Some(357));
+    }
+
+    #[test]
+    fn fit_closes_the_sidebar_below_close_below_when_nothing_can_be_reclaimed() {
+        let _env = TestEnv::new();
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72 };
+        let save = || {
+            state::save(&StateFile {
+                phase: Phase::Open,
+                workspace: "wT".into(),
+                tab: "wT:t1".into(),
+                anchor: "wT:p1".into(),
+                parking_tab: None,
+                parked: vec![],
+                plan_steps: vec![],
+                sidebar_pane: Some("wT:p99".into()),
+                fitted_total: Some(200),
+            })
+            .unwrap()
+        };
+        // 100 cells, no reclaim command, close_below 112: the sidebar is closed and state removed.
+        save();
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112 }).unwrap();
+        assert!(h.ops.iter().any(|op| op == "close wT:p99"), "{:?}", h.ops);
+        assert!(state::load("wT:t1").unwrap().is_none());
+        // 130 cells (above close_below): degraded rule, no close.
+        save();
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 58, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 112 }).unwrap();
+        assert!(h.ops.iter().all(|op| op != "close wT:p99"), "{:?}", h.ops);
+        // A reclaim command that reports success defers everything to the next resize.
+        save();
+        let ok_cmd: Vec<String> = if cfg!(windows) { vec!["cmd.exe".into(), "/c".into(), "rem".into()] } else { vec!["true".into()] };
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 72, 43), rect("wT:p99", 72, 0, 28, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: ok_cmd, close_below: 112 }).unwrap();
+        assert!(h.ops.iter().all(|op| !op.starts_with("close") && !op.starts_with("resize")), "{:?}", h.ops);
+        assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_total, Some(100));
     }
 }
