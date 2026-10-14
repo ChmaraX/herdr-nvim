@@ -302,6 +302,19 @@ fn wait_for_layout_ready() {
     let _ = fs::remove_file(&marker);
 }
 
+/// On Windows `current_exe()` can come back as a verbatim path
+/// (`\?\F:\...`). That form is fine for the filesystem but not for everything
+/// that later sees the root as a string: `set rtp+=` accepts it, yet
+/// `nvim_get_runtime_file` and plain concatenation in user Lua do not. Strip
+/// the prefix; a no-op elsewhere.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\?\") {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// Locate the plugin root (the directory containing `lua/herdr-nvim`) so the
 /// daemon can `require('herdr-nvim')`. `HERDR_NVIM_PLUGIN_ROOT` overrides;
 /// otherwise walk up from this executable.
@@ -313,7 +326,7 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
     let mut dir = exe.parent();
     while let Some(candidate) = dir {
         if candidate.join("lua").join("herdr-nvim").is_dir() {
-            return Ok(candidate.to_path_buf());
+            return Ok(strip_verbatim_prefix(candidate));
         }
         dir = candidate.parent();
     }
