@@ -84,6 +84,38 @@ pub struct Sidebar {
     /// report. `0` (default) = no tree.
     #[serde(default)]
     pub tree_cols: u32,
+    /// How `fit` treats the split on every tab resize. `"share"` (default)
+    /// re-applies `width`. `"clamp"` leaves the user's split alone and only
+    /// enforces minima: the anchor keeps `anchor_min_cols`, the editor
+    /// `editor_min_cols`, the tree `tree_cols`; below `collapse_below_cols`
+    /// the tree collapses to `tree_collapsed_cols` (never closed) and both
+    /// panes keep `floor_cols`; `reclaim_window` runs when the tab has fewer
+    /// than `tab_min_cols`.
+    #[serde(default)]
+    pub fit: FitMode,
+    /// Clamp mode: minimum editor cells (beside the tree). `0` = none.
+    #[serde(default)]
+    pub editor_min_cols: u32,
+    /// Clamp mode: tree cells below `collapse_below_cols` (typically `1`).
+    #[serde(default)]
+    pub tree_collapsed_cols: u32,
+    /// Clamp mode: the tab size `reclaim_window` is asked to restore.
+    #[serde(default)]
+    pub tab_min_cols: u32,
+    /// Clamp mode: below this tab size the tree collapses. `0` = never.
+    #[serde(default)]
+    pub collapse_below_cols: u32,
+    /// Clamp mode: minimum for both panes once the tree is collapsed.
+    #[serde(default)]
+    pub floor_cols: u32,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FitMode {
+    #[default]
+    Share,
+    Clamp,
 }
 
 impl Default for Sidebar {
@@ -99,6 +131,12 @@ impl Default for Sidebar {
             reclaim_window: Vec::new(),
             close_below_cols: 0,
             tree_cols: 0,
+            fit: FitMode::Share,
+            editor_min_cols: 0,
+            tree_collapsed_cols: 0,
+            tab_min_cols: 0,
+            collapse_below_cols: 0,
+            floor_cols: 0,
         }
     }
 }
@@ -361,6 +399,7 @@ mod tests {
             reclaim_window: Vec::new(),
             close_below_cols: 0,
             tree_cols: 0,
+            ..Sidebar::default()
         };
         assert_eq!(
             side.env_override(),

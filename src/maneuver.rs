@@ -116,6 +116,91 @@ pub(crate) struct SidebarSize {
     /// Cells the sidebar shows beside its editor (a file tree); used by
     /// `open` to decide what `fit --extra` will later report. `0` = none.
     pub tree_cols: u32,
+    /// `Some` in clamp mode (see `FitMode`): the split is the user's, `fit`
+    /// only keeps it inside these minima.
+    pub clamp: Option<ClampRules>,
+}
+
+/// Clamp-mode minima (cells along the split axis). `tree_std` is the normal
+/// tree size, `tree_collapsed` what it shrinks to below `collapse_below`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClampRules {
+    pub anchor_min: u32,
+    pub editor_min: u32,
+    pub tree_std: u32,
+    pub tree_collapsed: u32,
+    pub tab_min: u32,
+    pub collapse_below: u32,
+    pub floor: u32,
+}
+
+/// What clamp-mode `fit` wants: the tree size the sidebar's nvim should
+/// show, and the sidebar size to resize to when the current one breaks a
+/// minimum (`None` = leave the user's split alone).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClampPlan {
+    pub tree: u32,
+    pub sidebar: Option<u32>,
+}
+
+impl ClampRules {
+    fn collapsed(&self, total: u32) -> bool {
+        self.collapse_below > 0 && total < self.collapse_below
+    }
+
+    /// Tree cells to open with at `total`.
+    pub(crate) fn open_tree(&self, total: u32) -> u32 {
+        if self.collapsed(total) {
+            self.tree_collapsed
+        } else {
+            self.tree_std
+        }
+    }
+
+    /// The default split at open time: anchor and editor equal, the tree on
+    /// top of the editor's side; kept inside the minima.
+    pub(crate) fn open_cells(&self, total: u32) -> u32 {
+        let tree = self.open_tree(total);
+        let even = tree + total.saturating_sub(tree) / 2;
+        match self.plan(total, even, tree).sidebar {
+            Some(cells) => cells,
+            None => even,
+        }
+    }
+
+    /// Pure: `total` tab cells, `current` sidebar cells, `extra` tree cells
+    /// the sidebar reports (`0` = the user closed the tree: left closed).
+    pub(crate) fn plan(&self, total: u32, current: u32, extra: u32) -> ClampPlan {
+        let collapsed = self.collapsed(total);
+        let (anchor_min, editor_min) = if collapsed {
+            (self.floor, self.floor)
+        } else {
+            (self.anchor_min, self.editor_min)
+        };
+        let tree = if extra == 0 {
+            0
+        } else if collapsed {
+            self.tree_collapsed
+        } else {
+            // The user may widen the tree past its standard size as long as
+            // both panes keep their minima; never narrower than standard.
+            let room = total.saturating_sub(anchor_min + editor_min);
+            extra.clamp(self.tree_std, room.max(self.tree_std))
+        };
+        let lo = editor_min + tree;
+        let hi = total.saturating_sub(anchor_min);
+        let target = if lo > hi {
+            // Not even the minima fit: anchor and editor share what is left.
+            tree + total.saturating_sub(tree) / 2
+        } else if current < lo {
+            lo
+        } else if current > hi {
+            hi
+        } else {
+            current
+        };
+        ClampPlan { tree, sidebar: (target != current).then_some(target) }
+    }
 }
 
 impl SidebarSize {
@@ -125,12 +210,25 @@ impl SidebarSize {
             min_cols: sidebar.min_cols,
             anchor_min_cols: sidebar.anchor_min_cols,
             tree_cols: sidebar.tree_cols,
+            clamp: (sidebar.fit == crate::config::FitMode::Clamp).then_some(ClampRules {
+                anchor_min: sidebar.anchor_min_cols,
+                editor_min: sidebar.editor_min_cols,
+                tree_std: sidebar.tree_cols,
+                tree_collapsed: sidebar.tree_collapsed_cols,
+                tab_min: sidebar.tab_min_cols,
+                collapse_below: sidebar.collapse_below_cols,
+                floor: sidebar.floor_cols,
+            }),
         }
     }
 
     /// Cells needed along the split axis for both minima to fit; `0` when no
-    /// minimum is configured.
+    /// minimum is configured. Clamp mode: the tab size `reclaim_window` and
+    /// `grow_window` are asked for (`tab_min_cols`).
     pub(crate) fn required(&self) -> u32 {
+        if let Some(rules) = self.clamp {
+            return rules.tab_min;
+        }
         if self.min_cols == 0 || self.anchor_min_cols == 0 {
             0
         } else {
@@ -145,6 +243,7 @@ impl SidebarSize {
             min_cols: 0,
             anchor_min_cols: 0,
             tree_cols: 0,
+            clamp: None,
         }
     }
 
@@ -158,6 +257,10 @@ impl SidebarSize {
             return self.width;
         }
         let total_f = f64::from(total);
+        if let Some(rules) = self.clamp {
+            let _ = extra; // the tree the open uses is `rules.open_tree(total)`
+            return (f64::from(rules.open_cells(total)) / total_f).clamp(0.05, 0.95);
+        }
         let required = self.required();
         let mut cells = if required > 0 && total < required {
             // Below the minima the anchor and the sidebar's *editor* shrink
@@ -294,7 +397,9 @@ fn open(
     }
     // What the sidebar will show beside its editor at open time: its tree
     // (`tree_cols`) if the editor keeps at least twice that, else nothing.
-    let extra = if size.tree_cols > 0 && size.editor_cells(total, size.tree_cols) >= 2 * size.tree_cols {
+    let extra = if let Some(rules) = size.clamp {
+        rules.open_tree(total)
+    } else if size.tree_cols > 0 && size.editor_cells(total, size.tree_cols) >= 2 * size.tree_cols {
         size.tree_cols
     } else {
         0
@@ -572,6 +677,9 @@ fn fit_inner(
         state::write_ms(&line);
         return Ok(());
     }
+    if let Some(rules) = size.clamp {
+        return fit_clamp(h, tab, position, &rules, policy, started, state_file, &sidebar, &rects, total);
+    }
     if total == 0 || (state_file.fitted_total == Some(total) && state_file.fitted_extra == Some(policy.extra)) {
         state::write_status(
             &format!("fit · {total} col · extra {} · inchangé · {} ms", policy.extra, started.elapsed().as_millis()),
@@ -638,6 +746,83 @@ fn fit_inner(
 /// Pure: the `pane resize` (direction, amount as a fraction of the tab) that
 /// brings a sidebar of `current` cells to the configured share of `total`,
 /// or `None` when the difference is under one cell.
+/// Clamp mode: the split is the user's. Reclaim the window space first when
+/// the tab is below `tab_min`, then only move the split when a minimum is
+/// broken, and tell the sidebar's nvim (stderr `tree <cells>`) what tree size
+/// the tab allows. Runs on every call: cheap, and idempotent once satisfied.
+#[allow(clippy::too_many_arguments)]
+fn fit_clamp(
+    h: &mut dyn Herdr,
+    tab: &str,
+    position: SidebarPosition,
+    rules: &ClampRules,
+    policy: &FitPolicy,
+    started: std::time::Instant,
+    mut state_file: crate::state::StateFile,
+    sidebar: &str,
+    rects: &[crate::herdr::PaneRect],
+    total: u32,
+) -> Result<()> {
+    if total == 0 {
+        return Ok(());
+    }
+    let required = rules.tab_min;
+    if run_reclaim(&policy.reclaim, required, total) == Some(true) {
+        eprintln!("herdr-nvim: fit: tab {total} cells (need {required}): reclaim_window changed something; waiting for the next resize");
+        state::write_status(
+            &format!("fit · {total} col (besoin {required}) · barre repliée/dépliée · {} ms", started.elapsed().as_millis()),
+            Some(started.elapsed()),
+        );
+        state_file.fitted_total = Some(total);
+        state_file.fitted_extra = Some(policy.extra);
+        return state::save(&state_file);
+    }
+    if policy.close_below > 0 && total < policy.close_below {
+        eprintln!("herdr-nvim: fit: tab {total} cells < close_below {}: closing the sidebar", policy.close_below);
+        h.close_pane(sidebar)?;
+        return state::remove(tab);
+    }
+    let Some(current) = rects.iter().find(|r| r.pane_id == sidebar).map(|r| match position {
+        SidebarPosition::Left | SidebarPosition::Right => r.w,
+        SidebarPosition::Top | SidebarPosition::Bottom => r.h,
+    }) else {
+        return Ok(());
+    };
+    let plan = rules.plan(total, current, policy.extra);
+    let mut what = String::from("libre");
+    if let Some(target) = plan.sidebar {
+        let grow = target > current;
+        let direction = match (position, grow) {
+            (SidebarPosition::Right, true) | (SidebarPosition::Left, false) => "left",
+            (SidebarPosition::Right, false) | (SidebarPosition::Left, true) => "right",
+            (SidebarPosition::Bottom, true) | (SidebarPosition::Top, false) => "up",
+            (SidebarPosition::Bottom, false) | (SidebarPosition::Top, true) => "down",
+        };
+        let amount = f64::from(target.abs_diff(current)) / f64::from(total);
+        eprintln!("herdr-nvim: fit: clamp: tab {total} cells, sidebar {current} → {target}: resize {direction} {amount:.3}");
+        h.resize_pane(sidebar, direction, amount)?;
+        what = format!("resize {current}→{target}");
+    }
+    if plan.tree != policy.extra {
+        eprintln!("herdr-nvim: fit: tree {}", plan.tree);
+        what = format!("{what} · explo→{}", plan.tree);
+    }
+    let shown = plan.sidebar.unwrap_or(current);
+    state::write_status(
+        &format!(
+            "fit · {total} col · Claude {} · éditeur {} · explo {} · {what} · {} ms",
+            total.saturating_sub(shown),
+            shown.saturating_sub(plan.tree),
+            plan.tree,
+            started.elapsed().as_millis()
+        ),
+        Some(started.elapsed()),
+    );
+    state_file.fitted_total = Some(total);
+    state_file.fitted_extra = Some(policy.extra);
+    state::save(&state_file)
+}
+
 pub(crate) fn fit_step(
     total: u32,
     current: u32,
@@ -1306,7 +1491,7 @@ mod tests {
     #[test]
     fn sidebar_share_applies_minima_against_the_tab_size() {
         // 45 % of 165 cells = 74, raised to min_cols 95, anchor keeps 70.
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0, clamp: None };
         assert!((size.share(165, 0) - 95.0 / 165.0).abs() < 1e-9);
         // Narrow tab: both minima cannot fit, the anchor and the editor split 50/50
         // around the extra cells (none here): 60 each.
@@ -1324,8 +1509,8 @@ mod tests {
 
     #[test]
     fn required_cells_only_when_both_minima_are_set() {
-        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 }.required(), 165);
-        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 0, tree_cols: 0 }.required(), 0);
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0, clamp: None }.required(), 165);
+        assert_eq!(SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 0, tree_cols: 0, clamp: None }.required(), 0);
         assert_eq!(SidebarSize::plain(0.5).required(), 0);
     }
 
@@ -1362,7 +1547,7 @@ mod tests {
 
     #[test]
     fn fit_step_moves_the_sidebar_to_the_share_of_the_new_tab_size() {
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0, clamp: None };
         // Tab shrank to 157 (below the 165 the minima need) with the sidebar still at
         // 161 cells: 50/50 below the minima, target 79, shrink by 82.
         let (dir, amount) = fit_step(157, 161, SidebarPosition::Right, &size, 0).unwrap();
@@ -1380,7 +1565,7 @@ mod tests {
     #[test]
     fn fit_skips_when_the_tab_extent_did_not_change() {
         let _env = TestEnv::new();
-        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0 };
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70, tree_cols: 0, clamp: None };
         state::save(&StateFile {
             phase: Phase::Open,
             workspace: "wT".into(),
@@ -1414,7 +1599,7 @@ mod tests {
     #[test]
     fn fit_closes_the_sidebar_below_close_below_when_nothing_can_be_reclaimed() {
         let _env = TestEnv::new();
-        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 0 };
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 0, clamp: None };
         let save = || {
             state::save(&StateFile {
                 phase: Phase::Open,
@@ -1469,7 +1654,7 @@ mod tests {
 
     #[test]
     fn editor_cells_follow_the_share() {
-        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34 };
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34, clamp: None };
         assert_eq!(size.editor_cells(208, 34), 107 - 34);
         assert_eq!(size.editor_cells(120, 34), 77 - 34);
     }
@@ -1477,7 +1662,7 @@ mod tests {
     #[test]
     fn fit_reapplies_when_only_extra_changed() {
         let _env = TestEnv::new();
-        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34 };
+        let size = SidebarSize { width: 0.45, min_cols: 107, anchor_min_cols: 72, tree_cols: 34, clamp: None };
         state::save(&StateFile {
             phase: Phase::Open,
             workspace: "wT".into(),
@@ -1499,5 +1684,54 @@ mod tests {
         fit(&mut h, "wT:t1", SidebarPosition::Right, &size, &FitPolicy { reclaim: vec![], close_below: 0, extra: 0 }).unwrap();
         assert!(h.ops.iter().any(|op| op.starts_with("resize wT:p99 right")), "{:?}", h.ops);
         assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_extra, Some(0));
+    }
+
+    fn atelier_rules() -> ClampRules {
+        // PC gabarit, 2026-10-14 evening (user's own numbers).
+        ClampRules { anchor_min: 55, editor_min: 55, tree_std: 30, tree_collapsed: 1, tab_min: 160, collapse_below: 140, floor: 40 }
+    }
+
+    #[test]
+    fn clamp_leaves_a_split_inside_the_minima_alone() {
+        let r = atelier_rules();
+        // 160, sidebar 80 = editor 50 + tree 30: the editor minimum (55) pushes it to 85.
+        assert_eq!(r.plan(160, 80, 30), ClampPlan { tree: 30, sidebar: Some(85) });
+        // Claude 65 / editor 65 / tree 30 (the standard) and Claude 55 / editor 71 / tree 34: free.
+        assert_eq!(r.plan(160, 95, 30), ClampPlan { tree: 30, sidebar: None });
+        assert_eq!(r.plan(160, 105, 34), ClampPlan { tree: 34, sidebar: None });
+        // Claude squeezed under 55: the sidebar gives back.
+        assert_eq!(r.plan(160, 110, 30), ClampPlan { tree: 30, sidebar: Some(105) });
+        // Tree widened too far for the minima at 160: narrowed to what fits (50), split follows.
+        assert_eq!(r.plan(160, 110, 60), ClampPlan { tree: 50, sidebar: Some(105) });
+        // Tree closed by the user: stays closed, editor min still enforced.
+        assert_eq!(r.plan(160, 40, 0), ClampPlan { tree: 0, sidebar: Some(55) });
+    }
+
+    #[test]
+    fn clamp_collapses_the_tree_below_140_and_keeps_the_floor() {
+        let r = atelier_rules();
+        // 140: the minimal balance 55/55/30 is free.
+        assert_eq!(r.plan(140, 85, 30), ClampPlan { tree: 30, sidebar: None });
+        // 139: the tree collapses to 1, floor 40 for both — a 70/69 split is free.
+        assert_eq!(r.plan(139, 69, 30), ClampPlan { tree: 1, sidebar: None });
+        // 100: Claude 40 / editor 59 / tree 1 is the user's example, free.
+        assert_eq!(r.plan(100, 60, 1), ClampPlan { tree: 1, sidebar: None });
+        // 100 with Claude at 30: pushed back to 40.
+        assert_eq!(r.plan(100, 70, 1), ClampPlan { tree: 1, sidebar: Some(60) });
+        // 70: nothing fits, half/half around the collapsed tree.
+        assert_eq!(r.plan(70, 50, 1), ClampPlan { tree: 1, sidebar: Some(35) });
+        // Back above 140 with a collapsed tree: it reopens to 30 and the editor keeps 55.
+        assert_eq!(r.plan(160, 60, 1), ClampPlan { tree: 30, sidebar: Some(85) });
+    }
+
+    #[test]
+    fn clamp_open_splits_anchor_and_editor_evenly() {
+        let r = atelier_rules();
+        assert_eq!(r.open_cells(160), 95); // Claude 65 / editor 65 / tree 30
+        assert_eq!(r.open_cells(238), 134); // Claude 104 / editor 104 / tree 30
+        assert_eq!(r.open_cells(100), 50); // collapsed: Claude 50 / editor 49 / tree 1
+        let size = SidebarSize { width: 0.45, min_cols: 0, anchor_min_cols: 55, tree_cols: 30, clamp: Some(r) };
+        assert_eq!(size.required(), 160);
+        assert!((size.share(160, 30) - 95.0 / 160.0).abs() < 1e-9);
     }
 }

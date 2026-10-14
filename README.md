@@ -131,6 +131,29 @@ tab_bar_right = [
 ]
 ```
 
+### Clamp mode: the split is yours
+
+`fit = "share"` (the default) re-applies `width` on every tab resize. With
+`fit = "clamp"` the split is whatever you dragged it to; `fit` only steps in
+when a minimum is broken, and tells the sidebar's nvim what tree size the tab
+allows (stderr line `herdr-nvim: fit: tree <cells>`, which the nvim side
+applies and reports back through `fit --extra`):
+
+```toml
+[sidebar]
+fit = "clamp"
+anchor_min_cols = 55      # the agent's pane never goes below this
+editor_min_cols = 55      # nor the editor beside the tree
+tree_cols = 30            # the tree's normal size (you may widen it)
+tab_min_cols = 160        # below this, reclaim_window runs (e.g. fold herdr's sidebar)
+collapse_below_cols = 140 # below this the tree collapses to...
+tree_collapsed_cols = 1   # ...this, never closed
+floor_cols = 40           # minimum for both panes once collapsed; below that, half/half
+```
+
+`open` splits the anchor and the editor evenly (the tree on top). A tree
+closed by hand (`extra 0`) stays closed.
+
 ### Measure-only mode
 
 Create `<state dir>/fit.off` and `fit` stops acting: no resize, no
