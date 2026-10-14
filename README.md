@@ -98,6 +98,22 @@ unless given `--force`; `--orphans` stops the daemons whose tab is gone.
 
 The next toggle in that tab starts a fresh nvim.
 
+### Keeping the share after a window resize
+
+`herdr-nvim fit` re-applies the configured share (`width`, `min_cols`,
+`anchor_min_cols`) to the open sidebar of the tab named by `HERDR_TAB_ID`,
+and only when the tab's extent changed since the share was last applied, so
+a split you moved by hand is left alone. The sidebar's nvim can call it on
+`VimResized`:
+
+```lua
+vim.api.nvim_create_autocmd("VimResized", {
+  callback = function()
+    vim.system({ "/path/to/bin/herdr-nvim", "fit" }, { detach = true })
+  end,
+})
+```
+
 ## The file picker
 
 `prefix+o` pops a fuzzy file picker. It has two modes:
@@ -211,9 +227,10 @@ anchor_min_cols = 0   # never fewer cells than this for the agent's pane
                       # (0 = off). When both minima cannot fit, the agent's
                       # pane keeps its minimum and the sidebar takes the rest.
 grow_window = []      # command (argv) run first when the tab is smaller than
-                      # min_cols + anchor_min_cols — e.g. a script that
-                      # maximizes the terminal window; the tab size is then
-                      # re-read before the layout is built
+                      # min_cols + anchor_min_cols — e.g. a script that widens
+                      # the terminal window. It receives two extra arguments:
+                      # the cells needed and the cells the tab has now. The
+                      # tab size is then re-read before the layout is built.
 
 [picker]
 scan_lines = 300    # pane lines scanned by the fallback text-scrape

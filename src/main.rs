@@ -27,6 +27,7 @@ fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     let code = match mode.as_str() {
         "toggle" => run(maneuver::toggle_cmd),
+        "fit" => run(maneuver::fit_cmd),
         "sidebar" => run(daemon::sidebar_cmd),
         "daemon-gc" => run(daemon::registry::gc_cmd),
         "on-event" => run(daemon::events::on_event_cmd),
@@ -37,7 +38,7 @@ fn main() {
         "open-link" => run(openlink::open_link_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link>"
+                "usage: herdr-nvim <toggle|fit|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link>"
             );
             2
         }

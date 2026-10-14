@@ -24,6 +24,12 @@ pub struct StateFile {
     pub parked: Vec<String>,
     pub plan_steps: Vec<crate::layout::MoveStep>,
     pub sidebar_pane: Option<String>,
+    /// Tab extent (cells along the split axis) the sidebar share was last
+    /// computed against, by `open` or `fit`. `fit` re-applies the share only
+    /// when the extent changed (a window resize), never when only the split
+    /// moved (the user resizing the sidebar by hand).
+    #[serde(default)]
+    pub fitted_total: Option<u32>,
 }
 
 /// Sanitize a key (workspace or tab id) for use as a filename. Tab ids
@@ -245,6 +251,7 @@ mod tests {
                     ratio: 0.4,
                 }],
                 sidebar_pane: Some("wT:p9".into()),
+                fitted_total: None,
             };
             save(&s).unwrap();
             let loaded = load("wT:t1").unwrap().unwrap();

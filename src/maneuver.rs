@@ -219,6 +219,8 @@ fn grow_window(
     let before = tab_extent(&rects, position);
     match std::process::Command::new(program)
         .args(args)
+        .arg(required.to_string())
+        .arg(before.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -284,6 +286,7 @@ fn open(
         parked: vec![],
         plan_steps: plan.steps.clone(),
         sidebar_pane: None,
+        fitted_total: None,
     };
 
     let mut parking = if rects.len() > 1 {
@@ -410,7 +413,80 @@ fn open(
     state_file.parking_tab = None;
     state_file.parked.clear();
     state_file.sidebar_pane = Some(sidebar);
+    state_file.fitted_total = Some(total);
     state::save(&state_file)
+}
+
+/// `herdr-nvim fit`: re-apply the configured share to an open sidebar after
+/// the tab changed size (the sidebar's nvim calls it on `VimResized`). Reads
+/// the tab from `HERDR_TAB_ID`. Does nothing when there is no open sidebar,
+/// when the tab extent is the one the share was last computed against (so a
+/// split the user moved by hand is left alone), or when the difference is
+/// under one cell. Never grows the window: that is `open`'s job.
+pub fn fit_cmd() -> Result<()> {
+    let tab = env::var("HERDR_TAB_ID").context("HERDR_TAB_ID is not set")?;
+    let mut herdr = CliHerdr;
+    let config = crate::config::load();
+    fit(&mut herdr, &tab, config.sidebar.position, &SidebarSize::from_config(&config.sidebar))
+}
+
+pub(crate) fn fit(h: &mut dyn Herdr, tab: &str, position: SidebarPosition, size: &SidebarSize) -> Result<()> {
+    let Some(mut state_file) = state::load(tab)? else {
+        return Ok(());
+    };
+    if !matches!(state_file.phase, Phase::Open) {
+        return Ok(());
+    }
+    let Some(sidebar) = state_file.sidebar_pane.clone() else {
+        return Ok(());
+    };
+    let rects = h.pane_rects(tab)?;
+    let total = tab_extent(&rects, position);
+    if total == 0 || state_file.fitted_total == Some(total) {
+        return Ok(());
+    }
+    let Some(current) = rects.iter().find(|r| r.pane_id == sidebar).map(|r| match position {
+        SidebarPosition::Left | SidebarPosition::Right => r.w,
+        SidebarPosition::Top | SidebarPosition::Bottom => r.h,
+    }) else {
+        return Ok(());
+    };
+    if let Some((direction, amount)) = fit_step(total, current, position, size) {
+        eprintln!(
+            "herdr-nvim: fit: tab now {total} cells, sidebar {current} → {:.0}: resize {direction} {amount:.3}",
+            size.share(total) * f64::from(total)
+        );
+        h.resize_pane(&sidebar, direction, amount)?;
+    }
+    state_file.fitted_total = Some(total);
+    state::save(&state_file)
+}
+
+/// Pure: the `pane resize` (direction, amount as a fraction of the tab) that
+/// brings a sidebar of `current` cells to the configured share of `total`,
+/// or `None` when the difference is under one cell.
+pub(crate) fn fit_step(
+    total: u32,
+    current: u32,
+    position: SidebarPosition,
+    size: &SidebarSize,
+) -> Option<(&'static str, f64)> {
+    if total == 0 {
+        return None;
+    }
+    let target = (size.share(total) * f64::from(total)).round();
+    let delta = target - f64::from(current);
+    if delta.abs() < 1.0 {
+        return None;
+    }
+    let grow = delta > 0.0;
+    let direction = match (position, grow) {
+        (SidebarPosition::Right, true) | (SidebarPosition::Left, false) => "left",
+        (SidebarPosition::Right, false) | (SidebarPosition::Left, true) => "right",
+        (SidebarPosition::Bottom, true) | (SidebarPosition::Top, false) => "up",
+        (SidebarPosition::Bottom, false) | (SidebarPosition::Top, true) => "down",
+    };
+    Some((direction, delta.abs() / f64::from(total)))
 }
 
 pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
@@ -549,6 +625,7 @@ mod tests {
             parked: vec![],
             plan_steps: vec![],
             sidebar_pane: Some("wT:p99".into()),
+            fitted_total: None,
         }
     }
 
@@ -575,6 +652,7 @@ mod tests {
                 },
             ],
             sidebar_pane: None,
+            fitted_total: None,
         }
     }
 
@@ -1101,5 +1179,54 @@ mod tests {
         let cmd = vec!["herdr-nvim-no-such-command-xyz".to_string()];
         let same = grow_window(&mut h, "wT:t1", SidebarPosition::Right, &cmd, 165, vec![rect("wT:p1", 0, 0, 49, 50)]);
         assert_eq!(tab_extent(&same, SidebarPosition::Right), 49);
+    }
+
+    #[test]
+    fn fit_step_moves_the_sidebar_to_the_share_of_the_new_tab_size() {
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
+        // Tab shrank to 157 with the sidebar still at 161 cells: target 87, shrink by 74.
+        let (dir, amount) = fit_step(157, 161, SidebarPosition::Right, &size).unwrap();
+        assert_eq!(dir, "right");
+        assert!((amount - 74.0 / 157.0).abs() < 1e-9);
+        // Tab grew to 357 with the sidebar at 87: target 161, grow by 74.
+        let (dir, amount) = fit_step(357, 87, SidebarPosition::Right, &size).unwrap();
+        assert_eq!(dir, "left");
+        assert!((amount - 74.0 / 357.0).abs() < 1e-9);
+        // Already there: nothing.
+        assert!(fit_step(357, 161, SidebarPosition::Right, &size).is_none());
+        assert!(fit_step(0, 10, SidebarPosition::Right, &size).is_none());
+    }
+
+    #[test]
+    fn fit_skips_when_the_tab_extent_did_not_change() {
+        let _env = TestEnv::new();
+        let size = SidebarSize { width: 0.45, min_cols: 95, anchor_min_cols: 70 };
+        state::save(&StateFile {
+            phase: Phase::Open,
+            workspace: "wT".into(),
+            tab: "wT:t1".into(),
+            anchor: "wT:p1".into(),
+            parking_tab: None,
+            parked: vec![],
+            plan_steps: vec![],
+            sidebar_pane: Some("wT:p99".into()),
+            fitted_total: Some(157),
+        })
+        .unwrap();
+        // Same extent (157), sidebar moved by hand to 120: left alone.
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 37, 43), rect("wT:p99", 37, 0, 120, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size).unwrap();
+        assert!(h.ops.iter().all(|op| !op.starts_with("resize")), "{:?}", h.ops);
+        // New extent (357): re-applied, and the new extent is remembered.
+        let mut h = MockHerdr {
+            pane_rects_results: VecDeque::from([Ok(vec![rect("wT:p1", 0, 0, 237, 43), rect("wT:p99", 237, 0, 120, 43)])]),
+            ..Default::default()
+        };
+        fit(&mut h, "wT:t1", SidebarPosition::Right, &size).unwrap();
+        assert!(h.ops.iter().any(|op| op.starts_with("resize wT:p99 left")), "{:?}", h.ops);
+        assert_eq!(state::load("wT:t1").unwrap().unwrap().fitted_total, Some(357));
     }
 }
