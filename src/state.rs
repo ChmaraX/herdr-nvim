@@ -118,12 +118,16 @@ fn path_for_key(key: &str) -> PathBuf {
 }
 
 /// One-line, human-readable record of the last `open`/`fit` decision
-/// (`<state dir>/fit.status`), for status bars and debugging. Best-effort:
-/// never fails the caller.
-pub fn write_status(line: &str) {
+/// (`<state dir>/fit.status`), for status bars and debugging. When a duration
+/// is given, `<state dir>/fit.ms` gets just `<n> ms`: the compact version for a
+/// narrow status bar. Best-effort: never fails the caller.
+pub fn write_status(line: &str, elapsed: Option<std::time::Duration>) {
     let dir = state_dir();
     let _ = fs::create_dir_all(&dir);
     let _ = fs::write(dir.join("fit.status"), format!("{line}\n"));
+    if let Some(elapsed) = elapsed {
+        let _ = fs::write(dir.join("fit.ms"), format!("{} ms\n", elapsed.as_millis()));
+    }
 }
 
 pub fn state_path(tab: &str) -> PathBuf {

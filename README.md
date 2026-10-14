@@ -119,8 +119,10 @@ vim.api.nvim_create_autocmd("VimResized", {
 Every `open` and `fit` writes one human-readable line to
 `<state dir>/fit.status` (the state dir is `$XDG_STATE_HOME/herdr-nvim`,
 else `~/.local/state/herdr-nvim`): what the tab measured, what the sidebar
-got, what was done, and how long it took. Show it in herdr's tab bar with a
-`command` entry (a TOML literal string keeps Windows backslashes intact):
+got, what was done, and how long it took. Every `fit` also writes just the
+duration (`116 ms`) to `<state dir>/fit.ms`, for a narrow status bar. Show
+either in herdr's tab bar with a `command` entry (a TOML literal string keeps
+Windows backslashes intact):
 
 ```toml
 [ui]
