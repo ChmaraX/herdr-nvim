@@ -238,9 +238,10 @@ pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
             else {
                 continue;
             };
-            let path = match dialect.strip_at_prefix {
-                true => path.strip_prefix('@').unwrap_or(path),
-                false => path,
+            let path = if dialect.strip_at_prefix {
+                path.strip_prefix('@').unwrap_or(path)
+            } else {
+                path
             };
             out.push(RawEvent {
                 path: path.to_owned(),
@@ -278,9 +279,10 @@ pub(crate) struct Mined {
 /// Mine a session JSONL file for file-path events, dispatching on the pane's
 /// reported agent kind. `resolve` maps each logged path to the one spelling
 /// the rest of the picker uses (`pathkey::resolve` in production), so a file
-/// the agent named two ways (`/repo/a.rs`, then `a.rs`) is one touch. Any kind without a parser (codex today, or a future
-/// unknown agent) yields an empty `Mined` -- never a crash or misparse, so
-/// callers can always fall through to the git/scrape layers (brief).
+/// the agent named two ways (`/repo/a.rs`, then `a.rs`) is one touch. Any
+/// kind without a parser (codex today, or a future unknown agent) yields an
+/// empty `Mined` -- never a crash or misparse, so callers can always fall
+/// through to the git/scrape layers (brief).
 ///
 /// Reduction rule: scan `RawEvent`s in file order (== chronological, oldest
 /// first, since JSONL is append-only). For each path, remember the *first*

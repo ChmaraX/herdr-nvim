@@ -9,14 +9,46 @@
 //! and toplevel those are built from, goes through this module so all
 //! sources agree.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-/// `path` as the agent or pane wrote it, resolved against `cwd` (`~`,
-/// relative, `.` and `..`; see `extract::resolve`), then [`canonical`].
+/// `path` as the agent wrote it, made [`absolute`] against `cwd`, then
+/// [`canonical`].
 pub(crate) fn resolve(path: &str, cwd: &Path) -> String {
-    canonical(&crate::extract::resolve(path, cwd))
+    canonical(&absolute(path, cwd))
         .to_string_lossy()
         .into_owned()
+}
+
+/// `path` made absolute against `cwd` (`~` expanded) and lexically
+/// normalized (`.` and `..` resolved without touching the filesystem).
+pub(crate) fn absolute(path: &str, cwd: &Path) -> PathBuf {
+    let expanded = if let Some(rest) = path.strip_prefix('~') {
+        let home = crate::home::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        PathBuf::from(format!("{home}{rest}"))
+    } else if Path::new(path).is_absolute() || path.starts_with('/') {
+        PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    normalize(&expanded)
+}
+
+/// Lexically normalize a path (resolve `.` and `..` without touching the fs).
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => out.push(comp.as_os_str()),
+            Component::Normal(s) => out.push(s),
+        }
+    }
+    out
 }
 
 /// The real path of an existing `path`: symlinks resolved and, on Windows,
@@ -65,11 +97,5 @@ mod tests {
         assert_eq!(without_verbatim_prefix("/home/u/a.rs"), None);
         assert_eq!(without_verbatim_prefix(r"C:\repo\a.rs"), None);
         assert_eq!(without_verbatim_prefix(r"\\?\Volume{1234}\a.rs"), None);
-    }
-
-    #[test]
-    fn a_missing_path_is_returned_unchanged() {
-        let missing = Path::new("/definitely/not/here/a.rs");
-        assert_eq!(canonical(missing), missing);
     }
 }

@@ -111,10 +111,7 @@ fn start_pick() -> Result<()> {
     let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
     let text = herdr.read_pane(&target, lines)?;
 
-    // One spelling for the cwd too: candidate paths are real paths (see
-    // `pathkey`), and the picker shortens them against this cwd and indexes
-    // the repo from it.
-    let cwd = pathkey::canonical(&snapshot.cwd);
+    let cwd = snapshot.cwd;
     let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
         path.is_file()
     });
@@ -161,10 +158,11 @@ fn gather_candidates(
 
     let session_text = agent_session.and_then(|s| sessions::load_session_text(s, cwd));
     let agent_name = agent_session.map(|s| s.agent.as_str()).unwrap_or("");
-    let mined = session_text
-        .as_deref()
-        .map(|text| sessions::mine_session(agent_name, text, &|path| pathkey::resolve(path, cwd)))
-        .unwrap_or_else(|| sessions::mine_session("", "", &|path| path.to_owned()));
+    // No session text mines nothing, like an agent without a parser.
+    let mined =
+        sessions::mine_session(agent_name, session_text.as_deref().unwrap_or(""), &|path| {
+            pathkey::resolve(path, cwd)
+        });
 
     // git paths are `<toplevel>/<path>`; canonical so they match the mined
     // and scraped paths below.
@@ -203,13 +201,13 @@ fn gather_candidates(
         .and_then(|top| gitscan::list_repo_files(top).ok())
         .unwrap_or_default();
 
-    let scraped: Vec<_> = extract::extract(scrape_text, cwd, exists)
-        .into_iter()
-        .map(|scraped| extract::ScrapedPath {
-            path: pathkey::resolve(&scraped.path, cwd),
-            ..scraped
-        })
-        .collect();
+    let mut scraped = extract::extract(scrape_text, cwd, exists);
+    for mention in &mut scraped {
+        // Already absolute; canonical so it matches the git and mined paths.
+        mention.path = pathkey::canonical(Path::new(&mention.path))
+            .to_string_lossy()
+            .into_owned();
+    }
 
     candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,
@@ -579,7 +577,11 @@ mod tests {
             let path = root.join("repo");
             std::fs::create_dir_all(path.join("src")).unwrap();
             let git = |args: &[&str]| {
+                // Ignore the developer's git config (commit signing, hooks).
                 let out = std::process::Command::new("git")
+                    // Git for Windows maps `/dev/null` to `NUL` itself.
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
                     .arg("-C")
                     .arg(&path)
                     .args(args)

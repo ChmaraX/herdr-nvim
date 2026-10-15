@@ -23,9 +23,10 @@ use anyhow::Result;
 
 use crate::{
     bridge,
-    extract::{parse_token, resolve},
+    extract::parse_token,
     herdr::{CliHerdr, Herdr},
     maneuver::Ctx,
+    pathkey::absolute,
 };
 
 /// Strip trailing sentence punctuation (`.`, `,`) agents' prose often leaves
@@ -100,7 +101,7 @@ pub(crate) fn resolve_click(
     exists: &dyn Fn(&Path) -> bool,
     git_toplevel: &dyn Fn(&Path) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    let direct = resolve(path, cwd);
+    let direct = absolute(path, cwd);
     if exists(&direct) {
         return Some(direct);
     }
@@ -111,7 +112,7 @@ pub(crate) fn resolve_click(
         return None;
     }
     let toplevel = git_toplevel(cwd)?;
-    let via_toplevel = resolve(path, &toplevel);
+    let via_toplevel = absolute(path, &toplevel);
     exists(&via_toplevel).then_some(via_toplevel)
 }
 

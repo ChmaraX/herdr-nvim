@@ -5,7 +5,7 @@
 //! newest-first. This module performs no I/O of its own: existence is checked
 //! through an injected closure so it stays deterministic and testable.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ pub fn extract(text: &str, cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Vec<Sc
                 continue;
             }
             if let Some((path, lineno)) = parse_token(tok) {
-                let resolved = resolve(path, cwd);
+                let resolved = crate::pathkey::absolute(path, cwd);
                 if exists(&resolved) {
                     all.push(ScrapedPath {
                         path: resolved.to_string_lossy().into_owned(),
@@ -132,37 +132,6 @@ pub(crate) fn parse_token(tok: &str) -> Option<(&str, Option<u32>)> {
     }
 
     Some((path, line))
-}
-
-/// Resolve a path token to an absolute, lexically-normalized [`PathBuf`].
-pub(crate) fn resolve(path: &str, cwd: &Path) -> PathBuf {
-    let expanded = if let Some(rest) = path.strip_prefix('~') {
-        let home = crate::home::home_dir()
-            .map(|home| home.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        PathBuf::from(format!("{home}{rest}"))
-    } else if Path::new(path).is_absolute() || path.starts_with('/') {
-        PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    normalize(&expanded)
-}
-
-/// Lexically normalize a path (resolve `.` and `..` without touching the fs).
-fn normalize(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in p.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::RootDir | Component::Prefix(_) => out.push(comp.as_os_str()),
-            Component::Normal(s) => out.push(s),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
