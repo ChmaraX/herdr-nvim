@@ -134,7 +134,7 @@ fn config_path() -> Option<PathBuf> {
     }
     let base = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        .or_else(|| crate::home::home_dir().map(|home| home.join(".config")))?;
     Some(base.join("herdr-nvim").join("config.toml"))
 }
 

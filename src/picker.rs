@@ -149,13 +149,22 @@ pub fn fuzzy_match(hay: &str, needle: &str) -> Option<(i32, Vec<(usize, usize)>)
 /// `~`-shortened if inside `home`, else absolute. No width handling -- the
 /// renderer ellipsizes the directory prefix to fit. Pure, unit tested.
 pub fn display_path(path: &str, cwd: &str, home: Option<&str>) -> String {
-    if let Some(rest) = path.strip_prefix(&format!("{cwd}/")) {
+    if let Some(rest) = strip_dir_prefix(path, cwd) {
         rest.to_owned()
-    } else if let Some(rest) = home.and_then(|h| path.strip_prefix(&format!("{h}/"))) {
+    } else if let Some(rest) = home.and_then(|h| strip_dir_prefix(path, h)) {
         format!("~/{rest}")
     } else {
         path.to_owned()
     }
+}
+
+/// `path` with the `dir` prefix and the separator after it removed, or `None`
+/// if `path` is not inside `dir`. Accepts either separator after `dir`, so a
+/// Windows path (`F:\repo\src\main.rs`) shortens against a cwd/home that
+/// herdr reports with backslashes just like a POSIX one does with `/`.
+fn strip_dir_prefix<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix(dir)?;
+    rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\'))
 }
 
 /// Shorten a directory `prefix` (the part before the filename) to at most
@@ -325,7 +334,7 @@ pub fn picker_cmd() -> Result<()> {
     let mut handoff: Handoff =
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
-    let home = std::env::var("HOME").ok();
+    let home = crate::home::home_dir().map(|home| home.to_string_lossy().into_owned());
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -888,6 +897,23 @@ mod tests {
         assert_eq!(
             display_path("/home/u/.config/foo.toml", "/repo", Some("/home/u")),
             "~/.config/foo.toml"
+        );
+    }
+
+    #[test]
+    fn display_path_accepts_backslash_separators() {
+        assert_eq!(
+            display_path(r"F:\repo\src\main.rs", r"F:\repo", Some(r"C:\Users\u")),
+            r"src\main.rs"
+        );
+        assert_eq!(
+            display_path(r"C:\Users\u\AppData\x.py", r"F:\repo", Some(r"C:\Users\u")),
+            r"~/AppData\x.py"
+        );
+        // `F:\repo2\...` is not inside `F:\repo`.
+        assert_eq!(
+            display_path(r"F:\repo2\a.rs", r"F:\repo", None),
+            r"F:\repo2\a.rs"
         );
     }
 

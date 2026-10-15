@@ -146,14 +146,24 @@ fn parse_pane_scroll(value: &Value) -> Option<PaneScroll> {
     })
 }
 
-/// Pure: extract `result.pane.foreground_cwd` (required) plus the optional
-/// `agent_session` and `scroll` blocks from a single `pane get` response.
-/// Backs `pane_snapshot`, which folds what used to be two separate `pane get`
-/// subprocess spawns (`pane_cwd` + `agent_session`) -- profiled as a
-/// meaningful chunk of the pick-file action phase's latency -- into one.
+/// Pure: the pane's working directory from a `pane get` response: the
+/// foreground process's cwd, else the pane's own cwd. herdr omits
+/// `foreground_cwd` when it cannot resolve the foreground process directory
+/// (herdr 0.9.3 on Windows never sets it for agent panes).
+fn parse_pane_cwd(value: &Value) -> Result<PathBuf> {
+    let cwd = string_at(value, "/result/pane/foreground_cwd")
+        .or_else(|_| string_at(value, "/result/pane/cwd"))?;
+    Ok(PathBuf::from(cwd))
+}
+
+/// Pure: extract the pane cwd (required, see `parse_pane_cwd`) plus the
+/// optional `agent_session` and `scroll` blocks from a single `pane get`
+/// response. Backs `pane_snapshot`, which folds what used to be two separate
+/// `pane get` subprocess spawns (`pane_cwd` + `agent_session`) -- profiled as
+/// a meaningful chunk of the pick-file action phase's latency -- into one.
 fn parse_pane_snapshot(value: &Value) -> Result<PaneSnapshot> {
     Ok(PaneSnapshot {
-        cwd: PathBuf::from(string_at(value, "/result/pane/foreground_cwd")?),
+        cwd: parse_pane_cwd(value)?,
         agent_session: parse_agent_session(value),
         scroll: parse_pane_scroll(value),
     })
@@ -462,10 +472,7 @@ impl Herdr for CliHerdr {
 
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(PathBuf::from(string_at(
-            &value,
-            "/result/pane/foreground_cwd",
-        )?))
+        parse_pane_cwd(&value)
     }
 
     fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
@@ -768,6 +775,7 @@ mod tests {
         let json = include_str!("../tests/fixtures/pane_get_with_session.json");
         let value: Value = serde_json::from_str(json).unwrap();
         let snapshot = parse_pane_snapshot(&value).unwrap();
+        // `foreground_cwd` wins over the pane's own `cwd` (`/home/u`).
         assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
         assert_eq!(snapshot.agent_session.unwrap().agent, "pi");
         assert_eq!(
@@ -787,6 +795,15 @@ mod tests {
         assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
         assert!(snapshot.agent_session.is_none());
         assert!(snapshot.scroll.is_none());
+    }
+
+    #[test]
+    fn pane_snapshot_falls_back_to_pane_cwd_without_foreground_cwd() {
+        // herdr on Windows omits `foreground_cwd` for agent panes (#52).
+        let json = include_str!("../tests/fixtures/pane_get_without_foreground_cwd.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        let snapshot = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
     }
 
     #[test]

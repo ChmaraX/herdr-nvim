@@ -7,6 +7,7 @@ mod extract;
 mod fff;
 mod gitscan;
 mod herdr;
+mod home;
 mod layout;
 mod maneuver;
 mod openlink;
