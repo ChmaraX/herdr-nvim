@@ -12,13 +12,15 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-fn non_empty(var: &str) -> Option<OsString> {
-    env::var_os(var).filter(|value| !value.is_empty())
-}
-
 /// `HOME`, else `USERPROFILE`, else `HOMEDRIVE` + `HOMEPATH`; `None` when none
 /// of them is set. Callers that need a `String` convert with `to_string_lossy`.
 pub(crate) fn home_dir() -> Option<PathBuf> {
+    home_dir_from(|var| env::var_os(var))
+}
+
+/// Pure: [`home_dir`] over an injected env lookup; empty values count as unset.
+fn home_dir_from(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let non_empty = |name: &str| var(name).filter(|value| !value.is_empty());
     non_empty("HOME")
         .or_else(|| non_empty("USERPROFILE"))
         .or_else(|| {
@@ -33,24 +35,37 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // One test, not two: tests run in parallel threads and all share the
-    // process environment, so separate HOME/USERPROFILE tests would race.
+    fn home_with(vars: &[(&str, &str)]) -> Option<PathBuf> {
+        home_dir_from(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        })
+    }
+
     #[test]
-    fn home_then_userprofile_then_homedrive_homepath() {
-        env::set_var("HOME", "/home/u");
-        env::set_var("USERPROFILE", "/profile");
-        assert_eq!(home_dir(), Some(PathBuf::from("/home/u")));
+    fn prefers_home() {
+        let vars = [("HOME", "/home/u"), ("USERPROFILE", r"C:\Users\u")];
+        assert_eq!(home_with(&vars), Some(PathBuf::from("/home/u")));
+    }
 
-        env::remove_var("HOME");
-        assert_eq!(home_dir(), Some(PathBuf::from("/profile")));
+    #[test]
+    fn falls_back_to_userprofile_when_home_is_unset_or_empty() {
+        let profile = Some(PathBuf::from(r"C:\Users\u"));
+        assert_eq!(home_with(&[("USERPROFILE", r"C:\Users\u")]), profile);
+        let vars = [("HOME", ""), ("USERPROFILE", r"C:\Users\u")];
+        assert_eq!(home_with(&vars), profile);
+    }
 
-        env::remove_var("USERPROFILE");
-        env::set_var("HOMEDRIVE", "C:");
-        env::set_var("HOMEPATH", r"\Users\u");
-        assert_eq!(home_dir(), Some(PathBuf::from(r"C:\Users\u")));
+    #[test]
+    fn falls_back_to_homedrive_plus_homepath() {
+        let vars = [("HOMEDRIVE", "C:"), ("HOMEPATH", r"\Users\u")];
+        assert_eq!(home_with(&vars), Some(PathBuf::from(r"C:\Users\u")));
+        assert_eq!(home_with(&[("HOMEDRIVE", "C:")]), None);
+    }
 
-        env::remove_var("HOMEDRIVE");
-        env::remove_var("HOMEPATH");
-        assert_eq!(home_dir(), None);
+    #[test]
+    fn none_when_nothing_is_set() {
+        assert_eq!(home_with(&[]), None);
     }
 }

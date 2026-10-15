@@ -146,20 +146,24 @@ fn parse_pane_scroll(value: &Value) -> Option<PaneScroll> {
     })
 }
 
-/// Pure: extract `result.pane.foreground_cwd` (required) plus the optional
-/// `agent_session` and `scroll` blocks from a single `pane get` response.
-/// Backs `pane_snapshot`, which folds what used to be two separate `pane get`
-/// subprocess spawns (`pane_cwd` + `agent_session`) -- profiled as a
-/// meaningful chunk of the pick-file action phase's latency -- into one.
+/// Pure: the pane's working directory from a `pane get` response: the
+/// foreground process's cwd, else the pane's own cwd. herdr omits
+/// `foreground_cwd` when it cannot resolve the foreground process directory
+/// (herdr 0.9.3 on Windows never sets it for agent panes).
+fn parse_pane_cwd(value: &Value) -> Result<PathBuf> {
+    let cwd = string_at(value, "/result/pane/foreground_cwd")
+        .or_else(|_| string_at(value, "/result/pane/cwd"))?;
+    Ok(PathBuf::from(cwd))
+}
+
+/// Pure: extract the pane cwd (required, see `parse_pane_cwd`) plus the
+/// optional `agent_session` and `scroll` blocks from a single `pane get`
+/// response. Backs `pane_snapshot`, which folds what used to be two separate
+/// `pane get` subprocess spawns (`pane_cwd` + `agent_session`) -- profiled as
+/// a meaningful chunk of the pick-file action phase's latency -- into one.
 fn parse_pane_snapshot(value: &Value) -> Result<PaneSnapshot> {
     Ok(PaneSnapshot {
-        // `foreground_cwd` is absent when herdr cannot resolve the foreground
-        // process directory (herdr 0.9.3 on Windows never sets it for agent
-        // panes); fall back to the pane cwd so the picker still works there.
-        cwd: PathBuf::from(
-            string_at(value, "/result/pane/foreground_cwd")
-                .or_else(|_| string_at(value, "/result/pane/cwd"))?,
-        ),
+        cwd: parse_pane_cwd(value)?,
         agent_session: parse_agent_session(value),
         scroll: parse_pane_scroll(value),
     })
@@ -468,10 +472,7 @@ impl Herdr for CliHerdr {
 
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(PathBuf::from(
-            string_at(&value, "/result/pane/foreground_cwd")
-                .or_else(|_| string_at(&value, "/result/pane/cwd"))?,
-        ))
+        parse_pane_cwd(&value)
     }
 
     fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
