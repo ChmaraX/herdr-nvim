@@ -790,6 +790,15 @@ mod tests {
     }
 
     #[test]
+    fn pane_snapshot_falls_back_to_pane_cwd_without_foreground_cwd() {
+        // herdr on Windows omits `foreground_cwd` for agent panes (#52).
+        let json = include_str!("../tests/fixtures/pane_get_without_foreground_cwd.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        let snapshot = parse_pane_snapshot(&value).unwrap();
+        assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
+    }
+
+    #[test]
     fn tab_infos_join_workspace_labels_and_tolerate_missing_names() {
         let value = serde_json::json!({"result": {"snapshot": {
             "workspaces": [{"workspace_id": "w26", "label": "novu"}],
