@@ -10,6 +10,22 @@ T.test("init: setup creates guarded keymaps", function()
   vim.keymap.del("n", " ac")
 end)
 
+-- Issue #49: the sidebar daemon calls setup() again after the user's config
+-- already did; the second call must not warn about the plugin's own keymaps.
+T.test("init: calling setup() again does not warn about its own keymaps", function()
+  local saved_config, orig_notify = vim.deepcopy(hn.config), vim.notify
+  vim.g.mapleader = " "
+  local warns = {}
+  vim.notify = function(msg, level) if level == vim.log.levels.WARN then table.insert(warns, msg) end end
+  hn.setup({ prefix = "<leader>h" }) -- the user's config (e.g. lazy.nvim opts)
+  hn.setup() -- the sidebar daemon's VimEnter setup()
+  vim.notify = orig_notify
+  hn.config = saved_config
+  T.eq(warns, {})
+  T.eq(vim.fn.maparg(" hl", "n", false, true).desc, "herdr-nvim: list comments")
+  T.eq(vim.fn.maparg(" hc", "x", false, true).desc, "herdr-nvim: comment selection")
+end)
+
 T.test("init: comment_line adds a decorated comment via stubbed input", function()
   comments.clear()
   local ui = require("herdr-nvim.ui")
