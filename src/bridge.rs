@@ -29,6 +29,7 @@ use crate::{
     config, daemon, extract, gitscan,
     herdr::{self, CliHerdr, Herdr},
     maneuver::{self, Ctx},
+    pathkey,
     picker::Handoff,
     sessions, state,
 };
@@ -110,7 +111,10 @@ fn start_pick() -> Result<()> {
     let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
     let text = herdr.read_pane(&target, lines)?;
 
-    let cwd = snapshot.cwd;
+    // One spelling for the cwd too: candidate paths are real paths (see
+    // `pathkey`), and the picker shortens them against this cwd and indexes
+    // the repo from it.
+    let cwd = pathkey::canonical(&snapshot.cwd);
     let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
         path.is_file()
     });
@@ -159,10 +163,12 @@ fn gather_candidates(
     let agent_name = agent_session.map(|s| s.agent.as_str()).unwrap_or("");
     let mined = session_text
         .as_deref()
-        .map(|text| sessions::mine_session(agent_name, text))
-        .unwrap_or_else(|| sessions::mine_session("", ""));
+        .map(|text| sessions::mine_session(agent_name, text, &|path| pathkey::resolve(path, cwd)))
+        .unwrap_or_else(|| sessions::mine_session("", "", &|path| path.to_owned()));
 
-    let toplevel = gitscan::toplevel(cwd);
+    // git paths are `<toplevel>/<path>`; canonical so they match the mined
+    // and scraped paths below.
+    let toplevel = gitscan::toplevel(cwd).map(|top| pathkey::canonical(&top));
     let git_dirty = toplevel
         .as_deref()
         .and_then(|top| gitscan::dirty_paths(top).ok())
@@ -197,7 +203,13 @@ fn gather_candidates(
         .and_then(|top| gitscan::list_repo_files(top).ok())
         .unwrap_or_default();
 
-    let scraped = extract::extract(scrape_text, cwd, exists);
+    let scraped: Vec<_> = extract::extract(scrape_text, cwd, exists)
+        .into_iter()
+        .map(|scraped| extract::ScrapedPath {
+            path: pathkey::resolve(&scraped.path, cwd),
+            ..scraped
+        })
+        .collect();
 
     candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,

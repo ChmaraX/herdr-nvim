@@ -12,6 +12,7 @@ mod layout;
 mod maneuver;
 mod openlink;
 mod path;
+mod pathkey;
 mod picker;
 mod sessions;
 mod state;

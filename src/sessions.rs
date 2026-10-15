@@ -124,6 +124,9 @@ pub(crate) struct Dialect {
     /// yields the file-path argument. Different agents nest the path under
     /// different keys (`/arguments/path`, `/input/file_path`, `/args/...`).
     path_pointers: &'static [&'static str],
+    /// Drop one leading `@` from the path, as the agent itself does before
+    /// opening the file (pi: models copy `@file` mentions from the prompt).
+    strip_at_prefix: bool,
     /// Maps a tool name to the `RawOp` it represents, or `None` to skip it.
     tool_map: fn(&str) -> Option<RawOp>,
 }
@@ -160,6 +163,7 @@ pub(crate) const PI_DIALECT: Dialect = Dialect {
     content_pointer: "/message/content",
     content_item_type: Some("toolCall"),
     path_pointers: &["/arguments/path", "/arguments/file_path"],
+    strip_at_prefix: true,
     tool_map: pi_tool_map,
 };
 
@@ -168,6 +172,7 @@ pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
     content_pointer: "/message/content",
     content_item_type: Some("tool_use"),
     path_pointers: &["/input/file_path", "/input/path"],
+    strip_at_prefix: false,
     tool_map: claude_tool_map,
 };
 
@@ -182,6 +187,7 @@ pub(crate) const AGY_DIALECT: Dialect = Dialect {
         "/args/path",
         "/args/file_path",
     ],
+    strip_at_prefix: false,
     tool_map: agy_tool_map,
 };
 
@@ -232,6 +238,10 @@ pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
             else {
                 continue;
             };
+            let path = match dialect.strip_at_prefix {
+                true => path.strip_prefix('@').unwrap_or(path),
+                false => path,
+            };
             out.push(RawEvent {
                 path: path.to_owned(),
                 op,
@@ -266,7 +276,9 @@ pub(crate) struct Mined {
 }
 
 /// Mine a session JSONL file for file-path events, dispatching on the pane's
-/// reported agent kind. Any kind without a parser (codex today, or a future
+/// reported agent kind. `resolve` maps each logged path to the one spelling
+/// the rest of the picker uses (`pathkey::resolve` in production), so a file
+/// the agent named two ways (`/repo/a.rs`, then `a.rs`) is one touch. Any kind without a parser (codex today, or a future
 /// unknown agent) yields an empty `Mined` -- never a crash or misparse, so
 /// callers can always fall through to the git/scrape layers (brief).
 ///
@@ -283,7 +295,11 @@ pub(crate) struct Mined {
 /// `.entry()` alone can't distinguish a fresh insert from an existing one
 /// without an extra branch on its return value, so the presence check is
 /// done up front instead.
-pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
+pub(crate) fn mine_session(
+    agent_kind: &str,
+    text: &str,
+    resolve: &dyn Fn(&str) -> String,
+) -> Mined {
     let raw: Vec<RawEvent> = match agent_kind {
         "pi" => parse_session(text, &PI_DIALECT),
         "claude" => parse_session(text, &CLAUDE_DIALECT),
@@ -300,12 +316,19 @@ pub(crate) fn mine_session(agent_kind: &str, text: &str) -> Mined {
     }
     let mut by_path: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
     let mut order: Vec<String> = Vec::new();
+    // A long session names the same few files over and over: resolve each
+    // logged spelling once.
+    let mut resolved: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for event in raw {
-        if !by_path.contains_key(&event.path) {
-            order.push(event.path.clone());
+        let path = resolved
+            .entry(event.path)
+            .or_insert_with_key(|logged| resolve(logged))
+            .clone();
+        if !by_path.contains_key(&path) {
+            order.push(path.clone());
         }
-        let entry = by_path.entry(event.path.clone()).or_insert_with(|| Acc {
+        let entry = by_path.entry(path).or_insert_with(|| Acc {
             first_op: event.op.clone(),
             last_touch_unix: None,
             ever_edited: false,
@@ -378,6 +401,10 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn as_logged(path: &str) -> String {
+        path.to_owned()
+    }
 
     #[test]
     fn epoch_parses_to_zero() {
@@ -468,28 +495,28 @@ mod tests {
     #[test]
     fn dispatches_by_agent_kind() {
         let pi_text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
-        let mined = mine_session("pi", pi_text);
+        let mined = mine_session("pi", pi_text, &as_logged);
         assert!(!mined.touches.is_empty());
 
         let claude_text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
-        let mined = mine_session("claude", claude_text);
+        let mined = mine_session("claude", claude_text, &as_logged);
         assert!(!mined.touches.is_empty());
 
         let agy_text = "{\"created_at\":\"2026-08-30T10:00:00Z\",\"tool_calls\":[{\"name\":\"write_to_file\",\"args\":{\"TargetFile\":\"/repo/main.rs\"}},{\"name\":\"replace_file_content\",\"args\":{\"TargetFile\":\"/repo/lib.rs\"}}]}\n";
-        let mined = mine_session("agy", agy_text);
+        let mined = mine_session("agy", agy_text, &as_logged);
         assert_eq!(mined.touches.len(), 2);
         assert_eq!(mined.touches[0].path, "/repo/main.rs");
         assert!(mined.touches[0].newly_created);
         assert_eq!(mined.touches[1].path, "/repo/lib.rs");
         assert!(mined.touches[1].was_edited);
 
-        let mined = mine_session("codex", pi_text);
+        let mined = mine_session("codex", pi_text, &as_logged);
         assert!(
             mined.touches.is_empty(),
             "codex has no parser yet -- must degrade to empty, not crash or misparse"
         );
 
-        let mined = mine_session("unknown-future-agent", pi_text);
+        let mined = mine_session("unknown-future-agent", pi_text, &as_logged);
         assert!(mined.touches.is_empty());
     }
 
@@ -498,7 +525,7 @@ mod tests {
         // pi fixture: /repo/src/new_mod.rs first (only) op is "write".
         // /repo/src/lib.rs first op is "read", later "edit" -> not newly created.
         let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
-        let mined = mine_session("pi", text);
+        let mined = mine_session("pi", text, &as_logged);
         let new_mod = mined
             .touches
             .iter()
@@ -521,7 +548,7 @@ mod tests {
         // path used to vanish into an untimed `reads: Vec<String>` list; now
         // it's a `MinedTouch` like any other, just with `was_edited: false`.
         let text = "{\"type\":\"session\",\"version\":3,\"id\":\"x\",\"timestamp\":\"2026-07-22T11:07:49.944Z\",\"cwd\":\"/repo\"}\n{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"2026-07-22T11:08:00.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"read\",\"arguments\":{\"path\":\"/repo/src/readonly.rs\"}}],\"api\":\"anthropic-messages\",\"provider\":\"anthropic\",\"model\":\"claude-sonnet-5\"}}\n";
-        let mined = mine_session("pi", text);
+        let mined = mine_session("pi", text, &as_logged);
         assert_eq!(mined.touches.len(), 1);
         let touch = &mined.touches[0];
         assert_eq!(touch.path, "/repo/src/readonly.rs");
@@ -534,7 +561,7 @@ mod tests {
     #[test]
     fn first_op_unix_is_earliest_event_timestamp() {
         let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
-        let mined = mine_session("pi", text);
+        let mined = mine_session("pi", text, &as_logged);
         // first event's ts, 2026-07-22T11:08:00Z, verified via `date -u -r`.
         assert_eq!(mined.first_op_unix, Some(1784718480));
     }
