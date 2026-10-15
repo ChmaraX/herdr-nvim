@@ -775,6 +775,7 @@ mod tests {
         let json = include_str!("../tests/fixtures/pane_get_with_session.json");
         let value: Value = serde_json::from_str(json).unwrap();
         let snapshot = parse_pane_snapshot(&value).unwrap();
+        // `foreground_cwd` wins over the pane's own `cwd` (`/home/u`).
         assert_eq!(snapshot.cwd, PathBuf::from("/repo"));
         assert_eq!(snapshot.agent_session.unwrap().agent, "pi");
         assert_eq!(
