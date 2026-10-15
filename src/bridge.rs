@@ -603,12 +603,15 @@ mod tests {
             std::fs::write(path.join("src/greet.js"), "hello\nbye\n").unwrap();
             // git reports the toplevel's real path, so expectations use it too
             // (macOS temp dirs sit behind the /var -> /private/var symlink).
-            let path = path.canonicalize().unwrap();
+            let path = pathkey::canonical(&path);
             Self { root, path }
         }
 
+        /// `rel` (written with `/`) under the repo, spelled the way the
+        /// picker spells it: native separators, like `gitscan` produces.
         fn file(&self, rel: &str) -> String {
-            self.path.join(rel).to_string_lossy().into_owned()
+            let native = rel.replace('/', std::path::MAIN_SEPARATOR_STR);
+            self.path.join(native).to_string_lossy().into_owned()
         }
 
         /// A pi session file whose assistant turns call `(tool, path)` in order.
