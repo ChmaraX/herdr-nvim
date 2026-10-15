@@ -1,0 +1,8 @@
+{
+  "fallback": "(mock) Nothing more scripted.",
+  "turns": [
+    { "text": "Updating the greeting with sed.",
+      "tools": [ { "name": "bash", "args": { "command": "sed -i 's/Hello/Hi/' src/greet.js && echo 'updated src/greet.js:2'" } } ] },
+    { "text": "Done: greeting updated." }
+  ]
+}

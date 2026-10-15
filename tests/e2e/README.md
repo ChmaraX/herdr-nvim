@@ -111,6 +111,12 @@ Smoke tests in `smoke/` (box health check after a rebuild, and templates for new
 - `agent-choice.tape`: two agents in two tabs; sending comments picks this tab's agent without asking. The tape checks the prompt landed in tab 1's pi; its header has the `box exec` command that shows tab 2's pi got nothing.
 - `journey.tape` with `journey.scenario.json`: the core loop. pi edits, picker, sidebar, comment, send to pi, pi replies. The tape checks the review prompt (`src/greet.js:5-7`, the comment, the closing line) in pi's pane before the reply.
 
+Regression tapes in `regress/` each pair with a `.scenario.json` of the same name (set it with `box scenario` first). Each tape fails on the bug it guards:
+
+- `picker-relative.tape`: pi edits by a relative path; the picker lists the file once, with git's diff stat.
+- `picker-spellings.tape`: pi reads an absolute path, edits `./…`, reads `@…`; each file is one row and the `@` file is listed.
+- `picker-scrape.tape`: pi edits through bash, so the picker scrapes the pane; the mention and git's row are one row that opens at the mentioned line.
+
 Use video (GIF) when the bug takes several steps to show. Use a screenshot when one frame shows it.
 
 ## Writing a mock LLM scenario

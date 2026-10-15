@@ -1,0 +1,14 @@
+{
+  "fallback": "(mock) Nothing more scripted.",
+  "turns": [
+    { "text": "Reading the file first.",
+      "tools": [ { "name": "read", "args": { "path": "/home/box/demo/src/greet.js" } } ] },
+    { "text": "Adding farewell.",
+      "tools": [ { "name": "edit", "args": { "path": "./src/greet.js",
+        "edits": [ { "oldText": "  return `Hello, ${name}!`;\n}\n",
+                     "newText": "  return `Hello, ${name}!`;\n}\n\nexport function farewell(name) {\n  return `Goodbye, ${name}!`;\n}\n" } ] } } ] },
+    { "text": "Checking the readme.",
+      "tools": [ { "name": "read", "args": { "path": "@README.md" } } ] },
+    { "text": "Done: src/greet.js now exports farewell." }
+  ]
+}
