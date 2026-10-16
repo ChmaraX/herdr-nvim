@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.0...v1.2.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **keymaps:** stop warning about our own maps when setup() runs again ([#54](https://github.com/ChmaraX/herdr-nvim/issues/54)) ([e1b53ef](https://github.com/ChmaraX/herdr-nvim/commit/e1b53ef3ed898b5e3c6ebf92547851a31619bbde))
+* **picker:** list each file once, however the agent spelled its path ([#57](https://github.com/ChmaraX/herdr-nvim/issues/57)) ([d0d0f6e](https://github.com/ChmaraX/herdr-nvim/commit/d0d0f6ee5c431ad2b2c45826ae8c1b875afde818))
+* **picker:** make pick-file work on Windows ([#55](https://github.com/ChmaraX/herdr-nvim/issues/55)) ([241a555](https://github.com/ChmaraX/herdr-nvim/commit/241a5556be97bf8a6a33114d54d504b6e469649c))
+
 ## [1.2.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.1.0...v1.2.0) (2026-10-08)
 
 
