@@ -122,11 +122,13 @@ pub fn build_candidates(input: BuildInput) -> Vec<Candidate> {
 
     // Scrape fallback: only used when session mining produced nothing at
     // all (no agent_session tracked, or the tracked agent has no parser) --
-    // otherwise the touches above are strictly better data.
+    // otherwise the touches above are strictly better data. A mention of a
+    // path already listed (a git-dirty file the pane names) is the same
+    // file: it lends that row its line number instead of adding a second row.
     if input.mined_touches.is_empty() {
-        let mut seen: HashSet<String> = HashSet::new();
         for scraped in input.scraped_mentioned {
-            if !seen.insert(scraped.path.clone()) {
+            if let Some(listed) = out.iter_mut().find(|c| c.path == scraped.path) {
+                listed.line = listed.line.or(scraped.line);
                 continue;
             }
             out.push(Candidate {

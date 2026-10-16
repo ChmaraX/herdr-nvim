@@ -29,6 +29,7 @@ use crate::{
     config, daemon, extract, gitscan,
     herdr::{self, CliHerdr, Herdr},
     maneuver::{self, Ctx},
+    pathkey,
     picker::Handoff,
     sessions, state,
 };
@@ -157,12 +158,15 @@ fn gather_candidates(
 
     let session_text = agent_session.and_then(|s| sessions::load_session_text(s, cwd));
     let agent_name = agent_session.map(|s| s.agent.as_str()).unwrap_or("");
-    let mined = session_text
-        .as_deref()
-        .map(|text| sessions::mine_session(agent_name, text))
-        .unwrap_or_else(|| sessions::mine_session("", ""));
+    // No session text mines nothing, like an agent without a parser.
+    let mined =
+        sessions::mine_session(agent_name, session_text.as_deref().unwrap_or(""), &|path| {
+            pathkey::resolve(path, cwd)
+        });
 
-    let toplevel = gitscan::toplevel(cwd);
+    // git paths are `<toplevel>/<path>`; canonical so they match the mined
+    // and scraped paths below.
+    let toplevel = gitscan::toplevel(cwd).map(|top| pathkey::canonical(&top));
     let git_dirty = toplevel
         .as_deref()
         .and_then(|top| gitscan::dirty_paths(top).ok())
@@ -197,7 +201,13 @@ fn gather_candidates(
         .and_then(|top| gitscan::list_repo_files(top).ok())
         .unwrap_or_default();
 
-    let scraped = extract::extract(scrape_text, cwd, exists);
+    let mut scraped = extract::extract(scrape_text, cwd, exists);
+    for mention in &mut scraped {
+        // Already absolute; canonical so it matches the git and mined paths.
+        mention.path = pathkey::canonical(Path::new(&mention.path))
+            .to_string_lossy()
+            .into_owned();
+    }
 
     candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,
@@ -551,5 +561,174 @@ mod tests {
         let cwd = std::path::Path::new("/tmp");
         let out = gather_candidates(None, text, cwd, &|_| false);
         assert!(out.is_empty());
+    }
+
+    /// A throwaway git repo with `src/greet.js` (edited, uncommitted) and
+    /// `src/notes.md` (clean). Deleted on drop.
+    struct Repo {
+        root: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Repo {
+        fn new(name: &str) -> Self {
+            let root = env::temp_dir().join(format!("hn-gather-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let path = root.join("repo");
+            std::fs::create_dir_all(path.join("src")).unwrap();
+            let git = |args: &[&str]| {
+                // Ignore the developer's git config (commit signing, hooks).
+                let out = std::process::Command::new("git")
+                    // Git for Windows maps `/dev/null` to `NUL` itself.
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .arg("-C")
+                    .arg(&path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {out:?}");
+            };
+            git(&["init", "-q"]);
+            std::fs::write(path.join("src/greet.js"), "hello\n").unwrap();
+            std::fs::write(path.join("src/notes.md"), "notes\n").unwrap();
+            git(&["add", "."]);
+            git(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "init",
+            ]);
+            std::fs::write(path.join("src/greet.js"), "hello\nbye\n").unwrap();
+            // git reports the toplevel's real path, so expectations use it too
+            // (macOS temp dirs sit behind the /var -> /private/var symlink).
+            let path = pathkey::canonical(&path);
+            Self { root, path }
+        }
+
+        /// `rel` (written with `/`) under the repo, spelled the way the
+        /// picker spells it: native separators, like `gitscan` produces.
+        fn file(&self, rel: &str) -> String {
+            let native = rel.replace('/', std::path::MAIN_SEPARATOR_STR);
+            self.path.join(native).to_string_lossy().into_owned()
+        }
+
+        /// A pi session file whose assistant turns call `(tool, path)` in order.
+        fn pi_session(&self, cwd: &Path, calls: &[(&str, &str)]) -> crate::herdr::AgentSession {
+            let header = serde_json::json!({
+                "type": "session", "version": 3, "id": "s",
+                "timestamp": "2026-07-22T11:07:49.944Z", "cwd": cwd,
+            });
+            let mut text = format!("{header}\n");
+            for (i, (tool, path)) in calls.iter().enumerate() {
+                let record = serde_json::json!({
+                    "type": "message", "id": format!("m{i}"), "parentId": null,
+                    "timestamp": format!("2026-07-22T11:08:0{i}.000Z"),
+                    "message": {"role": "assistant", "content": [{
+                        "type": "toolCall", "id": format!("t{i}"), "name": tool,
+                        "arguments": {"path": path},
+                    }]},
+                });
+                text.push_str(&format!("{record}\n"));
+            }
+            let file = self.root.join("session.jsonl");
+            std::fs::write(&file, text).unwrap();
+            crate::herdr::AgentSession {
+                agent: "pi".into(),
+                kind: "path".into(),
+                value: file.to_string_lossy().into_owned(),
+            }
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The picker's default view: (path, is_edit, diff_stat, line) per row.
+    fn session_rows(
+        session: Option<&crate::herdr::AgentSession>,
+        scrape: &str,
+        cwd: &Path,
+    ) -> Vec<(String, bool, Option<(u32, u32)>, Option<u32>)> {
+        gather_candidates(session, scrape, cwd, &|path| path.exists())
+            .into_iter()
+            .filter(|c| c.session)
+            .map(|c| (c.path, c.is_edit, c.diff_stat, c.line))
+            .collect()
+    }
+
+    /// One file on disk is one picker row, whichever way the agent spelled
+    /// its path. git always reports `<toplevel>/<path>`; pi logs the path the
+    /// model wrote, which pi itself resolves against its cwd after dropping a
+    /// leading `@`.
+    #[test]
+    fn gather_candidates_lists_an_agent_edited_file_once() {
+        let repo = Repo::new("spellings");
+        let greet = repo.file("src/greet.js");
+        let src = repo.path.join("src");
+        let cases: [(&str, &Path, Vec<(&str, &str)>); 5] = [
+            ("relative", &repo.path, vec![("edit", "src/greet.js")]),
+            ("dot-relative", &repo.path, vec![("edit", "./src/greet.js")]),
+            ("dot-dot", &src, vec![("edit", "../src/greet.js")]),
+            ("at-prefixed", &repo.path, vec![("edit", "@src/greet.js")]),
+            (
+                "read absolute, edit relative",
+                &repo.path,
+                vec![("read", greet.as_str()), ("edit", "src/greet.js")],
+            ),
+        ];
+        for (name, cwd, calls) in cases {
+            let session = repo.pi_session(cwd, &calls);
+            assert_eq!(
+                session_rows(Some(&session), "", cwd),
+                vec![(greet.clone(), true, Some((1, 0)), None)],
+                "{name}"
+            );
+        }
+    }
+
+    /// A file the agent only read (clean in git) is listed under its real path.
+    #[test]
+    fn gather_candidates_keeps_a_read_only_touch_whatever_its_spelling() {
+        let repo = Repo::new("read-only");
+        let session = repo.pi_session(&repo.path, &[("read", "@src/notes.md")]);
+        let rows = session_rows(Some(&session), "", &repo.path);
+        assert!(
+            rows.iter()
+                .any(|(path, ..)| *path == repo.file("src/notes.md")),
+            "{rows:?}"
+        );
+    }
+
+    /// The pane's cwd reached through a symlinked directory still names the
+    /// same files git reports under the real toplevel.
+    #[cfg(unix)]
+    #[test]
+    fn gather_candidates_dedupes_paths_under_a_symlinked_cwd() {
+        let repo = Repo::new("symlink");
+        let link = repo.root.join("link");
+        std::os::unix::fs::symlink(&repo.path, &link).unwrap();
+        let session = repo.pi_session(&link, &[("edit", "src/greet.js")]);
+        assert_eq!(
+            session_rows(Some(&session), "", &link),
+            vec![(repo.file("src/greet.js"), true, Some((1, 0)), None)]
+        );
+    }
+
+    /// Without an agent session (a plain shell pane) the scraped mention and
+    /// git's dirty entry are the same file: one row, keeping the line number.
+    #[test]
+    fn gather_candidates_merges_a_scraped_mention_into_the_git_row() {
+        let repo = Repo::new("scrape");
+        assert_eq!(
+            session_rows(None, "changed src/greet.js:2 just now", &repo.path),
+            vec![(repo.file("src/greet.js"), true, Some((1, 0)), Some(2))]
+        );
     }
 }
