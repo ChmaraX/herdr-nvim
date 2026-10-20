@@ -33,9 +33,23 @@ local function normalized_marks()
   return s_line, s_col, e_line, e_col
 end
 
+local function line_text(line)
+  return vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
+end
+
+-- getregionpos gives 1-indexed byte columns, but 0 for a position past the end
+-- of the line: on an empty line, or after `$` at the start of a backwards
+-- selection. The span uses 0-indexed byte columns, so 0 maps to the line end.
+local function regionpos_byte(line, col)
+  return col == 0 and #line_text(line) or col - 1
+end
+
+-- 0-indexed exclusive byte column just past the character at 0-indexed byte
+-- `col`, so a multibyte last character stays whole. At the line end there is
+-- no character to step past.
 local function end_exclusive(line, col)
-  local text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
-  return math.min((col - 1) + #vim.fn.strpart(text, col - 1, 1, true), #text)
+  local text = line_text(line)
+  return math.min(col + #vim.fn.strpart(text, col, 1, true), #text)
 end
 
 local function regionpos_span(mode)
@@ -55,7 +69,8 @@ local function regionpos_span(mode)
   local first, last = pos[1], pos[#pos]
   local span = { start_line = first[1][2], end_line = last[2][2] }
   if mode == "v" then
-    span.cols = { first[1][3] - 1, end_exclusive(last[2][2], last[2][3]) }
+    local s_line, e_line = first[1][2], last[2][2]
+    span.cols = { regionpos_byte(s_line, first[1][3]), end_exclusive(e_line, regionpos_byte(e_line, last[2][3])) }
   end
   return span
 end
@@ -64,8 +79,8 @@ local function whole_single_line(span)
   if not span.cols or span.start_line ~= span.end_line then
     return false
   end
-  local line = vim.api.nvim_buf_get_lines(0, span.start_line - 1, span.start_line, false)[1] or ""
-  return span.cols[1] == 0 and span.cols[2] >= #line
+  -- An empty span (only the line end selected) also falls back to the line.
+  return span.cols[2] <= span.cols[1] or (span.cols[1] == 0 and span.cols[2] >= #line_text(span.start_line))
 end
 
 -- Returns the last visual selection as one span value:
@@ -84,7 +99,7 @@ function M.visual_region()
       local include_end = vim.o.selection ~= "exclusive"
         or (cursor[1] == start_mark[1] and cursor[2] == start_mark[2])
         or (s_line == e_line and s_col == e_col)
-      span.cols = { s_col, include_end and end_exclusive(e_line, e_col + 1) or e_col }
+      span.cols = { s_col, include_end and end_exclusive(e_line, e_col) or e_col }
     end
   end
   if mode ~= "v" or whole_single_line(span) then

@@ -80,6 +80,50 @@ T.test("ui: visual_region gives no columns for whole-line selections", function(
   T.eq(region({ "abc", "def" }, "l\22jl"), { start_line = 1, end_line = 2 }, "blockwise")
 end)
 
+T.test("ui: a charwise selection touching an empty line gives a span comments.add accepts", function()
+  -- #58: getregionpos reports col 0 on an empty line, which turned into byte
+  -- column -1 and made nvim_buf_set_extmark throw "Invalid 'end_col'".
+  comments.clear()
+  local lines = { "abc", "", "def" }
+  for _, selection in ipairs({ "inclusive", "exclusive" }) do
+    for _, keys in ipairs({ "vj", "vj$", "vjo", "jv", "jvj", "jvjo", "jjvk" }) do
+      local name = keys .. " (" .. selection .. ")"
+      local r = region(lines, keys, selection)
+      if r.cols then
+        for _, c in ipairs(r.cols) do
+          T.ok(c >= 0, name .. ": negative column " .. vim.inspect(r))
+        end
+      end
+      local ok, err = pcall(comments.add, vim.api.nvim_get_current_buf(), r, "note")
+      T.ok(ok, name .. ": comments.add failed: " .. tostring(err))
+    end
+  end
+  comments.clear()
+end)
+
+T.test("ui: a charwise selection on an empty line covers what Vim selects", function()
+  local lines = { "abc", "", "def" }
+  local r, text = region(lines, "vj")
+  T.eq(r, { start_line = 1, end_line = 2, cols = { 0, 0 } }, "ends on the empty line")
+  T.eq(text, { "abc", "" })
+  r, text = region(lines, "jvj")
+  T.eq(r, { start_line = 2, end_line = 3, cols = { 0, 1 } }, "starts on the empty line")
+  T.eq(text, { "", "d" })
+  T.eq(region(lines, "jjvk"), r, "the same selection made backwards")
+  T.eq(region(lines, "jv"), { start_line = 2, end_line = 2 }, "only the empty line is the whole line")
+end)
+
+T.test("ui: a backwards selection starting past the end of a line excludes that line's text", function()
+  -- `$` at the start of a backwards selection is past the line end, which
+  -- getregionpos also reports as col 0. It must not become the line start.
+  local r, text = region({ "abc", "def" }, "jvk$")
+  T.eq(r, { start_line = 1, end_line = 2, cols = { 3, 1 } })
+  T.eq(text, { "", "d" })
+  r, text = region({ "abc", "" }, "jvk$")
+  T.eq(r, { start_line = 1, end_line = 2, cols = { 3, 0 } })
+  T.eq(text, { "", "" })
+end)
+
 T.test("ui: decorate rails each line in the sign column + a callout, undecorate removes both", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
