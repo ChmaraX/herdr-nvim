@@ -80,6 +80,26 @@ T.test("ui: visual_region gives no columns for whole-line selections", function(
   T.eq(region({ "abc", "def" }, "l\22jl"), { start_line = 1, end_line = 2 }, "blockwise")
 end)
 
+T.test("ui: a charwise selection touching an empty line gives a span comments.add accepts", function()
+  -- #58: getregionpos reports col 0 on an empty line, which turned into byte
+  -- column -1 and made nvim_buf_set_extmark throw "Invalid 'end_col'".
+  local lines = { "abc", "", "def" }
+  for _, selection in ipairs({ "inclusive", "exclusive" }) do
+    for _, keys in ipairs({ "vj", "vj$", "vjo", "jv", "jvj", "jvjo", "jjvk" }) do
+      local name = keys .. " (" .. selection .. ")"
+      local r = region(lines, keys, selection)
+      if r.cols then
+        for _, c in ipairs(r.cols) do
+          T.ok(c >= 0, name .. ": negative column " .. vim.inspect(r))
+        end
+      end
+      local ok, err = pcall(comments.add, vim.api.nvim_get_current_buf(), r, "note")
+      T.ok(ok, name .. ": comments.add failed: " .. tostring(err))
+    end
+  end
+  comments.clear()
+end)
+
 T.test("ui: decorate rails each line in the sign column + a callout, undecorate removes both", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
