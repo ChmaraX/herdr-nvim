@@ -33,9 +33,19 @@ local function normalized_marks()
   return s_line, s_col, e_line, e_col
 end
 
+-- getregionpos gives 1-indexed byte columns, except on an empty line, where
+-- it gives 0. The span uses 0-indexed byte columns, so 0 maps to 0, not -1.
+local function start_byte(col)
+  return math.max(col - 1, 0)
+end
+
+-- 0-indexed exclusive byte column just past the character at 1-indexed `col`,
+-- so a multibyte last character stays whole. An empty line has no character
+-- to step past: the end stays at 0.
 local function end_exclusive(line, col)
   local text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
-  return math.min((col - 1) + #vim.fn.strpart(text, col - 1, 1, true), #text)
+  local start = start_byte(col)
+  return math.min(start + #vim.fn.strpart(text, start, 1, true), #text)
 end
 
 local function regionpos_span(mode)
@@ -55,7 +65,7 @@ local function regionpos_span(mode)
   local first, last = pos[1], pos[#pos]
   local span = { start_line = first[1][2], end_line = last[2][2] }
   if mode == "v" then
-    span.cols = { first[1][3] - 1, end_exclusive(last[2][2], last[2][3]) }
+    span.cols = { start_byte(first[1][3]), end_exclusive(last[2][2], last[2][3]) }
   end
   return span
 end

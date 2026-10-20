@@ -100,6 +100,18 @@ T.test("ui: a charwise selection touching an empty line gives a span comments.ad
   comments.clear()
 end)
 
+T.test("ui: a charwise selection on an empty line covers what Vim selects", function()
+  local lines = { "abc", "", "def" }
+  local r, text = region(lines, "vj")
+  T.eq(r, { start_line = 1, end_line = 2, cols = { 0, 0 } }, "ends on the empty line")
+  T.eq(text, { "abc", "" })
+  r, text = region(lines, "jvj")
+  T.eq(r, { start_line = 2, end_line = 3, cols = { 0, 1 } }, "starts on the empty line")
+  T.eq(text, { "", "d" })
+  T.eq(region(lines, "jjvk"), r, "the same selection made backwards")
+  T.eq(region(lines, "jv"), { start_line = 2, end_line = 2 }, "only the empty line is the whole line")
+end)
+
 T.test("ui: decorate rails each line in the sign column + a callout, undecorate removes both", function()
   comments.clear()
   local b = vim.api.nvim_create_buf(false, true)
