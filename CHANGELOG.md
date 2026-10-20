@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.1...v1.2.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ui:** keep comments working when a selection touches an empty line ([#59](https://github.com/ChmaraX/herdr-nvim/issues/59)) ([3ca8671](https://github.com/ChmaraX/herdr-nvim/commit/3ca867153baad10d658f731ad8dcdd1d4a1fc1c2))
+
 ## [1.2.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.0...v1.2.1) (2026-10-16)
 
 
