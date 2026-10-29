@@ -111,6 +111,14 @@ The next toggle in that tab starts a fresh nvim.
   This includes every file that `git ls-files` reports, and it honors
   `.gitignore`. The match is on the path and filename, not the file contents.
 
+`Ctrl-o` opens the files your agent touched at once, up to 100, including
+those past the `max_files` rows the list shows. The highlighted one is shown,
+and the rest are added to the buffer list (`:ls`, `:bnext`) at the line the
+agent mentioned. nvim reads each one when you first switch to it, so LSP
+diagnostics for it start then. Files nvim already has open are left as they
+are. Type a query first to narrow which of the agent's files get opened;
+repo-wide matches are never added, unless you highlight one.
+
 The repo-wide tier is served by [fff-search](https://crates.io/crates/fff-search)
 (fff.nvim's core matcher): multi-term queries (`cargo toml`), typo
 tolerance, and frecency ranking. If a fff.nvim frecency database exists at

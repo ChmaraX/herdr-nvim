@@ -210,7 +210,7 @@ pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Optio
 
 /// Quote `s` as a Vimscript single-quoted string, where a literal quote is
 /// represented by two consecutive quotes.
-fn vim_string_literal(s: &str) -> String {
+pub(crate) fn vim_string_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 

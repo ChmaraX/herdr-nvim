@@ -3,15 +3,15 @@
 //! Reads a handoff JSON file (path in `$HERDR_NVIM_HANDOFF`) written by the
 //! bridge, renders a framed crossterm overlay of a single flat,
 //! recency-ordered [`Candidate`] list, lets the user fuzzy-filter/navigate/
-//! pick one, writes the chosen index back into the handoff, and spawns a
-//! detached finisher.
+//! pick one (Enter) or every match (Ctrl-o), writes the chosen indices
+//! back into the handoff, and spawns a detached finisher.
 //!
 //! The default (empty-query) view shows only session-touched candidates,
 //! capped to `handoff.max_files`; the moment the user types, matching widens
 //! to every candidate (including the repo-wide pool the bridge appended) and
 //! is ranked by a fuzzy score. The pure halves (`fuzzy_match`, `display_path`,
 //! `ellipsize_prefix`, `default_view`, `visible_count`, `scroll_window`,
-//! `fmt_age`) are unit tested; the interactive loop and `render` are exercised
+//! `fmt_age`, `open_all_selection`) are unit tested; the interactive loop and `render` are exercised
 //! live.
 
 use std::io::{self, Write};
@@ -49,8 +49,10 @@ const AMBER: Color = Color::Rgb {
 #[derive(Serialize, Deserialize)]
 pub struct Handoff {
     pub candidates: Vec<Candidate>,
-    /// Index into `candidates`; written back by the picker on Enter.
-    pub chosen: Option<usize>,
+    /// Indices into `candidates`, written back by the picker: one on Enter,
+    /// up to 100 agent-touched matches on Ctrl-o. The first is shown in the sidebar; the
+    /// rest are added to the buffer list. Empty means nothing was picked.
+    pub chosen: Vec<usize>,
     pub workspace: String,
     /// Tab the pick-file action was invoked from; the finisher opens/reuses the
     /// sidebar in this tab.
@@ -325,6 +327,33 @@ pub fn scroll_window(cursor: usize, total: usize, viewport_rows: usize) -> (usiz
     (first, viewport_rows)
 }
 
+/// Most files one Ctrl-o opens, so a broad query never opens the whole repo.
+const OPEN_ALL_CAP: usize = 100;
+
+/// The Ctrl-o selection: the row under `cursor` first (it is the one shown),
+/// then the other session (agent-touched) matches in order, including ones
+/// past the `max_files` rows the view shows, capped to `cap`. Repo-wide
+/// matches a query pulls in are never added. Pure, unit tested.
+pub fn open_all_selection(
+    cands: &[Candidate],
+    matches: &[FilterMatch],
+    cursor: usize,
+    cap: usize,
+) -> Vec<usize> {
+    let Some(current) = matches.get(cursor) else {
+        return Vec::new();
+    };
+    std::iter::once(current.index)
+        .chain(
+            matches
+                .iter()
+                .map(|m| m.index)
+                .filter(|&index| index != current.index && cands[index].session),
+        )
+        .take(cap)
+        .collect()
+}
+
 /// Entry point for the picker overlay subcommand.
 pub fn picker_cmd() -> Result<()> {
     let handoff_path =
@@ -345,15 +374,16 @@ pub fn picker_cmd() -> Result<()> {
     if fff.is_none() {
         eprintln!("herdr-nvim: fff index failed to initialize; fuzzy fallback tier is empty");
     }
-    if let Some(chosen) = run_overlay(
+    let chosen = run_overlay(
         &handoff.candidates,
         &handoff.cwd,
         home.as_deref(),
         handoff.max_files,
         now,
         fff.as_ref(),
-    )? {
-        handoff.chosen = Some(chosen);
+    )?;
+    if !chosen.is_empty() {
+        handoff.chosen = chosen;
         let encoded = serde_json::to_string(&handoff)?;
         std::fs::write(&handoff_path, encoded)
             .with_context(|| format!("writing handoff {handoff_path}"))?;
@@ -385,8 +415,9 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
-/// or `None` if the user dismissed it (Esc/Ctrl-c) or there is nothing to pick.
+/// Run the interactive overlay. Returns the picked indices into `cands` (one on
+/// Enter, see [`open_all_selection`] for Ctrl-o), or an empty list if the user
+/// dismissed it (Esc/Ctrl-c) or there is nothing to pick.
 fn run_overlay(
     cands: &[Candidate],
     cwd: &str,
@@ -394,9 +425,9 @@ fn run_overlay(
     max_files: u32,
     now: u64,
     fff: Option<&FffIndex>,
-) -> Result<Option<usize>> {
+) -> Result<Vec<usize>> {
     if cands.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     // Display paths depend only on cwd/home, not the query -- compute once.
     let displays: Vec<String> = cands
@@ -443,8 +474,10 @@ fn run_overlay(
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let last = visible.len().saturating_sub(1);
         match key.code {
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Enter => return Ok(visible.get(cursor).map(|m| m.index)),
+            KeyCode::Esc => return Ok(Vec::new()),
+            KeyCode::Enter => {
+                return Ok(visible.get(cursor).map(|m| m.index).into_iter().collect())
+            }
             KeyCode::Up => cursor = cursor.saturating_sub(1),
             KeyCode::Down => cursor = (cursor + 1).min(last),
             KeyCode::PageUp => cursor = cursor.saturating_sub(viewport),
@@ -458,7 +491,10 @@ fn run_overlay(
             // Ctrl chords: navigation + editing that never reach the query, so
             // every *printable* key below is free to be typed (no more `q`/`j`/
             // `k` swallowed by nav).
-            KeyCode::Char('c') if ctrl => return Ok(None),
+            KeyCode::Char('c') if ctrl => return Ok(Vec::new()),
+            KeyCode::Char('o') if ctrl => {
+                return Ok(open_all_selection(cands, &matches, cursor, OPEN_ALL_CAP))
+            }
             KeyCode::Char('p') if ctrl => cursor = cursor.saturating_sub(1),
             KeyCode::Char('n') if ctrl => cursor = (cursor + 1).min(last),
             KeyCode::Char('a') if ctrl => cursor = 0,
@@ -576,7 +612,7 @@ fn render(
     }
 
     // Keybind hint on the second-to-last row (one blank bottom-pad row below).
-    let hint = "↑↓ move  ⏎ open  ^u clear  esc close";
+    let hint = "↑↓ move  ⏎ open  ^o open all  ^u clear  esc close";
     queue!(
         out,
         MoveTo(PAD_X, rows.saturating_sub(2)),
@@ -802,6 +838,68 @@ mod tests {
             .iter()
             .map(|c| display_path(&c.path, cwd, None))
             .collect()
+    }
+
+    // --- open_all_selection -----------------------------------------------
+
+    fn rows(indices: &[usize]) -> Vec<FilterMatch> {
+        indices
+            .iter()
+            .map(|&index| FilterMatch {
+                index,
+                score: 0,
+                highlights: Vec::new(),
+            })
+            .collect()
+    }
+
+    fn session_cands(count: usize) -> Vec<Candidate> {
+        (0..count).map(|i| cand(&format!("/r/f{i}.rs"))).collect()
+    }
+
+    #[test]
+    fn open_all_puts_the_cursor_row_first_then_the_rest_in_order() {
+        assert_eq!(
+            open_all_selection(&session_cands(10), &rows(&[4, 7, 2, 9]), 2, 20),
+            [2, 4, 7, 9]
+        );
+    }
+
+    #[test]
+    fn open_all_is_capped() {
+        assert_eq!(
+            open_all_selection(&session_cands(10), &rows(&[4, 7, 2, 9]), 3, 2),
+            [9, 4]
+        );
+    }
+
+    #[test]
+    fn open_all_reaches_past_the_rows_the_default_view_shows() {
+        let cands = session_cands(30);
+        let matches = default_view(&cands);
+        assert_eq!(visible_count(matches.len(), "", 20), 20);
+        assert_eq!(
+            open_all_selection(&cands, &matches, 0, OPEN_ALL_CAP).len(),
+            30
+        );
+    }
+
+    #[test]
+    fn open_all_skips_repo_wide_matches_but_keeps_a_highlighted_one() {
+        let cands = vec![
+            cand("/r/touched.rs"),
+            repo_cand("/r/untouched.rs"),
+            cand("/r/also-touched.rs"),
+            repo_cand("/r/highlighted.rs"),
+        ];
+        let matches = rows(&[0, 1, 2, 3]);
+        assert_eq!(open_all_selection(&cands, &matches, 0, 20), [0, 2]);
+        assert_eq!(open_all_selection(&cands, &matches, 3, 20), [3, 0, 2]);
+    }
+
+    #[test]
+    fn open_all_on_an_empty_list_picks_nothing() {
+        assert!(open_all_selection(&[], &[], 0, 20).is_empty());
     }
 
     // --- fuzzy_match ------------------------------------------------------

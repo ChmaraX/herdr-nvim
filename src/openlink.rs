@@ -162,7 +162,7 @@ pub fn open_link_cmd() -> Result<()> {
         // not a second, independent cwd lookup.
         cwd: cwd.clone(),
     };
-    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
+    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line, &[])
 }
 
 #[cfg(test)]

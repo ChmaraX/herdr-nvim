@@ -6,13 +6,14 @@ A popup that lists the files the agent touched. Typing searches the whole repo, 
 
 - default list: files the agent touched this session, newest first, with the cursor on the newest. Rows show a `new` badge for created files, green/red `+N -M` stats and an age (`now`, `2m`, `3h`). At most `picker.max_files` (20) rows. Sources are the agent's session, git changes (uncommitted, plus commits since the session started) and recent pane text. Files that were edited and then reverted rank lower.
 - fuzzy search: typing searches every repo file (tracked plus untracked, respecting `.gitignore`) by path and name, not by contents. Multi-term and typo-tolerant. Agent-touched files rank first and matches are highlighted.
-- keys: `↑/↓`, `Ctrl+P/N`, `PgUp/PgDn`, `Home/End`, `Ctrl+A/E`, `Ctrl+U` (clear), `Backspace`, `Esc`/`Ctrl+C` (close).
+- keys: `↑/↓`, `Ctrl+P/N`, `PgUp/PgDn`, `Home/End`, `Ctrl+A/E`, `Ctrl+O` (open all), `Ctrl+U` (clear), `Backspace`, `Esc`/`Ctrl+C` (close).
 - open at line: `⏎` closes the popup and opens the file in this tab's sidebar, at the line if one is known, and focuses the sidebar. A closed sidebar is opened; an open one is never toggled shut.
+- open all: `Ctrl+O` opens the highlighted file like `⏎`, then adds every other agent-touched match to the sidebar's buffer list (`:ls`), up to 100, including matches past the `max_files` rows on screen. While searching, repo-wide matches are skipped; only a highlighted one is opened. Each keeps its known line. Files already in the buffer list are left alone, so pressing it twice adds nothing.
 - frecency: an existing fff.nvim history is reused for ranking. `picker.frecency=false` turns this off.
 
 ## How to get to it (user POV)
 
-Press `prefix+o` from the agent pane or from any pane in the same tab, the sidebar included. The popup is titled "open file" and shows "N files" ("N matches" while searching) and the footer `↑↓ move · ⏎ open · ^U clear · esc close`.
+Press `prefix+o` from the agent pane or from any pane in the same tab, the sidebar included. The popup is titled "open file" and shows "N files" ("N matches" while searching) and the footer `↑↓ move  ⏎ open  ^o open all  ^u clear  esc close`.
 
 ## Driving it in the box
 
@@ -20,12 +21,13 @@ Press `prefix+o` from the agent pane or from any pane in the same tab, the sideb
 - In a scenario, the `write` tool gives the `new` badge and `edit` gives `+N -M`. Put `delayMs` on the last turn to open the picker while pi is still working; the files touched so far are already listed.
 - Search: with the picker open, `Type "main"`. The counter switches to "N matches". `Ctrl+U` clears. For a large repo use `cd /work` instead of `~/demo`.
 - `Enter` with the sidebar closed opens it. `Ctrl+B` `o` from inside the sidebar, `Down`, `Enter` swaps the file in the open sidebar.
+- Open all: have pi touch two or more files, then `Ctrl+B` `o`, `Ctrl+O`. The sidebar shows the highlighted file; `Type ":ls"` + `Enter` in it lists the others. Unvisited ones show no line count in `:ls` because nvim has not read them yet.
 - No agent: `Ctrl+B` `o` in a plain shell. Nothing appears; check `box exec <item> -- herdr plugin log list` for the reason.
 
 ## Gotchas
 
 - The workspace needs a pane that herdr detects as an agent. In a plain shell the key does nothing visible; the plugin log says "no agent panes found". An agent that has touched nothing opens the picker with "0 files", and typing still searches the repo.
-- Each touched file can appear twice in the list (once plain, once with `+N -M`), and "N files" counts both. Treat it as a known defect, not a recipe failure.
+- `Ctrl+O` only lists the other files (`:badd`); nvim reads each one, and its LSP starts, when you first switch to it.
 - When the sidebar is already open but another pane has focus, `Enter` loads the file but focus stays where it was (herdr 0.9.3 refuses to focus a non-agent pane).
 - Only pi exists in the box by default. For Claude detection/session checks, opt in with `box exec <item> -- box-claude-setup`, run `claude` in the pane, and inspect with `box exec <item> -- box-claude-state`. The stand-in uses herdr's real Claude hook but a scripted transcript, not a real Claude model. On main it proves herdr detects `agent: claude` with a session id; sub-agent file picker support is absent until that feature lands. agy sessions cannot be tested, and codex sessions are not read at all.
 - The box has no fff.nvim history, so frecency cannot be tested unless you seed one.

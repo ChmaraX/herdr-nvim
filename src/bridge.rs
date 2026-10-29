@@ -7,11 +7,13 @@
 //!   any) writes a [`Handoff`] to a temp file and opens the picker popup.
 //! * **Phase 2 (finisher)** — `herdr-nvim pick-file --finish <handoff>`. Spawned
 //!   detached by the picker once the user picks. Ensures the sidebar is open in
-//!   the invoking tab, opens the chosen file in that tab's nvim daemon, focuses
-//!   the sidebar, and deletes the handoff file.
+//!   the invoking tab, opens the first chosen file in that tab's nvim daemon
+//!   (adding any others to its buffer list), focuses the sidebar, and deletes
+//!   the handoff file.
 //!
-//! Only the pure selection rule [`target_agent_pane`] is unit tested; the two
-//! phases are exercised live in Task 4's end-to-end run.
+//! Only the pure selection rule [`target_agent_pane`] and the [`badd_expr`]
+//! builder are unit tested; the two phases are exercised live in Task 4's
+//! end-to-end run.
 
 use std::{
     collections::HashSet,
@@ -123,7 +125,7 @@ fn start_pick() -> Result<()> {
 
     let handoff = Handoff {
         candidates,
-        chosen: None,
+        chosen: Vec::new(),
         workspace: ctx.workspace.clone(),
         tab: ctx.tab.clone(),
         focused_pane: ctx.focused_pane.clone(),
@@ -231,14 +233,27 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
     // No selection (overlay dismissed): nothing to do but clean up.
-    let Some(chosen) = handoff.chosen else {
+    let Some((&chosen, rest)) = handoff.chosen.split_first() else {
         cleanup_handoff(handoff_path);
         return Ok(());
     };
-    let candidate = handoff
-        .candidates
-        .get(chosen)
-        .with_context(|| format!("handoff chosen index {chosen} out of range"))?;
+    let candidate_at = |index: usize| {
+        handoff
+            .candidates
+            .get(index)
+            .with_context(|| format!("handoff chosen index {index} out of range"))
+    };
+    let candidate = candidate_at(chosen)?;
+    let background: Vec<_> = rest
+        .iter()
+        .filter_map(|&index| match candidate_at(index) {
+            Ok(c) => Some((c.path.clone(), c.line)),
+            Err(error) => {
+                eprintln!("herdr-nvim: {error:#}");
+                None
+            }
+        })
+        .collect();
 
     let ctx = Ctx {
         workspace: handoff.workspace.clone(),
@@ -251,21 +266,30 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     };
     let mut herdr = CliHerdr;
 
-    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)?;
+    open_in_sidebar(
+        &mut herdr,
+        &ctx,
+        &candidate.path,
+        candidate.line,
+        &background,
+    )?;
 
     cleanup_handoff(handoff_path);
     Ok(())
 }
 
 /// Ensure the sidebar is open in `ctx.tab`, open `path` (optionally at
-/// `line`) in that tab's nvim daemon, and focus the sidebar. Shared by the
-/// pick-file finisher above and (from a later task) `open-link`'s Ctrl+click
-/// handler — one behavior, two entry points.
+/// `line`) in that tab's nvim daemon, and focus the sidebar. `background`
+/// paths (each with an optional line) are then added to the buffer list
+/// without being shown; that step is best-effort, like the focus. Shared by
+/// the pick-file finisher above and (from a later task) `open-link`'s
+/// Ctrl+click handler — one behavior, two entry points.
 pub(crate) fn open_in_sidebar(
     h: &mut dyn Herdr,
     ctx: &Ctx,
     path: &str,
     line: Option<u32>,
+    background: &[(String, Option<u32>)],
 ) -> Result<()> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
@@ -278,6 +302,9 @@ pub(crate) fn open_in_sidebar(
     let sidebar = ensure_sidebar_open(h, ctx)?;
 
     open_in_nvim(&socket, path, line, &config.sidebar)?;
+    if let Err(error) = add_buffers(&socket, background, &config.sidebar) {
+        eprintln!("herdr-nvim: {error:#}");
+    }
     focus_pane(&sidebar);
     Ok(())
 }
@@ -341,6 +368,54 @@ fn open_in_nvim(
         if !status.success() {
             bail!("nvim --remote-expr failed to jump to line {line} in {path}");
         }
+    }
+    Ok(())
+}
+
+/// Runs each command in its own `pcall`, so one failure (say, an exception
+/// from a user's `BufAdd` autocmd) never stops the rest, and returns the
+/// failures' messages joined by newlines, or "" when every command ran.
+const PCALL_EACH_LUA: &str = "(function(cmds) local failed = {} for _, c in ipairs(cmds) do local ok, err = pcall(vim.cmd, c) if not ok then table.insert(failed, err) end end return table.concat(failed, \"\\n\") end)(_A)";
+
+/// Expression that runs `:badd [+line] <path>` for every path through
+/// [`PCALL_EACH_LUA`]. `:badd` lists a buffer without reading the file (nvim
+/// reads it on first visit, landing on `line`) and skips paths already
+/// listed, so files the daemon already has open are left alone. Paths go in
+/// as Vimscript string literals and through `fnameescape()`, so spaces and
+/// specials need no escaping here. Pure, unit tested.
+fn badd_expr(paths: &[(String, Option<u32>)]) -> String {
+    let commands = paths
+        .iter()
+        .map(|(path, line)| {
+            let line = line.map(|line| format!("+{line} ")).unwrap_or_default();
+            format!(
+                "'badd {line}' .. fnameescape({})",
+                daemon::vim_string_literal(path)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "luaeval({}, [{commands}])",
+        daemon::vim_string_literal(PCALL_EACH_LUA)
+    )
+}
+
+/// Add `paths` to the daemon's buffer list in one round trip, without changing
+/// the current window. A no-op for an empty list. Errors name every path nvim
+/// rejected; the others are still added.
+fn add_buffers(
+    socket: &Path,
+    paths: &[(String, Option<u32>)],
+    sidebar: &crate::config::Sidebar,
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let failed = daemon::remote_expr(socket, &badd_expr(paths), sidebar)
+        .with_context(|| format!("failed to add {} buffers to the sidebar", paths.len()))?;
+    if !failed.is_empty() {
+        bail!("some buffers were not added to the sidebar:\n{failed}");
     }
     Ok(())
 }
@@ -437,7 +512,9 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::config::Config;
     use crate::herdr::{AgentInfo, MockHerdr};
+    use crate::test_support::{nvim_available, TestDaemon, TestEnv};
 
     fn agent(pane_id: &str, tab_id: &str, focused: bool) -> AgentInfo {
         AgentInfo {
@@ -530,6 +607,99 @@ mod tests {
     #[test]
     fn effective_scan_lines_keeps_configured_value_without_scroll_info() {
         assert_eq!(effective_scan_lines(300, None), 300);
+    }
+
+    #[test]
+    fn badd_expr_quotes_every_path_and_keeps_lines() {
+        assert_eq!(
+            badd_expr(&[
+                ("/r/a.rs".into(), None),
+                ("/r/it's here.md".into(), Some(12))
+            ]),
+            format!(
+                "luaeval({}, ['badd ' .. fnameescape('/r/a.rs'), 'badd +12 ' .. fnameescape('/r/it''s here.md')])",
+                daemon::vim_string_literal(PCALL_EACH_LUA)
+            )
+        );
+    }
+
+    #[test]
+    fn add_buffers_keeps_going_past_a_failing_path_and_reports_it() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let env = TestEnv::new();
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("w41:t1", &config);
+        let paths: Vec<(String, Option<u32>)> = ["broken.rs", "fine.rs"]
+            .iter()
+            .map(|name| {
+                let path = env.dir.join(name);
+                std::fs::write(&path, "").unwrap();
+                (path.to_string_lossy().into_owned(), None)
+            })
+            .collect();
+        daemon.eval(r#"execute('autocmd BufAdd */broken.rs throw "boom"')"#);
+
+        let error = add_buffers(&daemon.socket, &paths, &config.sidebar).unwrap_err();
+
+        assert!(format!("{error:#}").contains("boom"), "{error:#}");
+        assert_eq!(
+            daemon.eval(&format!(
+                "buflisted(bufnr({}))",
+                daemon::vim_string_literal(&paths[1].0)
+            )),
+            "1",
+            "fine.rs must still be added"
+        );
+    }
+
+    #[test]
+    fn add_buffers_lists_missing_files_and_keeps_the_shown_one() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let env = TestEnv::new();
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("w40:t1", &config);
+        let paths: Vec<(String, Option<u32>)> = [
+            ("shown.rs", None),
+            ("with space's.rs", None),
+            ("fresh.rs", Some(2)),
+        ]
+        .iter()
+        .map(|&(name, line)| {
+            let path = env.dir.join(name);
+            std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+            (path.to_string_lossy().into_owned(), line)
+        })
+        .collect();
+        let shown = daemon::vim_string_literal(&paths[0].0);
+        let fresh = daemon::vim_string_literal(&paths[2].0);
+
+        daemon.eval(&format!(
+            "execute('noswapfile edit ' .. fnameescape({shown}))"
+        ));
+        add_buffers(&daemon.socket, &paths, &config.sidebar).unwrap();
+        add_buffers(&daemon.socket, &paths, &config.sidebar).unwrap();
+
+        // By tail: buffer names may resolve the temp dir's symlinks (macOS).
+        for name in ["shown.rs", "with space''s.rs", "fresh.rs"] {
+            assert_eq!(
+                daemon.eval(&format!(
+                    "len(filter(getbufinfo({{'buflisted': 1}}), {{_, b -> fnamemodify(b.name, ':t') ==# '{name}'}}))"
+                )),
+                "1",
+                "{name} must be listed exactly once"
+            );
+        }
+        assert_eq!(daemon.eval("expand('%:t')"), "shown.rs");
+        assert_eq!(daemon.eval(&format!("bufloaded({fresh})")), "0");
+
+        daemon.eval(&format!("execute('noswapfile buffer ' .. bufnr({fresh}))"));
+        assert_eq!(daemon.eval("line('.')"), "2");
     }
 
     #[test]
