@@ -390,6 +390,59 @@ mod tests {
         );
     }
 
+    // Regression test for issue #61: a daemon that holds its socket but never
+    // answers RPC (here: SIGSTOPped, like the reporter's wedged daemon) must
+    // not block `ensure_daemon` -- and so pick-file/open-link -- forever. It
+    // must give up within the health deadline with an error, and must not
+    // replace the wedged daemon with a twin on the same socket.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_daemon_gives_up_on_an_unresponsive_daemon() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("w61:t1", &config);
+        let signal = |sig: &str| {
+            Command::new("kill")
+                .args([sig, &daemon.pid.to_string()])
+                .status()
+                .expect("run kill");
+        };
+        signal("-STOP");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = plugin_root.clone();
+        let started = Instant::now();
+        let worker = std::thread::spawn(move || {
+            let result = ensure_daemon("w61:t1", &root, &Config::default(), &root);
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+        });
+        // Deadline plus slack for nvim startup on a slow CI runner.
+        let outcome = rx.recv_timeout(HEALTH_POLL_TIMEOUT + Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        // Unwedge before asserting, so a failure cannot leave the worker
+        // thread or the daemon stuck.
+        signal("-CONT");
+        let _ = worker.join();
+
+        let outcome = outcome.unwrap_or_else(|_| {
+            panic!("ensure_daemon still blocked on an unresponsive daemon after {elapsed:?}")
+        });
+        assert!(
+            outcome.is_err(),
+            "ensure_daemon must report an unresponsive daemon, got {outcome:?}"
+        );
+        assert_eq!(
+            daemon.eval("getpid()"),
+            daemon.pid.to_string(),
+            "the wedged daemon must not be replaced by a twin on its socket"
+        );
+    }
+
     #[test]
     fn vim_string_literal_escapes_quotes() {
         assert_eq!(vim_string_literal("w1:p'3"), "'w1:p''3'");
