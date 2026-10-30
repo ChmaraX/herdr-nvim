@@ -266,12 +266,21 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
 /// `line`) in that tab's nvim daemon, and focus the sidebar. Shared by the
 /// pick-file finisher above and (from a later task) `open-link`'s Ctrl+click
 /// handler — one behavior, two entry points.
+///
+/// A failure is also shown as a herdr notification: the user just picked or
+/// clicked a file, and the finisher's stderr goes nowhere.
 pub(crate) fn open_in_sidebar(
     h: &mut dyn Herdr,
     ctx: &Ctx,
     path: &str,
     line: Option<u32>,
 ) -> Result<()> {
+    try_open_in_sidebar(h, ctx, path, line).inspect_err(|error| {
+        notify(&format!("Could not open {path}: {error:#}"));
+    })
+}
+
+fn try_open_in_sidebar(h: &mut dyn Herdr, ctx: &Ctx, path: &str, line: Option<u32>) -> Result<()> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
@@ -384,20 +393,19 @@ fn open_picker(handoff_path: &str) -> Result<()> {
 /// Show a herdr notification (best-effort, falling back to stderr) that no file
 /// paths were found. Callers exit 0 after this — an empty result is not an error.
 fn notify_no_candidates() {
-    let shown = Command::new("herdr")
-        .args([
-            "notification",
-            "show",
-            "herdr-nvim",
-            "--body",
-            "No file paths found in agent output",
-        ])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-    if !shown {
+    if !notify("No file paths found in agent output") {
         eprintln!("herdr-nvim: no file paths found in agent output");
     }
+}
+
+/// Show a herdr notification titled "herdr-nvim"; `false` if it could not be
+/// shown.
+fn notify(body: &str) -> bool {
+    Command::new("herdr")
+        .args(["notification", "show", "herdr-nvim", "--body", body])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Serialize `handoff` to a uniquely-named temp file, returning its path.

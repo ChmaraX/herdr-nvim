@@ -19,7 +19,7 @@ Run the commands in a shell while herdr is running. Install goes through the her
 - Product doctor: `box exec <item> -- /opt/herdr-nvim/bin/herdr-nvim doctor`. Takes about 3 s and ends with "all doctor checks OK", exit 0.
 - Daemons: `box exec <item> -- /opt/herdr-nvim/bin/herdr-nvim daemons [--json]`. Open a sidebar first (`herdr plugin action invoke toggle --plugin chmarax.herdr-nvim`), or the output is "no nvim daemons running".
 - Unsaved work: `box exec <item> -- nvim --server /tmp/herdr-nvim/w1_t1.sock --remote-send 'ggix<Esc>'` dirties the sidebar buffer of tab `w1:t1`. `daemons` then shows "alive · 1 unsaved", `daemons stop w1:t1` refuses with exit 1, and `--force` stops it.
-- Unresponsive daemon: `box exec <item> -- sh -c 'kill -STOP $(pgrep -f "nvim --headless --listen")'` wedges it (socket open, no answers). `daemons` lists it `unresponsive` within about 5 s, `daemons stop w1:t1` refuses with exit 1, `--force` kills it. Toggle, pick-file and open-link in that tab fail after 10 s. Proof tape: `~/.issue-factory/herdr-nvim/61/repro.tape`.
+- Unresponsive daemon: `box exec <item> -- sh -c 'kill -STOP $(pgrep -f "nvim --headless --listen")'` wedges it (socket open, no answers). `daemons` lists it `unresponsive` within about 5 s, `daemons stop w1:t1` refuses with exit 1, `--force` kills it. Toggle, pick-file and open-link in that tab fail after 10 s; pick-file and open-link say so in a herdr notification. Proof tape: `~/.issue-factory/herdr-nvim/61/repro.tape`.
 - Install: only the `plugin link` path with a local build, which `box up` / `box reset` already do. Running the binary with no args prints usage and exits 2. Not possible in the box: the release download (offline), other glibc versions, macOS and Windows.
 
 ## Gotchas
