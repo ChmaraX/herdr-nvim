@@ -19,7 +19,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context, Result};
@@ -35,6 +35,11 @@ use crate::{
 };
 
 const PLUGIN_ID: &str = "chmarax.herdr-nvim";
+
+/// How long opening a file in the daemon (`--remote`) may take. Longer than
+/// a plain request (`daemon::RPC_TIMEOUT`): it runs the file's autocmds
+/// (filetype, LSP attach), which a heavy config makes slow.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.
@@ -317,30 +322,19 @@ fn open_in_nvim(
 ) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
-    let status = daemon::nvim_cmd(sidebar)
-        .arg("--headless")
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote")
-        .arg(path)
-        .status()
-        .context("failed to run nvim --server --remote")?;
-    if !status.success() {
-        bail!("nvim --remote failed to open {path}");
-    }
+    daemon::request(socket, &["--remote", path], sidebar, OPEN_TIMEOUT)
+        .and_then(|reply| reply.answer(socket))
+        .with_context(|| format!("nvim --remote failed to open {path}"))?;
     // Jump to the line, if known.
     if let Some(line) = line {
-        let status = daemon::nvim_cmd(sidebar)
-            .arg("--headless")
-            .arg("--server")
-            .arg(socket)
-            .arg("--remote-expr")
-            .arg(format!("cursor({line}, 1)"))
-            .status()
-            .context("failed to run nvim --server --remote-expr")?;
-        if !status.success() {
-            bail!("nvim --remote-expr failed to jump to line {line} in {path}");
-        }
+        daemon::remote_expr(
+            socket,
+            &format!("cursor({line}, 1)"),
+            sidebar,
+            daemon::RPC_TIMEOUT,
+        )
+        .and_then(|reply| reply.answer(socket))
+        .with_context(|| format!("nvim --remote-expr failed to jump to line {line} in {path}"))?;
     }
     Ok(())
 }

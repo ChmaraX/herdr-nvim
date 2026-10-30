@@ -4,10 +4,10 @@ A full-height nvim on one side of the herdr tab. One key toggles it, and each ta
 
 ## Sub-features
 
-- toggle: `prefix+e` opens a full-height pane about 50% wide and focuses it. Pressing it again closes the pane and restores the previous layout of the other panes.
+- toggle: `prefix+e` opens a full-height pane about 50% wide and focuses it. Pressing it again closes the pane and restores the previous layout of the other panes. If the tab's nvim is hung (holds its socket, answers nothing), opening fails within 10 s instead of hanging, and no second nvim is started for the tab.
 - position: `[sidebar] position = "right"` (default), `"left"`, `"top"` or `"bottom"` in `~/.config/herdr-nvim/config.toml`.
 - per-tab nvim: each tab has its own hidden nvim. After close and reopen, the buffers, cursor and pending comments are still there. Two tabs can show different files.
-- auto-cleanup: closing a tab or a workspace stops that tab's nvim and discards unsaved buffers. After a herdr restart, tabs that come back reattach to their nvim, and nvims whose tab is gone are stopped.
+- auto-cleanup: closing a tab or a workspace stops that tab's nvim and discards unsaved buffers. A hung nvim, or one still running 10 s after it was told to quit, is killed by its pid. After a herdr restart, tabs that come back reattach to their nvim, and nvims whose tab is gone are stopped.
 - nvim config: `nvim_bin` sets the nvim binary (needs nvim ≥ 0.10). `nvim_env = ["NVIM_APPNAME=myapp"]` loads the user's config; without it the sidebar runs vanilla nvim. `:Herdr` and the default keymaps work either way.
 
 ## How to get to it (user POV)
@@ -30,5 +30,6 @@ Press `prefix+e` in any pane of a tab. It works with one pane or many. Other pan
 - Look at the first frame. nvim should draw at full size right away, with no shell prompt and no echoed command in the pane.
 - A missing or malformed `config.toml` falls back to the defaults without an error. Invalid `nvim_env` entries are skipped; the warning is only in `herdr plugin log list`, never on screen.
 - Stopping an nvim with unsaved edits (`daemons stop --force`) leaves a swap file. Within the same session (`--keep-session`) the next `:e` of that file stops at nvim's swap prompt and opens it `[RO]`. A fresh `box record` clears swap files.
+- A hung nvim is easiest made with `kill -STOP` on the daemon (see `ops.md`, "Unresponsive daemon"). SIGCONT or force-stop it before toggling that tab again.
 - `box exec <item> -- ps aux | grep …` runs the grep on the host. Prefer `herdr-nvim daemons`, or wrap the pipe in `sh -c`.
 - The box has no network, so plugin managers in an NVIM_APPNAME config cannot install anything.

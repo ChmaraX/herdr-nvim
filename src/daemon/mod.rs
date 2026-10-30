@@ -9,13 +9,14 @@ pub(crate) mod registry;
 
 use std::{
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread::sleep,
+    thread::{self, sleep},
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
@@ -25,7 +26,20 @@ use crate::{
 use registry::socket_path;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `ensure_daemon` may take in all: probing an existing daemon
+/// (one that does not answer in time is declared unresponsive) and, if there
+/// is none, waiting for a fresh one to answer. Generous, because a heavy
+/// config (LazyVim) can keep a healthy daemon's main loop busy for seconds,
+/// right after spawn above all.
+pub(crate) const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long one request to a daemon that is already up may take. A healthy
+/// daemon answers in milliseconds; this only runs out when its main loop is
+/// blocked or the process is stopped.
+pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a request's `nvim --server` client is checked for completion.
+const CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // Short: only waits out the tail of an already-in-flight `maneuver::open`,
@@ -48,19 +62,34 @@ pub(crate) fn nvim_cmd(sidebar: &Sidebar) -> Command {
 /// Ensure a per-tab headless nvim daemon is listening on its socket,
 /// returning the socket path. If a healthy daemon already exists this is a
 /// no-op; otherwise a detached daemon is spawned and polled until healthy.
+///
+/// All of it, the first probe included, takes at most `HEALTH_POLL_TIMEOUT`.
+/// A daemon that holds its socket but does not answer in that time is an
+/// error, never a reason to spawn a second daemon over it: that would
+/// orphan the stuck one, still holding its memory.
 pub fn ensure_daemon(
     tab: &str,
     plugin_root: &Path,
     config: &Config,
     cwd: &Path,
 ) -> Result<PathBuf> {
+    let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
-    if daemon_healthy(&socket, &config.sidebar) {
-        // Also (re)register an already-running daemon, so one spawned before
-        // the Windows marker existed still becomes discoverable.
-        #[cfg(windows)]
-        registry::register_daemon(tab)?;
-        return Ok(socket);
+    match remote_expr(&socket, "1+1", &config.sidebar, HEALTH_POLL_TIMEOUT)?.confirmed(&socket) {
+        Reply::Answered(_) => {
+            // Also (re)register an already-running daemon, so one spawned
+            // before the Windows marker existed still becomes discoverable.
+            #[cfg(windows)]
+            registry::register_daemon(tab)?;
+            return Ok(socket);
+        }
+        Reply::Unresponsive => bail!(
+            "the nvim daemon for tab {tab} is busy or hung (no reply within {}s); \
+             if it stays that way, `herdr-nvim daemons stop {tab} --force` kills it \
+             and loses its unsaved work",
+            HEALTH_POLL_TIMEOUT.as_secs()
+        ),
+        Reply::Absent => {}
     }
 
     #[cfg(not(windows))]
@@ -71,8 +100,8 @@ pub fn ensure_daemon(
         fs::create_dir_all(dir)
             .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
         // A stale (dead) socket file would make `nvim --listen` fail to bind.
-        // We only get here after the health check failed, so any file present
-        // is dead.
+        // We only get here when nothing accepted the health check and no
+        // process listens on the socket, so any file present is dead.
         crate::state::remove_file_if_exists(&socket)?;
     }
 
@@ -80,18 +109,18 @@ pub fn ensure_daemon(
     #[cfg(windows)]
     registry::register_daemon(tab)?;
 
-    let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
-        if daemon_healthy(&socket, &config.sidebar) {
-            return Ok(socket);
-        }
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             bail!(
                 "nvim daemon for tab {tab} did not become healthy within {}s",
                 HEALTH_POLL_TIMEOUT.as_secs()
             );
         }
-        sleep(HEALTH_POLL_INTERVAL);
+        if let Reply::Answered(_) = remote_expr(&socket, "1+1", &config.sidebar, remaining)? {
+            return Ok(socket);
+        }
+        sleep(HEALTH_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -186,27 +215,149 @@ pub(crate) fn detach_command(command: &mut Command) {
     }
 }
 
-fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
-    remote_expr(socket, "1+1", sidebar).as_deref() == Some("2")
+/// What a daemon did with one request (see `request`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Reply<T = String> {
+    /// It answered; for `--remote-expr`, with the trimmed result.
+    Answered(T),
+    /// The client could not connect: nothing listens on the socket -- as
+    /// far as the client can tell (see `confirmed`).
+    Absent,
+    /// Something accepted the connection but sent no answer in time: a
+    /// daemon whose main loop is blocked, or a stopped process.
+    Unresponsive,
 }
 
-/// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
-/// the trimmed stdout, or `None` if the daemon is unreachable.
-pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
-    let output = nvim_cmd(sidebar)
+impl<T> Reply<T> {
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Reply<U> {
+        match self {
+            Self::Answered(answer) => Reply::Answered(f(answer)),
+            Self::Absent => Reply::Absent,
+            Self::Unresponsive => Reply::Unresponsive,
+        }
+    }
+
+    pub(crate) fn answered(&self) -> Option<&T> {
+        match self {
+            Self::Answered(answer) => Some(answer),
+            Self::Absent | Self::Unresponsive => None,
+        }
+    }
+
+    /// The answer, or an error saying why there is none.
+    pub(crate) fn answer(self, socket: &Path) -> Result<T> {
+        match self {
+            Self::Answered(answer) => Ok(answer),
+            Self::Absent => Err(anyhow!("no nvim daemon listens on {}", socket.display())),
+            Self::Unresponsive => Err(anyhow!(
+                "the nvim daemon on {} is busy or hung (no reply in time)",
+                socket.display()
+            )),
+        }
+    }
+
+    /// `Absent` only says the client could not connect, and a hung daemon
+    /// refuses connections too once dozens of requests have timed out on it
+    /// (its listen queue is full). So before acting on absence -- removing
+    /// the socket, spawning a new daemon, forgetting the old one -- this
+    /// checks the process table: a process still listening on `socket`
+    /// makes it `Unresponsive`.
+    pub(crate) fn confirmed(self, socket: &Path) -> Self {
+        match self {
+            Self::Absent => {
+                Self::Absent.confirmed_by(socket, process::ProcessTable::load().as_ref())
+            }
+            reply => reply,
+        }
+    }
+
+    /// `confirmed` against a process table already loaded. Without a socket
+    /// file or a readable process table (or on Windows, where command lines
+    /// are not read) the client's verdict stands.
+    pub(crate) fn confirmed_by(self, socket: &Path, table: Option<&process::ProcessTable>) -> Self {
+        match self {
+            Self::Absent
+                if socket.exists()
+                    && table.is_some_and(|table| !table.listeners(socket).is_empty()) =>
+            {
+                Self::Unresponsive
+            }
+            reply => reply,
+        }
+    }
+}
+
+/// Send one request to the daemon on `socket` as an `nvim --server <socket>
+/// <args>` client, giving it `timeout` to answer. A client still waiting
+/// then is killed and reaped, never left behind. Every request to a daemon
+/// goes through here; only the long-lived `--remote-ui` attach does not.
+///
+/// `Err` when there is no verdict on the daemon: the client could not be
+/// run, or the daemon answered with an error.
+pub(crate) fn request(
+    socket: &Path,
+    args: &[&str],
+    sidebar: &Sidebar,
+    timeout: Duration,
+) -> Result<Reply> {
+    let mut child = nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
         .arg(socket)
-        .arg("--remote-expr")
-        .arg(expr)
+        .args(args)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to run {}", sidebar.nvim_bin))?;
+    // Drain the pipes on the side, so a large answer cannot fill one and
+    // stall the client. Killing the client closes them and ends these.
+    fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
+        thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = pipe.read_to_end(&mut out);
+            String::from_utf8_lossy(&out).trim().to_owned()
+        })
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let stdout = drain(child.stdout.take().expect("stdout is piped"));
+    let stderr = drain(child.stderr.take().expect("stderr is piped"));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(Some(status)),
+            Ok(None) if Instant::now() < deadline => sleep(CLIENT_POLL_INTERVAL),
+            waited => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break waited.map(|_| None);
+            }
+        }
+    };
+    let (stdout, stderr) = (
+        stdout.join().unwrap_or_default(),
+        stderr.join().unwrap_or_default(),
+    );
+    match status.context("failed to wait for an nvim --server client")? {
+        Some(status) if status.success() => Ok(Reply::Answered(stdout)),
+        // E247: "Failed to connect to '<socket>'".
+        Some(_) if stderr.contains("E247:") => Ok(Reply::Absent),
+        Some(status) => bail!(
+            "nvim --server {} {} failed ({status}): {stderr}",
+            socket.display(),
+            args.first().copied().unwrap_or_default()
+        ),
+        None => Ok(Reply::Unresponsive),
+    }
+}
+
+/// Evaluate a vimscript expression on the daemon via `--remote-expr`.
+pub(crate) fn remote_expr(
+    socket: &Path,
+    expr: &str,
+    sidebar: &Sidebar,
+    timeout: Duration,
+) -> Result<Reply> {
+    request(socket, &["--remote-expr", expr], sidebar, timeout)
 }
 
 /// Quote `s` as a Vimscript single-quoted string, where a literal quote is
@@ -221,9 +372,11 @@ fn vim_string_literal(s: &str) -> String {
 /// the daemon first spawned cannot be treated as current.
 fn refresh_daemon_pane_id(socket: &Path, pane: &str, sidebar: &Sidebar) -> Result<()> {
     let expr = format!("setenv('HERDR_PANE_ID', {})", vim_string_literal(pane));
-    remote_expr(socket, &expr, sidebar).with_context(|| {
-        format!("failed to update nvim daemon with current sidebar pane id {pane}")
-    })?;
+    remote_expr(socket, &expr, sidebar, RPC_TIMEOUT)
+        .and_then(|reply| reply.answer(socket))
+        .with_context(|| {
+            format!("failed to update nvim daemon with current sidebar pane id {pane}")
+        })?;
     Ok(())
 }
 
@@ -407,13 +560,7 @@ mod tests {
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let config = Config::default();
         let daemon = TestDaemon::spawn("w61:t1", &config);
-        let signal = |sig: &str| {
-            Command::new("kill")
-                .args([sig, &daemon.pid.to_string()])
-                .status()
-                .expect("run kill");
-        };
-        signal("-STOP");
+        daemon.hang();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let root = plugin_root.clone();
@@ -427,7 +574,7 @@ mod tests {
         let elapsed = started.elapsed();
         // Unwedge before asserting, so a failure cannot leave the worker
         // thread or the daemon stuck.
-        signal("-CONT");
+        daemon.resume();
         let _ = worker.join();
 
         let outcome = outcome.unwrap_or_else(|_| {

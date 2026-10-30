@@ -222,6 +222,20 @@ impl Daemon {
             .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// SIGSTOP it: its socket still takes connections, but nothing answers
+    /// -- a hung daemon. Drop's SIGKILL still ends it.
+    #[cfg(unix)]
+    pub fn hang(&self) {
+        Command::new("kill")
+            .args(["-STOP", &self.pid().to_string()])
+            .status()
+            .expect("run kill");
+    }
+
     pub fn running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }

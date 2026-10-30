@@ -7,9 +7,9 @@
 //! the close hooks use (`registry::daemon_keys`), queried over their own
 //! socket for pid / unsaved buffers / pending comments / tab id, named
 //! through `herdr api snapshot`, and measured with one OS process-table
-//! snapshot. Stopping goes through the shared `registry::stop_keys`.
+//! snapshot. Stopping goes through the shared `registry::stop_probed`.
 
-use std::env;
+use std::{env, thread};
 
 use anyhow::{bail, Context, Result};
 use serde::{Serialize, Serializer};
@@ -22,8 +22,10 @@ use crate::{
 
 use super::{
     process::ProcessTable,
-    registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
-    remote_expr,
+    registry::{
+        daemon_keys, orphans, socket_path_for_key, stop_probed, StopProbe, UNSAVED_BUFFERS_EXPR,
+    },
+    remote_expr, Reply, RPC_TIMEOUT,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -37,8 +39,12 @@ pub(crate) enum DaemonState {
     Alive,
     /// Answers on its socket but its tab is gone from herdr.
     Orphaned,
-    /// Registered, but nothing answers on its socket (stale or hung).
-    Unresponsive,
+    /// Its process holds the socket but does not answer in time: busy or
+    /// hung. Stopping it means killing it.
+    Hung,
+    /// Registered, but nothing listens on its socket: it died without
+    /// cleaning up. Stopping it only removes the entry.
+    Stale,
     /// Answers, but herdr could not be asked whether its tab still exists.
     Unknown,
 }
@@ -49,7 +55,8 @@ impl DaemonState {
         match self {
             Self::Alive => "alive",
             Self::Orphaned => "orphaned",
-            Self::Unresponsive => "unresponsive",
+            Self::Hung => "unresponsive",
+            Self::Stale => "stale",
             Self::Unknown => "unknown",
         }
     }
@@ -80,8 +87,11 @@ pub(crate) struct DaemonInfo {
     /// not be asked (see `herdr_reachable`).
     pub tab: Option<TabInfo>,
     pub herdr_reachable: bool,
-    /// What the daemon answered; `None` if it did not answer.
-    pub probe: Option<Probe>,
+    /// What the daemon answered to the probe, if anything.
+    pub probe: Reply<Probe>,
+    /// The daemon's process: as it reported itself, or, if it does not
+    /// answer, the one process listening on its socket.
+    pub pid: Option<u32>,
     /// Resident memory of the daemon plus all of its descendants (LSPs, jobs).
     pub rss_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
@@ -90,10 +100,35 @@ pub(crate) struct DaemonInfo {
 impl DaemonInfo {
     pub(crate) fn state(&self) -> DaemonState {
         match (&self.probe, &self.tab, self.herdr_reachable) {
-            (None, _, _) => DaemonState::Unresponsive,
-            (Some(_), Some(_), _) => DaemonState::Alive,
-            (Some(_), None, true) => DaemonState::Orphaned,
-            (Some(_), None, false) => DaemonState::Unknown,
+            (Reply::Unresponsive, _, _) => DaemonState::Hung,
+            (Reply::Absent, _, _) => DaemonState::Stale,
+            (Reply::Answered(_), Some(_), _) => DaemonState::Alive,
+            (Reply::Answered(_), None, true) => DaemonState::Orphaned,
+            (Reply::Answered(_), None, false) => DaemonState::Unknown,
+        }
+    }
+
+    /// Why a plain `daemons stop` leaves this daemon running, if it does:
+    /// it holds unsaved buffers or pending comments, or it is hung, so it
+    /// can only be killed, losing whatever it holds. Never when its tab is
+    /// gone: whatever it held went with the tab.
+    fn refusal(&self) -> Option<String> {
+        if self.tab_gone() {
+            return None;
+        }
+        let name = self.name();
+        match self.state() {
+            DaemonState::Hung => Some(format!(
+                "not stopping {name}: it is busy or hung, so it can only be killed, \
+                 losing any unsaved work in it (use --force to kill it)"
+            )),
+            _ if self.has_pending_work() => Some(format!(
+                "not stopping {name}: it has {} unsaved buffer(s) and {} pending comment(s) \
+                 (use --force to discard them)",
+                self.unsaved().unwrap_or(0),
+                self.comments().unwrap_or(0),
+            )),
+            _ => None,
         }
     }
 
@@ -107,7 +142,7 @@ impl DaemonInfo {
     /// decoded back into an id.
     fn tab_id(&self) -> Option<&TabId> {
         self.probe
-            .as_ref()
+            .answered()
             .and_then(|probe| probe.tab_id.as_ref())
             .or(self.tab.as_ref().map(|tab| &tab.tab_id))
     }
@@ -118,11 +153,11 @@ impl DaemonInfo {
     }
 
     fn unsaved(&self) -> Option<u32> {
-        self.probe.as_ref().and_then(|probe| probe.unsaved)
+        self.probe.answered().and_then(|probe| probe.unsaved)
     }
 
     fn comments(&self) -> Option<u32> {
-        self.probe.as_ref().and_then(|probe| probe.comments)
+        self.probe.answered().and_then(|probe| probe.comments)
     }
 
     /// `workspace / tab` as herdr shows it, or `None` for a tab herdr does
@@ -176,7 +211,7 @@ impl Serialize for DaemonInfo {
             workspace_label: tab.and_then(|tab| tab.workspace_label.as_deref()),
             tab_label: tab.and_then(|tab| tab.tab_label.as_deref()),
             tab_number: tab.and_then(|tab| tab.tab_number),
-            pid: self.probe.as_ref().and_then(|probe| probe.pid),
+            pid: self.pid,
             rss_bytes: self.rss_bytes,
             uptime_secs: self.uptime_secs,
             state: self.state(),
@@ -197,8 +232,14 @@ fn probe_expr() -> String {
     format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
 }
 
-fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
-    let out = remote_expr(&socket_path_for_key(key), &probe_expr(), sidebar)?;
+fn probe(key: &str, sidebar: &Sidebar) -> Result<Reply<Probe>> {
+    let socket = socket_path_for_key(key);
+    let reply = remote_expr(&socket, &probe_expr(), sidebar, RPC_TIMEOUT)
+        .with_context(|| format!("could not query the nvim daemon of tab {key}"))?;
+    Ok(reply.map(|out| parse_probe(key, &out)))
+}
+
+fn parse_probe(key: &str, out: &str) -> Probe {
     let mut parts = out.splitn(4, ' ');
     let mut number = || parts.next().and_then(|part| part.parse().ok());
     let pid = number();
@@ -208,12 +249,12 @@ fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
         .next()
         .map(TabId::new)
         .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
-    Some(Probe {
+    Probe {
         pid,
         unsaved,
         comments,
         tab_id,
-    })
+    }
 }
 
 /// Every registered daemon, sorted by key. herdr being unreachable is not
@@ -223,32 +264,60 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(describe(keys, h.tab_infos().ok().as_deref(), sidebar))
+    describe(keys, h.tab_infos().ok().as_deref(), sidebar)
 }
 
 /// Probe and measure the daemons for `keys`, naming them from herdr's live
-/// `tabs` (`None` when herdr could not be asked).
-fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
+/// `tabs` (`None` when herdr could not be asked). The probes run in
+/// parallel, so hung daemons cost one `RPC_TIMEOUT` in all, not one each.
+/// A daemon that refuses connections while its process still listens is
+/// hung, not stale (see `Reply::confirmed`).
+fn describe(
+    keys: Vec<String>,
+    tabs: Option<&[TabInfo]>,
+    sidebar: &Sidebar,
+) -> Result<Vec<DaemonInfo>> {
     let procs = ProcessTable::load();
+    let probes: Vec<Result<Reply<Probe>>> = thread::scope(|scope| {
+        let probes: Vec<_> = keys
+            .iter()
+            .map(|key| scope.spawn(|| probe(key, sidebar)))
+            .collect();
+        probes
+            .into_iter()
+            .map(|probe| {
+                probe
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
     keys.into_iter()
-        .map(|key| {
-            let probe = probe(&key, sidebar);
+        .zip(probes)
+        .map(|(key, probe)| {
+            let socket = socket_path_for_key(&key);
+            let probe = probe?.confirmed_by(&socket, procs.as_ref());
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
-            let pid = probe.as_ref().and_then(|probe| probe.pid);
+            let pid = match (probe.answered(), &procs) {
+                (Some(answer), _) => answer.pid,
+                (None, Some(procs)) => procs.daemon(&socket).ok(),
+                (None, None) => None,
+            };
             let (rss_bytes, uptime_secs) = match (pid, &procs) {
                 (Some(pid), Some(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
-            DaemonInfo {
+            Ok(DaemonInfo {
                 key,
                 tab,
                 herdr_reachable: tabs.is_some(),
                 probe,
+                pid,
                 rss_bytes,
                 uptime_secs,
-            }
+            })
         })
         .collect()
 }
@@ -272,10 +341,9 @@ pub(crate) struct StopOutcome {
     pub failed: Vec<String>,
 }
 
-/// Stop the targeted daemons. A daemon with unsaved buffers or pending
-/// comments is refused unless `force` -- except an orphan, whose tab (and so
-/// whatever it held) is already gone. `--orphans` needs herdr: without it,
-/// every daemon would look orphaned.
+/// Stop the targeted daemons. One that `DaemonInfo::refusal` protects is
+/// left running unless `force`. `--orphans` needs herdr: without it, every
+/// daemon would look orphaned.
 pub(crate) fn stop(
     h: &mut dyn Herdr,
     sidebar: &Sidebar,
@@ -301,22 +369,20 @@ pub(crate) fn stop(
     };
     let mut outcome = StopOutcome::default();
     let mut doomed = Vec::new();
-    for daemon in describe(selected, tabs.as_deref(), sidebar) {
-        if !force && !daemon.tab_gone() && daemon.has_pending_work() {
-            outcome.refused.push(format!(
-                "not stopping {}: it has {} unsaved buffer(s) and {} pending comment(s) \
-                 (use --force to discard them)",
-                daemon.name(),
-                daemon.unsaved().unwrap_or(0),
-                daemon.comments().unwrap_or(0),
-            ));
-        } else {
-            doomed.push(daemon);
+    for daemon in describe(selected, tabs.as_deref(), sidebar)? {
+        match (force, daemon.refusal()) {
+            (false, Some(refusal)) => outcome.refused.push(refusal),
+            _ => doomed.push(daemon),
         }
     }
-    let keys: Vec<String> = doomed.iter().map(|daemon| daemon.key.clone()).collect();
-    for (daemon, (_, result)) in doomed.iter().zip(stop_keys(&keys, sidebar)) {
-        match (result, daemon.rss_bytes) {
+    for daemon in doomed {
+        // Reuses the probe above instead of asking (and, for a hung daemon,
+        // waiting) a second time.
+        let probe = daemon.probe.clone().map(|probe| StopProbe {
+            pid: probe.pid,
+            unsaved: probe.unsaved.unwrap_or(0),
+        });
+        match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
                 daemon.name(),
@@ -502,7 +568,8 @@ pub(crate) fn doctor_summary(h: &mut dyn Herdr, sidebar: &Sidebar) -> String {
     let mut line = summary(&daemons);
     for state in [
         DaemonState::Orphaned,
-        DaemonState::Unresponsive,
+        DaemonState::Hung,
+        DaemonState::Stale,
         DaemonState::Unknown,
     ] {
         match count(state) {
@@ -628,7 +695,7 @@ mod tests {
         let heavy_row = row(&daemons, "wHnDa:t1");
         assert_eq!(heavy_row.state(), DaemonState::Alive);
         assert_eq!(heavy_row.display_name().as_deref(), Some("novu / api"));
-        assert_eq!(heavy_row.probe.as_ref().unwrap().pid, Some(heavy.pid));
+        assert_eq!(heavy_row.pid, Some(heavy.pid));
         assert_eq!(heavy_row.comments(), Some(1));
         assert_eq!(heavy_row.unsaved(), Some(0));
         assert!(heavy_row.uptime_secs.is_some());
@@ -711,6 +778,117 @@ mod tests {
 
         assert!(collect(&mut herdr, sidebar).unwrap().is_empty());
         assert!(stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).is_err());
+    }
+
+    // Issue #61: a daemon that holds its socket but answers nothing (here
+    // SIGSTOPped). Listing must not hang and must show it as unresponsive
+    // with its process; a plain stop must refuse to kill it, without
+    // forgetting it; --force must kill exactly that process and clean up.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_daemon_is_listed_then_only_killed_with_force() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let sidebar = &config.sidebar;
+        let hung = TestDaemon::spawn("wHnDa:t1", &config);
+        let fine = TestDaemon::spawn("wHnDb:t1", &config);
+        hung.hang();
+        let mut herdr = herdr_with_tabs(4);
+        let bounded = RPC_TIMEOUT + std::time::Duration::from_secs(3);
+
+        let started = std::time::Instant::now();
+        let daemons = collect(&mut herdr, sidebar).unwrap();
+        assert!(started.elapsed() < bounded, "{:?}", started.elapsed());
+        let hung_row = row(&daemons, "wHnDa:t1");
+        assert_eq!(hung_row.state(), DaemonState::Hung);
+        assert_eq!(hung_row.pid, Some(hung.pid), "found by its --listen argv");
+        assert!(hung_row.rss_bytes.is_some());
+        assert_eq!(row(&daemons, "wHnDb:t1").state(), DaemonState::Alive);
+        let table = render_table(&daemons);
+        assert!(
+            table
+                .lines()
+                .any(|l| l.starts_with("wHnDa:t1") && l.ends_with("unresponsive")),
+            "{table}"
+        );
+
+        let started = std::time::Instant::now();
+        let outcome = stop(&mut herdr, sidebar, &Target::All, false).unwrap();
+        assert!(started.elapsed() < bounded, "{:?}", started.elapsed());
+        assert_eq!(outcome.refused.len(), 1, "{outcome:?}");
+        assert!(outcome.refused[0].contains("--force"), "{outcome:?}");
+        assert_eq!(outcome.stopped.len(), 1, "the answering daemon still stops");
+        fine.assert_gone();
+        assert!(process_alive(hung.pid), "a plain stop must not kill it");
+        assert_eq!(daemon_keys().unwrap(), [hung.tab.key()], "nor forget it");
+
+        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).unwrap();
+        assert_eq!(
+            (outcome.stopped.len(), outcome.failed.len()),
+            (1, 0),
+            "{outcome:?}"
+        );
+        hung.assert_gone();
+    }
+
+    // Issue #61: a hung daemon stops taking connections at all once its
+    // listen queue (32 deep) is full of requests that timed out on it -- a
+    // few days of toggles and pick-files against a wedged tab. A client then
+    // fails just as if nothing listened. It must still count as hung: no
+    // twin spawned over it, refused by a plain stop, killed by a forced one.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_daemon_with_a_full_connection_queue_is_still_hung() {
+        use std::time::{Duration, Instant};
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let sidebar = &config.sidebar;
+        let hung = TestDaemon::spawn("wHnDa:t1", &config);
+        hung.hang();
+        thread::scope(|scope| {
+            for _ in 0..40 {
+                scope.spawn(|| remote_expr(&hung.socket, "1", sidebar, Duration::from_secs(2)));
+            }
+        });
+        let started = Instant::now();
+        let refused = remote_expr(&hung.socket, "1", sidebar, RPC_TIMEOUT).unwrap();
+        assert_eq!(
+            (refused, started.elapsed() < Duration::from_secs(2)),
+            (Reply::Absent, true),
+            "precondition: the full queue refuses a new client at once"
+        );
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let error = crate::daemon::ensure_daemon("wHnDa:t1", &root, &config, &root).unwrap_err();
+        assert!(format!("{error:#}").contains("busy or hung"), "{error:#}");
+        let procs = ProcessTable::load().expect("process table");
+        assert_eq!(procs.listeners(&hung.socket), [hung.pid], "no twin");
+
+        let mut herdr = herdr_with_tabs(3);
+        let daemons = collect(&mut herdr, sidebar).unwrap();
+        assert_eq!(daemons[0].state(), DaemonState::Hung);
+        assert_eq!(daemons[0].pid, Some(hung.pid));
+        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), false).unwrap();
+        assert_eq!(outcome.refused.len(), 1, "{outcome:?}");
+        assert!(process_alive(hung.pid), "a plain stop must not kill it");
+        assert_eq!(daemon_keys().unwrap(), [hung.tab.key()], "nor forget it");
+
+        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).unwrap();
+        assert_eq!(
+            (outcome.stopped.len(), outcome.failed.len()),
+            (1, 0),
+            "{outcome:?}"
+        );
+        hung.assert_gone();
     }
 
     /// Kills a test's child process if an assertion fails before its daemon

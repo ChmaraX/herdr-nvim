@@ -8,12 +8,11 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    process::Stdio,
     thread::sleep,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::{
     config::Sidebar,
@@ -21,11 +20,13 @@ use crate::{
     state::{self, tab_key},
 };
 
-use super::{nvim_cmd, remote_expr};
+use super::{process, remote_expr, request, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT};
 
-/// How long `send_quit` waits for a daemon to go away after asking it to quit.
+/// How long `quit` gives a daemon to exit after asking it to: as long as a
+/// daemon gets to answer at all, since a slow but healthy `VimLeavePre`
+/// (session or shada plugins) runs first.
+const QUIT_TIMEOUT: Duration = HEALTH_POLL_TIMEOUT;
 const QUIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const QUIT_POLL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Directory that registers every running daemon, one entry per tab.
 ///
@@ -171,24 +172,62 @@ pub(crate) fn all_stopped(results: Vec<(String, Result<()>)>) -> Result<()> {
     ))
 }
 
+/// What a daemon about to be stopped answered about itself.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StopProbe {
+    /// Its own pid, to watch it exit.
+    pub pid: Option<u32>,
+    /// Its listed buffers with unsaved changes.
+    pub unsaved: u32,
+}
+
 /// Stop the daemon for an already-sanitized tab key (a `socket_dir` entry
 /// stem, see `state::tab_key`): force-quit it if it is still running, then
-/// drop its registry entry and sidebar state file. Unsaved buffers are
-/// discarded -- the tab is gone, or `daemons stop --force` asked for it --
-/// but reported on stderr (herdr's plugin command log). A daemon that is
-/// already gone is a no-op beyond the file cleanup. A daemon that does not
-/// quit keeps its registry entry and state, so it stays listable and
-/// reachable, and is reported as an error.
+/// drop its registry entry and sidebar state file. A daemon that is already
+/// gone is a no-op beyond the file cleanup.
 fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
-    // Doubles as the liveness probe: `None` means nothing is listening.
-    if let Some(unsaved) = remote_expr(&socket, UNSAVED_BUFFERS_EXPR, sidebar) {
-        if unsaved != "0" {
-            eprintln!(
-                "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
-            );
+    // Doubles as the liveness probe.
+    let expr = format!("getpid() .. ' ' .. {UNSAVED_BUFFERS_EXPR}");
+    let probe = remote_expr(&socket, &expr, sidebar, RPC_TIMEOUT)?
+        .confirmed(&socket)
+        .map(|answer| {
+            let mut numbers = answer.split(' ').map(|n| n.parse().ok());
+            StopProbe {
+                pid: numbers.next().flatten(),
+                unsaved: numbers.next().flatten().unwrap_or(0),
+            }
+        });
+    stop_probed(key, probe, sidebar)
+}
+
+/// `stop_tab_key` for a daemon already probed (`Absent` confirmed, see
+/// `Reply::confirmed`). Unsaved buffers are discarded -- the tab is gone,
+/// or `daemons stop` was told it may -- but reported on stderr (herdr's
+/// plugin command log). A daemon that does not answer cannot be asked to
+/// quit, and one that does not exit after `qa!` will not; either is killed
+/// by its verified pid (`process::kill_daemon`), which loses nothing `qa!`
+/// would not. A daemon that does not go away keeps its registry entry and
+/// state, so it stays listable and reachable, and is reported as an error.
+pub(crate) fn stop_probed(key: &str, probe: Reply<StopProbe>, sidebar: &Sidebar) -> Result<()> {
+    let socket = socket_path_for_key(key);
+    match probe {
+        Reply::Answered(StopProbe { pid, unsaved }) => {
+            if unsaved > 0 {
+                eprintln!(
+                    "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
+                );
+            }
+            if !quit(&socket, pid, sidebar)? {
+                kill(
+                    key,
+                    &socket,
+                    &format!("did not exit within {}s of qa!", QUIT_TIMEOUT.as_secs()),
+                )?;
+            }
         }
-        send_quit(&socket, sidebar)?;
+        Reply::Absent => {}
+        Reply::Unresponsive => kill(key, &socket, "was not answering")?,
     }
     // `key` is a filename component, already sanitized, so it goes through
     // `state::remove_key` rather than `state::remove` -- that avoids
@@ -197,31 +236,51 @@ fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     state::remove_key(key)
 }
 
-/// Ask the daemon to force-quit (`qa!`), then wait until it stops answering.
-/// Errors if it is still answering when `QUIT_POLL_TIMEOUT` runs out.
-fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
-    nvim_cmd(sidebar)
-        .arg("--headless")
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote-send")
-        .arg("<cmd>qa!<cr>")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("failed to run nvim --remote-send for {}", socket.display()))?;
-    let deadline = Instant::now() + QUIT_POLL_TIMEOUT;
-    while remote_expr(socket, "1", sidebar).is_some() {
-        if Instant::now() >= deadline {
-            bail!(
-                "nvim daemon at {} still running {}s after qa!",
-                socket.display(),
-                QUIT_POLL_TIMEOUT.as_secs()
-            );
-        }
-        sleep(QUIT_POLL_INTERVAL);
+/// Ask the daemon to force-quit (`qa!`) and wait up to `QUIT_TIMEOUT` for
+/// it to exit: watching its `pid` where that is known and can be watched,
+/// else until nothing answers on its socket. `false` if it is still there.
+fn quit(socket: &Path, pid: Option<u32>, sidebar: &Sidebar) -> Result<bool> {
+    let deadline = Instant::now() + QUIT_TIMEOUT;
+    // Whatever the request itself says (a daemon exiting mid-request drops
+    // the connection), what counts is whether the daemon then exits.
+    let _ = request(
+        socket,
+        &["--remote-send", "<cmd>qa!<cr>"],
+        sidebar,
+        RPC_TIMEOUT,
+    );
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        return Ok(process::wait_gone(
+            pid,
+            socket,
+            deadline.saturating_duration_since(Instant::now()),
+        ));
     }
+    #[cfg(windows)]
+    let _ = pid;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        // An error here is a connection dropped by a daemon on its way out.
+        if let Ok(Reply::Absent) = remote_expr(socket, "1", sidebar, remaining) {
+            return Ok(true);
+        }
+        sleep(QUIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+/// Kill the daemon of `key` because it `why` (say, "was not answering"),
+/// and say so on stderr.
+fn kill(key: &str, socket: &Path, why: &str) -> Result<()> {
+    let pid = process::kill_daemon(socket)
+        .with_context(|| format!("the nvim daemon of tab {key} {why} and could not be killed"))?;
+    eprintln!(
+        "herdr-nvim: the nvim daemon of tab {key} {why}; killed it (pid {pid}), \
+         discarding any unsaved work"
+    );
     Ok(())
 }
 
@@ -318,11 +377,13 @@ mod tests {
         assert_eq!(orphans(&keys, &[]), keys);
     }
 
-    // Issue #34's leak: a daemon that ignores `qa!` must not be forgotten.
-    // `vim.on_key` returning "" swallows every key, including the `qa!` that
-    // `--remote-send` types, while RPC (and so `--remote-expr`) still works.
+    // Issue #34's leak: a daemon that ignores `qa!` must not be forgotten
+    // while it runs. `vim.on_key` returning "" swallows every key, including
+    // the `qa!` that `--remote-send` types, while RPC (and so `--remote-expr`)
+    // still works. On Unix it is killed by its pid once `QUIT_TIMEOUT` is up;
+    // on Windows, which cannot do that, it keeps its registry entry.
     #[test]
-    fn a_daemon_that_ignores_quit_keeps_its_registry_entry() {
+    fn a_daemon_that_ignores_quit_is_killed_or_kept() {
         if !nvim_available() {
             eprintln!("skipping: nvim not found on PATH");
             return;
@@ -335,13 +396,47 @@ mod tests {
             .eval(r#"luaeval("(function() vim.on_key(function() return '' end) return 1 end)()")"#);
 
         let results = stop_keys(&[stubborn.tab.key(), polite.tab.key()], &config.sidebar);
-        assert!(results[0].1.is_err(), "timeout must be an error");
         assert!(results[1].1.is_ok(), "the other daemon is still stopped");
-        let error = all_stopped(results).unwrap_err().to_string();
-        assert!(error.contains("1 nvim daemon"), "{error}");
-
-        stubborn.assert_alive();
-        assert_eq!(daemon_keys().unwrap(), [stubborn.tab.key()]);
         polite.assert_gone();
+        #[cfg(unix)]
+        {
+            assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+            stubborn.assert_gone();
+        }
+        #[cfg(windows)]
+        {
+            assert!(results[0].1.is_err(), "a daemon left running is an error");
+            let error = all_stopped(results).unwrap_err().to_string();
+            assert!(error.contains("1 nvim daemon"), "{error}");
+            stubborn.assert_alive();
+            assert_eq!(daemon_keys().unwrap(), [stubborn.tab.key()]);
+        }
+    }
+
+    // Issue #61: the close hooks and gc stop daemons whose tab is gone. A hung
+    // one (SIGSTOPped: socket open, no answers) must neither block them
+    // forever nor be dropped from the registry while it still runs: it is
+    // killed by its verified pid.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_daemon_of_a_closed_tab_is_killed() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let hung = TestDaemon::spawn("wHnH:t1", &config);
+        hung.hang();
+
+        let started = Instant::now();
+        let results = stop_keys(&[hung.tab.key()], &config.sidebar);
+        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+        assert!(
+            started.elapsed() < RPC_TIMEOUT + Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        hung.assert_gone();
     }
 }
