@@ -4,6 +4,7 @@
 
 pub(crate) mod events;
 pub(crate) mod inventory;
+pub(crate) mod process;
 pub(crate) mod registry;
 
 use std::{
