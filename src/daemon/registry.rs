@@ -1,6 +1,7 @@
 //! Where running daemons are registered, and how they are stopped: the one
-//! stop path (`stop_keys`) shared by `daemon-gc`, the herdr close hooks and
-//! `herdr-nvim daemons stop`.
+//! stop path (`stop_probed`) shared by `daemon-gc`, the herdr close hooks and
+//! `herdr-nvim daemons stop`, and `stop_keys`, which probes and stops for
+//! `daemon-gc` and the close hooks.
 
 #[cfg(windows)]
 use std::thread::sleep;
@@ -150,11 +151,18 @@ pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
 /// Vimscript: number of listed buffers with unsaved changes.
 const UNSAVED_BUFFERS_EXPR: &str = "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
 
-/// Stop each daemon in `keys`, in order. Best effort: one failing does not
-/// spare the rest. Returns every key with its own outcome, in input order.
+/// Probe each daemon in `keys` and stop it (`stop_probed`), in order. Best
+/// effort: one failing does not spare the rest. Returns every key with its
+/// own outcome, in input order.
 pub(crate) fn stop_keys(keys: &[String], sidebar: &Sidebar) -> Vec<(String, Result<()>)> {
     keys.iter()
-        .map(|key| (key.clone(), stop_tab_key(key, sidebar)))
+        .map(|key| {
+            let socket = socket_path_for_key(key);
+            let stopped = probe(key, sidebar)
+                .and_then(|reply| liveness(&socket, reply, None))
+                .and_then(|probe| stop_probed(key, probe, sidebar));
+            (key.clone(), stopped)
+        })
         .collect()
 }
 
@@ -237,21 +245,18 @@ fn parse_probe(key: &str, out: &str) -> Result<Probe> {
 }
 
 /// Stop the daemon for an already-sanitized tab key (a `socket_dir` entry
-/// stem, see `state::tab_key`): force-quit it if it is still running, then
-/// drop its registry entry and sidebar state file. A daemon that is already
-/// gone is a no-op beyond the file cleanup.
-fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
-    let socket = socket_path_for_key(key);
-    stop_probed(key, liveness(&socket, probe(key, sidebar)?, None)?, sidebar)
-}
-
-/// `stop_tab_key` for a daemon already probed. Unsaved buffers are discarded -- the tab is gone,
-/// or `daemons stop` was told it may -- but reported on stderr (herdr's
-/// plugin command log). A daemon that does not answer cannot be asked to
-/// quit, and one that does not exit after `qa!` will not; either is killed
-/// by its verified pid (`process::kill_daemon`), which loses nothing `qa!`
-/// would not. A daemon that does not go away keeps its registry entry and
-/// state, so it stays listable and reachable, and is reported as an error.
+/// stem, see `state::tab_key`), as its `probe` found it, then drop its
+/// registry entry and sidebar state file:
+/// - one that answered is asked to force-quit (`qa!`). Its unsaved buffers
+///   are discarded (the tab is gone, or `daemons stop` was told it may),
+///   but reported on stderr, herdr's plugin command log;
+/// - one that did not answer, or did not exit after `qa!`, is killed by its
+///   verified pid (`process::kill_daemon`), which loses nothing `qa!` would
+///   not;
+/// - one that is gone only has its files removed.
+///
+/// A daemon that does not go away keeps its registry entry and state, so it
+/// stays listable and reachable, and is reported as an error.
 pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
     match probe {
