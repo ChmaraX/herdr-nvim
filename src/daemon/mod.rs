@@ -298,7 +298,7 @@ pub(crate) fn liveness<T>(
 /// process group, and the whole group is killed, so an `nvim_bin` launcher
 /// that starts the real nvim as its child does not leave that one behind.
 /// Every request to a daemon goes through here; only the long-lived
-/// `--remote-ui` attach does not.
+/// `--remote-ui` attach does not. The client runs with `--clean`.
 ///
 /// `Err` when there is no verdict on the daemon: the client could not be
 /// run, killed or reaped, or the daemon answered with an error.
@@ -311,6 +311,9 @@ pub(crate) fn request(
     let mut command = nvim_cmd(sidebar);
     command
         .arg("--headless")
+        // The client needs none of the user's config, and must not start
+        // its plugins if `--remote` falls back to editing locally.
+        .arg("--clean")
         .arg("--server")
         .arg(socket)
         .args(args)
@@ -343,8 +346,9 @@ pub(crate) fn request(
     let (stdout, stderr) = (output(stdout, drained), output(stderr, drained));
     match status {
         Some(status) if status.success() => Ok(Reply::Answered(stdout)),
-        // E247: "Failed to connect to '<socket>'".
-        Some(_) if stderr.contains("E247:") => Ok(Reply::Refused),
+        // E247: "Failed to connect to '<socket>'". A `--remote` client that
+        // gets it does not exit: it "edits locally" until it is killed.
+        _ if stderr.contains("E247:") => Ok(Reply::Refused),
         Some(status) => bail!(
             "nvim --server {} {} failed ({status}): {stderr}",
             socket.display(),
@@ -733,6 +737,41 @@ mod tests {
             .unwrap_or_else(|_| panic!("a request through a shim still blocked after {elapsed:?}"));
         assert_eq!(outcome, Ok(Reply::TimedOut));
         assert!(leftover.is_empty(), "clients left behind: {leftover:?}");
+    }
+
+    // Issue #61 (review of PR #63): `--remote` that cannot connect prints
+    // E247 and then "edits locally": it becomes a whole headless nvim of its
+    // own, which never exits. That is a refusal, not a hung daemon, and the
+    // stand-in nvim must not load the user's config (plugins, LSPs) first.
+    #[test]
+    fn a_remote_open_with_nothing_listening_is_refused_without_user_config() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let env = TestEnv::new();
+        let marker = env.dir.join("config-loaded");
+        let init = env.dir.join("xdg-config").join("nvim").join("init.lua");
+        fs::create_dir_all(init.parent().unwrap()).unwrap();
+        fs::write(
+            &init,
+            format!(
+                "vim.fn.writefile({{'loaded'}}, {:?})",
+                marker.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let socket = env.dir.join("nothing-here.sock");
+        let file = env.dir.join("picked.txt").to_string_lossy().into_owned();
+
+        let reply = request(
+            &socket,
+            &["--remote", &file],
+            &Sidebar::default(),
+            Duration::from_secs(2),
+        );
+        assert_eq!(reply.map_err(|e| format!("{e:#}")), Ok(Reply::Refused));
+        assert!(!marker.exists(), "the client loaded the user's config");
     }
 
     #[test]
