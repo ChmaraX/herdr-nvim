@@ -205,14 +205,17 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Kill the nvim daemon listening on `socket` -- one that does not answer
 /// over it, or will not quit -- and return its pid once it is gone. SIGTERM
 /// first (with SIGCONT, so a stopped daemon gets to act on it), SIGKILL if
-/// it is still there after `EXIT_TIMEOUT`. A daemon that leads its own
-/// process group, as a spawned one does (`detach_command`), is signalled
-/// with its whole group, so its LSP servers and jobs go too. The pid comes
-/// from the process table (`ProcessTable::daemon`), and right before each
-/// round of signals it is checked again to still be that nvim, so a pid
-/// since reused by another process is never signalled. `None` when the
-/// daemon had already exited, before any signal. Several unrelated
-/// listeners are an error that signals nothing.
+/// it is still there after `EXIT_TIMEOUT`: a busy-looping nvim needs that,
+/// as it handles SIGTERM on the very loop that is stuck. A daemon that
+/// leads its own process group, as a spawned one does (`detach_command`),
+/// is signalled with its whole group, so its LSP servers (`vim.system`
+/// children) go too; `jobstart()` jobs, which nvim puts in groups of their
+/// own, do not. The pid comes from the process table
+/// (`ProcessTable::daemon`), and right before each round of signals it is
+/// checked again to still be that nvim, so a pid since reused by another
+/// process is never signalled. `None` when the daemon had already exited,
+/// before any signal. Several unrelated listeners are an error that signals
+/// nothing.
 #[cfg(unix)]
 pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
     let Some(pid) = ProcessTable::load()?.daemon(socket)? else {
