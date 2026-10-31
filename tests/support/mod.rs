@@ -126,6 +126,21 @@ impl Sandbox {
             .join(format!("{}.{ext}", tab.replace(':', "_")))
     }
 
+    /// Put a `ps` on the binary's PATH that always fails, so the process
+    /// table cannot be read.
+    #[cfg(unix)]
+    pub fn break_ps(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let ps = self.dir.join("bin").join("ps");
+        fs::write(&ps, "#!/bin/sh\necho 'fake ps: broken' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    pub fn fix_ps(&self) {
+        fs::remove_file(self.dir.join("bin").join("ps")).unwrap();
+    }
+
     /// A registry entry nothing answers on (a daemon that died uncleanly).
     pub fn stale_entry(&self, tab: &str) -> PathBuf {
         let entry = self.entry(tab);

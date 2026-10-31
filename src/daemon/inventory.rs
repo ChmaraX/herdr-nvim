@@ -250,17 +250,17 @@ fn describe(
         .zip(probes)
         .map(|(key, probe)| {
             let socket = socket_path_for_key(&key);
-            let probe = liveness(&socket, probe?, procs.as_ref());
+            let probe = liveness(&socket, probe?, procs.as_ref().ok())?;
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
             let pid = match (probe.answered(), &procs) {
                 (Some(answer), _) => Some(answer.pid),
-                (None, Some(procs)) => procs.daemon(&socket).ok(),
-                (None, None) => None,
+                (None, Ok(procs)) => procs.daemon(&socket).ok(),
+                (None, Err(_)) => None,
             };
             let (rss_bytes, uptime_secs) = match (pid, &procs) {
-                (Some(pid), Some(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
+                (Some(pid), Ok(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
             Ok(DaemonInfo {
@@ -826,7 +826,11 @@ mod tests {
         let error = crate::daemon::ensure_daemon("wHnDa:t1", &root, &config, &root).unwrap_err();
         assert!(format!("{error:#}").contains("busy or hung"), "{error:#}");
         let procs = ProcessTable::load().expect("process table");
-        assert_eq!(procs.listeners(&hung.socket), [hung.pid], "no twin");
+        assert_eq!(
+            procs.listeners(&hung.socket).unwrap(),
+            [hung.pid],
+            "no twin"
+        );
 
         let mut herdr = herdr_with_tabs(3);
         let daemons = collect(&mut herdr, sidebar).unwrap();

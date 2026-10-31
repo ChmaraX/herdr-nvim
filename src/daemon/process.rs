@@ -1,6 +1,10 @@
 //! A daemon seen as an OS process rather than over its socket: its memory
 //! (with its LSPs and jobs) and age for `herdr-nvim daemons`, and finding and
 //! killing one that does not answer over its socket or will not quit.
+//!
+//! A process inspection that fails is an error, never taken for a daemon
+//! that is gone: only an inspection that succeeds and finds no such
+//! process says it is.
 
 use std::{collections::HashMap, path::Path, process::Command};
 #[cfg(unix)]
@@ -9,9 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(unix)]
-use anyhow::Context;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 struct Proc {
     ppid: u32,
@@ -29,16 +31,15 @@ pub(crate) struct ProcessTable {
 }
 
 impl ProcessTable {
-    /// `None` when the process table cannot be read; callers show "—".
-    pub(crate) fn load() -> Option<Self> {
-        let procs = read_processes()?;
+    pub(crate) fn load() -> Result<Self> {
+        let procs = read_processes().context("could not read the process table")?;
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (&pid, proc_) in &procs {
             if proc_.ppid != pid {
                 children.entry(proc_.ppid).or_default().push(pid);
             }
         }
-        Some(Self { procs, children })
+        Ok(Self { procs, children })
     }
 
     /// `pid` and all of its descendants that are still running.
@@ -81,23 +82,22 @@ impl ProcessTable {
     /// Normally one: the daemon. Two when a launcher shim starts the real
     /// nvim as its child instead of `exec`ing it. Always empty on Windows,
     /// where command lines are not read.
-    pub(crate) fn listeners(&self, socket: &Path) -> Vec<u32> {
-        let mut pids: Vec<u32> = self
-            .procs
-            .iter()
-            // The snapshot's command lines rule out all but a few.
-            .filter(|(_, proc_)| listens_on(&proc_.args, socket))
-            .map(|(&pid, _)| pid)
-            .filter(|&pid| is_daemon(pid, socket))
-            .collect();
+    pub(crate) fn listeners(&self, socket: &Path) -> Result<Vec<u32>> {
+        let mut pids = Vec::new();
+        // The snapshot's command lines rule out all but a few.
+        for (&pid, proc_) in &self.procs {
+            if listens_on(&proc_.args, socket) && is_daemon(pid, socket)? {
+                pids.push(pid);
+            }
+        }
         pids.sort_unstable();
-        pids
+        Ok(pids)
     }
 
     /// The daemon listening on `socket`: its one listener or, when a shim
     /// and the nvim it started both listen, the innermost one.
     pub(crate) fn daemon(&self, socket: &Path) -> Result<u32> {
-        let pids = self.listeners(socket);
+        let pids = self.listeners(socket)?;
         let innermost: Vec<u32> = pids
             .iter()
             .copied()
@@ -143,40 +143,53 @@ fn is_nvim(command_name: &str) -> bool {
 
 /// One running process's `ps` field, `None` once it has exited.
 #[cfg(unix)]
-fn ps_field(pid: u32, field: &str) -> Option<String> {
+fn ps_field(pid: u32, field: &str) -> Result<Option<String>> {
     let output = Command::new("ps")
         .args(["-ww", "-o", field, "-p", &pid.to_string()])
         .output()
-        .ok()?;
+        .context("could not run ps")?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (output.status.success() && !text.is_empty()).then_some(text)
+    if output.status.success() {
+        return Ok(Some(text));
+    }
+    // For a pid that no process has, `ps` fails without a word.
+    if text.is_empty() && output.stderr.is_empty() {
+        return Ok(None);
+    }
+    bail!(
+        "ps -o {field} -p {pid} failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
 }
 
 /// Whether `pid` is (still) the nvim listening on `socket`: the one test of
 /// a daemon's identity, by its current command line and executable.
 #[cfg(unix)]
-fn is_daemon(pid: u32, socket: &Path) -> bool {
-    ps_field(pid, "args=").is_some_and(|args| listens_on(&args, socket))
-        && ps_field(pid, "comm=").is_some_and(|name| is_nvim(&name))
+fn is_daemon(pid: u32, socket: &Path) -> Result<bool> {
+    if !ps_field(pid, "args=")?.is_some_and(|args| listens_on(&args, socket)) {
+        return Ok(false);
+    }
+    Ok(ps_field(pid, "comm=")?.is_some_and(|name| is_nvim(&name)))
 }
 
 /// Windows: command lines are not read, so no process is known to be one.
 #[cfg(windows)]
-fn is_daemon(_pid: u32, _socket: &Path) -> bool {
-    false
+fn is_daemon(_pid: u32, _socket: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 /// Wait up to `timeout` for `pid`, the nvim listening on `socket`, to exit
 /// (or to stop being that process); `true` once it has.
 #[cfg(unix)]
-pub(crate) fn wait_gone(pid: u32, socket: &Path, timeout: Duration) -> bool {
+pub(crate) fn wait_gone(pid: u32, socket: &Path, timeout: Duration) -> Result<bool> {
     let deadline = Instant::now() + timeout;
     loop {
-        if !is_daemon(pid, socket) {
-            return true;
+        if !is_daemon(pid, socket)? {
+            return Ok(true);
         }
         if Instant::now() >= deadline {
-            return false;
+            return Ok(false);
         }
         sleep(EXIT_POLL_INTERVAL);
     }
@@ -200,10 +213,8 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// listeners are an error that signals nothing.
 #[cfg(unix)]
 pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
-    let pid = ProcessTable::load()
-        .context("could not read the process table")?
-        .daemon(socket)?;
-    let Some(pgid) = ps_field(pid, "pgid=") else {
+    let pid = ProcessTable::load()?.daemon(socket)?;
+    let Some(pgid) = ps_field(pid, "pgid=")? else {
         return Ok(pid);
     };
     let target = if pgid.parse() == Ok(pid) {
@@ -212,15 +223,17 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
         pid.to_string()
     };
     for signals in [&["TERM", "CONT"][..], &["KILL"]] {
-        if !is_daemon(pid, socket) {
+        if !is_daemon(pid, socket)? {
             return Ok(pid);
         }
         for signal in signals {
-            let _ = Command::new("kill")
+            // Whether it took is for the wait below to say.
+            Command::new("kill")
                 .args(["-s", signal, "--", &target])
-                .output();
+                .output()
+                .context("could not run kill")?;
         }
-        if wait_gone(pid, socket, EXIT_TIMEOUT) {
+        if wait_gone(pid, socket, EXIT_TIMEOUT)? {
             return Ok(pid);
         }
     }
@@ -242,78 +255,80 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
 /// Unix: one `ps` call; `rss` is in KiB, `etime` is `[[dd-]hh:]mm:ss`, and
 /// `args` comes last and whole (`-ww`: never cut to the terminal width).
 #[cfg(not(windows))]
-fn read_processes() -> Option<HashMap<u32, Proc>> {
+fn read_processes() -> Result<HashMap<u32, Proc>> {
     let output = Command::new("ps")
         .args(["-A", "-ww", "-o", "pid=,ppid=,rss=,etime=,args="])
         .output()
-        .ok()?;
+        .context("could not run ps")?;
     if !output.status.success() {
-        return None;
+        bail!(
+            "ps -A failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(
-        text.lines()
-            .filter_map(|line| {
-                let mut rest = line;
-                let mut field = || {
-                    let trimmed = rest.trim_start();
-                    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-                    rest = &trimmed[end..];
-                    Some(&trimmed[..end]).filter(|field| !field.is_empty())
-                };
-                let pid = field()?.parse().ok()?;
-                let ppid = field()?.parse().ok()?;
-                let rss_kib: u64 = field()?.parse().ok()?;
-                let uptime_secs = parse_etime(field()?)?;
-                Some((
-                    pid,
-                    Proc {
-                        ppid,
-                        rss_bytes: rss_kib * 1024,
-                        uptime_secs,
-                        args: rest.trim().to_owned(),
-                    },
-                ))
-            })
-            .collect(),
-    )
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut rest = line;
+            let mut field = || {
+                let trimmed = rest.trim_start();
+                let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+                rest = &trimmed[end..];
+                Some(&trimmed[..end]).filter(|field| !field.is_empty())
+            };
+            let pid = field()?.parse().ok()?;
+            let ppid = field()?.parse().ok()?;
+            let rss_kib: u64 = field()?.parse().ok()?;
+            let uptime_secs = parse_etime(field()?)?;
+            Some((
+                pid,
+                Proc {
+                    ppid,
+                    rss_bytes: rss_kib * 1024,
+                    uptime_secs,
+                    args: rest.trim().to_owned(),
+                },
+            ))
+        })
+        .collect())
 }
 
 /// Windows: one PowerShell `Get-CimInstance Win32_Process` call (slow-ish,
 /// ~1s, but only run by this manual command); working set stands in for RSS.
 #[cfg(windows)]
-fn read_processes() -> Option<HashMap<u32, Proc>> {
+fn read_processes() -> Result<HashMap<u32, Proc>> {
     let script = "$now = Get-Date; Get-CimInstance Win32_Process | ForEach-Object { \
                   $up = if ($_.CreationDate) { [int64]($now - $_.CreationDate).TotalSeconds } else { 0 }; \
                   \"$($_.ProcessId) $($_.ParentProcessId) $($_.WorkingSetSize) $up\" }";
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
-        .ok()?;
+        .context("could not run powershell.exe")?;
     if !output.status.success() {
-        return None;
+        bail!("Get-CimInstance Win32_Process failed ({})", output.status);
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(
-        text.lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?.parse().ok()?;
-                let ppid = fields.next()?.parse().ok()?;
-                let rss_bytes = fields.next()?.parse().ok()?;
-                let uptime_secs = fields.next()?.parse().ok()?;
-                Some((
-                    pid,
-                    Proc {
-                        ppid,
-                        rss_bytes,
-                        uptime_secs,
-                        args: String::new(),
-                    },
-                ))
-            })
-            .collect(),
-    )
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let ppid = fields.next()?.parse().ok()?;
+            let rss_bytes = fields.next()?.parse().ok()?;
+            let uptime_secs = fields.next()?.parse().ok()?;
+            Some((
+                pid,
+                Proc {
+                    ppid,
+                    rss_bytes,
+                    uptime_secs,
+                    args: String::new(),
+                },
+            ))
+        })
+        .collect())
 }
 
 /// `ps` elapsed time `[[dd-]hh:]mm:ss` in seconds.

@@ -15,6 +15,11 @@
 //!   request timeout, a plain `daemons stop` refuses it (exit 1) and keeps
 //!   it, `--force` kills it by its pid. Covered:
 //!   `a_hung_daemon_is_listed_refused_then_killed_with_force` (Unix only).
+//! - Process table unreadable (`ps` fails): a refused socket cannot be
+//!   told from a hung daemon whose listen queue is full, so nothing is
+//!   taken for gone: the stale entry stays, a stop of it fails, and so does
+//!   the close hook. Covered:
+//!   `nothing_is_forgotten_while_the_process_table_cannot_be_read` (Unix).
 //! - Prefix trap on `stop <tab>`: only that key, never a longer id sharing
 //!   its prefix. Covered: same test (`wHnDa:t1` vs `wHnDa:t10`).
 //! - Quit timeout and partial failure: covered through the shared stop path
@@ -167,6 +172,36 @@ fn lists_reaps_and_refuses_against_real_daemons() {
     assert_eq!(states(&after), pairs(&[("wHnDa_t10", "alive")]));
     let table = stdout(&sandbox.run(&["daemons"], None));
     assert!(!table.contains("--orphans"), "{table}");
+    log.note("result: pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn nothing_is_forgotten_while_the_process_table_cannot_be_read() {
+    use support::Artifact;
+
+    let sandbox = Sandbox::new("daemons-no-ps");
+    let mut log = Artifact::new("nothing_is_forgotten_while_the_process_table_cannot_be_read");
+    let stale = sandbox.stale_entry("wHnDp:t1");
+    sandbox.herdr_tabs(&[("wHnDp:t1", "novu", "api")]);
+    sandbox.break_ps();
+
+    let stopped = sandbox.run(&["daemons", "stop", "wHnDp:t1"], None);
+    log.step("daemons stop wHnDp:t1 (ps broken)", "", &stopped);
+    assert_eq!(stopped.status.code(), Some(1));
+    assert!(stale.exists(), "a stop must not forget it");
+
+    let event = r#"{"event":"tab_closed","data":{"type":"tab_closed","tab_id":"wHnDp:t1","workspace_id":"wHnDp"}}"#;
+    let hook = sandbox.run(&["on-event"], Some(event));
+    log.step("on-event tab_closed wHnDp:t1 (ps broken)", event, &hook);
+    assert!(!hook.status.success());
+    assert!(stale.exists(), "the close hook must not forget it");
+
+    sandbox.fix_ps();
+    let stopped = sandbox.run(&["daemons", "stop", "wHnDp:t1"], None);
+    log.step("daemons stop wHnDp:t1 (ps fixed)", "", &stopped);
+    assert!(stopped.status.success(), "{}", stdout(&stopped));
+    assert!(!stale.exists(), "once ps answers, the stale entry goes");
     log.note("result: pass");
 }
 

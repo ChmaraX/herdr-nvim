@@ -29,4 +29,5 @@ Run the commands in a shell while herdr is running. Install goes through the her
 - `doctor --help` prints no help; it just runs the checks.
 - The binary lives in the plugin's `bin/` directory and may not be on PATH. Call it by full path.
 - `daemons stop` without `--force` refuses daemons with unsaved work or pending comments, and unresponsive ones. Treat that as expected behavior, not a failure.
+- On Unix, a daemon is only taken for gone after `ps` showed no nvim listening on its socket. If `ps` fails, `daemons stop` and the close hooks fail and keep its entry instead.
 - A SIGSTOPped daemon left behind keeps the container's tab socket busy. SIGCONT it or force-stop it before reusing the tab.

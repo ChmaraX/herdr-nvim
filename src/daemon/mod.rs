@@ -76,7 +76,7 @@ pub fn ensure_daemon(
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
     let reply = remote_expr(&socket, "1+1", &config.sidebar, HEALTH_POLL_TIMEOUT)?;
-    match liveness(&socket, reply, None) {
+    match liveness(&socket, reply, None)? {
         Liveness::Answered(_) => {
             // Also (re)register an already-running daemon, so one spawned
             // before the Windows marker existed still becomes discoverable.
@@ -253,36 +253,42 @@ impl<T> Liveness<T> {
 }
 
 /// The one way to learn whether the daemon on `socket` is there, from a
-/// client's `reply`: a refusal is checked against the process table, where
-/// an nvim still listening on `socket` makes it `Unresponsive`. `table` is
-/// one already loaded, if any; else one is loaded when the verdict needs it.
-/// Without a socket file or a readable process table the client's verdict
-/// stands.
+/// client's `reply`. On Unix a refusal is checked against the process
+/// table: an nvim still listening on `socket` (even one whose socket file
+/// was deleted) makes it `Unresponsive`, and a table that cannot be read is
+/// an error, never `Gone`. `table` is one already loaded, if any; else one
+/// is loaded when the verdict needs it. Windows reads no command lines, so
+/// there a refusal stands and no table is loaded.
 pub(crate) fn liveness<T>(
     socket: &Path,
     reply: Reply<T>,
     table: Option<&process::ProcessTable>,
-) -> Liveness<T> {
-    match reply {
+) -> Result<Liveness<T>> {
+    Ok(match reply {
         Reply::Answered(answer) => Liveness::Answered(answer),
         Reply::TimedOut => Liveness::Unresponsive,
-        Reply::Refused if !socket.exists() => Liveness::Gone,
+        #[cfg(windows)]
+        Reply::Refused => {
+            let _ = (socket, table);
+            Liveness::Gone
+        }
+        #[cfg(unix)]
         Reply::Refused => {
             let loaded;
             let table = match table {
-                Some(table) => Some(table),
+                Some(table) => table,
                 None => {
-                    loaded = process::ProcessTable::load();
-                    loaded.as_ref()
+                    loaded = process::ProcessTable::load()?;
+                    &loaded
                 }
             };
-            if table.is_some_and(|table| !table.listeners(socket).is_empty()) {
-                Liveness::Unresponsive
-            } else {
+            if table.listeners(socket)?.is_empty() {
                 Liveness::Gone
+            } else {
+                Liveness::Unresponsive
             }
         }
-    }
+    })
 }
 
 /// Send one request to the daemon on `socket` as an `nvim --server <socket>

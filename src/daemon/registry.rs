@@ -241,7 +241,7 @@ fn parse_probe(key: &str, out: &str) -> Result<Probe> {
 /// gone is a no-op beyond the file cleanup.
 fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
-    stop_probed(key, liveness(&socket, probe(key, sidebar)?, None), sidebar)
+    stop_probed(key, liveness(&socket, probe(key, sidebar)?, None)?, sidebar)
 }
 
 /// `stop_tab_key` for a daemon already probed. Unsaved buffers are discarded -- the tab is gone,
@@ -292,11 +292,11 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
         RPC_TIMEOUT,
     );
     #[cfg(unix)]
-    return Ok(process::wait_gone(
+    return process::wait_gone(
         pid,
         socket,
         deadline.saturating_duration_since(Instant::now()),
-    ));
+    );
     #[cfg(windows)]
     {
         let _ = pid;
@@ -307,7 +307,7 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
             }
             // An error here is a connection dropped by a daemon on its way out.
             if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
-                if liveness(socket, reply, None) == Liveness::Gone {
+                if let Ok(Liveness::Gone) = liveness(socket, reply, None) {
                     return Ok(true);
                 }
             }
