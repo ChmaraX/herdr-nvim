@@ -290,7 +290,8 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
     hung.hang();
     sandbox.herdr_tabs(&[("wHnDh:t1", "novu", "api")]);
 
-    // Listed within the request timeout (5s), as unresponsive, by its pid.
+    // Listed within the request timeout (5s, plus slack for the binary's
+    // startup on a slow runner), as unresponsive, by its pid.
     let started = Instant::now();
     let listed = sandbox.run(&["daemons", "--json"], None);
     log.step("daemons --json", "", &listed);
