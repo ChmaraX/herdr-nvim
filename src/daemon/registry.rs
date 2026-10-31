@@ -463,6 +463,77 @@ mod tests {
         }
     }
 
+    // Issue #61 (review of PR #63): the reporter's kind of hang is a plugin
+    // stuck in a loop, not a stopped process. Such a daemon ignores SIGTERM,
+    // so a forced stop and a close hook must get it with the SIGKILL that
+    // follows, and take its process group along: the child standing in for
+    // an LSP server (started the way `vim.lsp` starts one, `vim.system`)
+    // must not outlive it.
+    #[cfg(unix)]
+    #[test]
+    fn a_busy_daemon_is_killed_with_its_process_group() {
+        use crate::daemon::inventory::{stop, Target};
+        use crate::test_support::{process_alive, wait_dead};
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let forced = TestDaemon::spawn("wHnB:t1", &config);
+        let closed = TestDaemon::spawn("wHnB:t2", &config);
+        let jobs: Vec<u32> = [&forced, &closed]
+            .map(|daemon| {
+                let job = daemon.eval(r#"luaeval("vim.system({'sleep', '300'}).pid")"#);
+                daemon.busy();
+                job.parse().expect("job pid")
+            })
+            .into();
+        std::process::Command::new("kill")
+            .args(["-TERM", &forced.pid.to_string()])
+            .status()
+            .expect("run kill");
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(
+            process_alive(forced.pid),
+            "precondition: a busy daemon ignores SIGTERM"
+        );
+
+        let mut herdr = MockHerdr {
+            tab_infos_results: VecDeque::from([Ok(vec![live("wHnB:t1")])]),
+            ..Default::default()
+        };
+        let outcome = stop(
+            &mut herdr,
+            &config.sidebar,
+            &Target::Tab("wHnB:t1".into()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            (outcome.stopped.len(), outcome.failed.len()),
+            (1, 0),
+            "{outcome:?}"
+        );
+        forced.assert_gone();
+
+        let started = Instant::now();
+        let results = stop_keys(&[closed.tab.key()], &config.sidebar);
+        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+        // The probe's timeout, SIGTERM's wait, then SIGKILL.
+        assert!(
+            started.elapsed() < RPC_TIMEOUT + Duration::from_secs(7),
+            "{:?}",
+            started.elapsed()
+        );
+        closed.assert_gone();
+        for job in jobs {
+            wait_dead(job);
+            assert!(!process_alive(job), "job {job} outlived its daemon");
+        }
+    }
+
     // Issue #61 (review of PR #63): not being able to ask a daemon to quit
     // (here: no nvim to run the `qa!` client with) says nothing about the
     // daemon, so it must be an error, never a reason to kill it.

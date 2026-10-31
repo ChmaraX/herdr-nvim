@@ -251,6 +251,22 @@ impl Daemon {
             .expect("run kill");
     }
 
+    /// Busy-loop its main loop, like a plugin stuck in a loop: its socket
+    /// still takes connections, nothing answers, and it ignores SIGTERM
+    /// (nvim handles signals on that loop). Drop's SIGKILL still ends it.
+    pub fn busy(&self) {
+        let status = Command::new("nvim")
+            .args(["--headless", "--clean", "--server"])
+            .arg(&self.address)
+            .args(["--remote-send", "<cmd>lua while true do end<cr>"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run nvim --remote-send");
+        assert!(status.success(), "{} did not take the keys", self.tab);
+    }
+
     pub fn running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }

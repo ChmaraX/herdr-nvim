@@ -190,6 +190,20 @@ impl TestDaemon {
         self.signal("-STOP");
     }
 
+    /// Busy-loop the daemon's main loop, like a plugin stuck in a loop: its
+    /// socket still takes connections, nothing answers, and it does not act
+    /// on SIGTERM either (nvim handles signals on that same loop).
+    #[cfg(unix)]
+    pub(crate) fn busy(&self) {
+        let reply = crate::daemon::request(
+            &self.socket,
+            &["--remote-send", "<cmd>lua while true do end<cr>"],
+            &Sidebar::default(),
+            RPC_TIMEOUT,
+        );
+        assert!(matches!(reply, Ok(Reply::Answered(_))), "{reply:?}");
+    }
+
     /// SIGCONT a daemon `hang` stopped.
     #[cfg(unix)]
     pub(crate) fn resume(&self) {
