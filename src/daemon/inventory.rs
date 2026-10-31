@@ -313,10 +313,15 @@ pub(crate) struct StopOutcome {
     pub failed: Vec<String>,
 }
 
-/// Stop the targeted daemons. One that `DaemonInfo::refusal` protects is
-/// left running unless `force`; one whose probe failed always is, and is
-/// reported as failed. `--orphans` needs herdr: without it, every
-/// daemon would look orphaned.
+/// Stop the targeted daemons, one after another. One that
+/// `DaemonInfo::refusal` protects is left running unless `force`; one whose
+/// probe failed always is, and is reported as failed. `--orphans` needs
+/// herdr: without it, every daemon would look orphaned.
+///
+/// A stop can take seconds, so the listing's probe of a later daemon may be
+/// stale by its turn: one that answered is probed again right before it is
+/// checked and stopped. One that did not answer keeps its probe, so a hung
+/// daemon is not waited on twice.
 pub(crate) fn stop(
     h: &mut dyn Herdr,
     sidebar: &Sidebar,
@@ -341,8 +346,17 @@ pub(crate) fn stop(
         }
     };
     let mut outcome = StopOutcome::default();
-    let mut doomed = Vec::new();
-    for daemon in describe(selected, tabs.as_deref(), sidebar) {
+    for mut daemon in describe(selected, tabs.as_deref(), sidebar) {
+        if let Ok(Liveness::Answered(_)) = daemon.probe {
+            let socket = socket_path_for_key(&daemon.key);
+            daemon.probe = probe(&daemon.key, sidebar)
+                .and_then(|reply| liveness(&socket, reply, None))
+                .map_err(|error| format!("{error:#}"));
+        }
+        if let (false, Some(refusal)) = (force, daemon.refusal()) {
+            outcome.refused.push(refusal);
+            continue;
+        }
         let probe = match &daemon.probe {
             Ok(probe) => probe.clone(),
             Err(error) => {
@@ -352,14 +366,6 @@ pub(crate) fn stop(
                 continue;
             }
         };
-        match (force, daemon.refusal()) {
-            (false, Some(refusal)) => outcome.refused.push(refusal),
-            _ => doomed.push((daemon, probe)),
-        }
-    }
-    for (daemon, probe) in doomed {
-        // Reuses the probe above instead of asking (and, for a hung daemon,
-        // waiting) a second time.
         match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
@@ -880,6 +886,47 @@ mod tests {
             "{outcome:?}"
         );
         hung.assert_gone();
+    }
+
+    // Issue #61 (principles review of PR #63): `daemons stop --all` probes
+    // every daemon up front, then stops them one after another, and one stop
+    // can take seconds (here: a slow but healthy `VimLeavePre`). Unsaved work
+    // that a later daemon gains meanwhile must still refuse its plain stop.
+    #[test]
+    fn unsaved_work_gained_during_a_stop_all_still_refuses_the_stop() {
+        use std::time::Duration;
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let slow = TestDaemon::spawn("wHnDa:t1", &config);
+        let later = TestDaemon::spawn("wHnDb:t1", &config);
+        slow.eval(
+            r#"luaeval("(function() vim.api.nvim_create_autocmd('VimLeavePre', { callback = function() vim.uv.sleep(3000) end }) return 1 end)()")"#,
+        );
+
+        let sidebar = config.sidebar.clone();
+        let stopping =
+            thread::spawn(move || stop(&mut herdr_with_tabs(1), &sidebar, &Target::All, false));
+        // The listing probe is long done; the slow daemon is still quitting.
+        thread::sleep(Duration::from_secs(1));
+        later.dirty_a_buffer();
+        let outcome = stopping.join().unwrap().unwrap();
+
+        assert_eq!(
+            (outcome.stopped.len(), outcome.refused.len()),
+            (1, 1),
+            "{outcome:?}"
+        );
+        assert!(
+            outcome.refused[0].contains("1 unsaved buffer"),
+            "{outcome:?}"
+        );
+        slow.assert_gone();
+        later.assert_alive();
     }
 
     /// Kills a test's child process if an assertion fails before its daemon
