@@ -22,7 +22,8 @@ use crate::{
 };
 
 use super::{
-    liveness, process, remote_expr, request, Liveness, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT,
+    liveness, process, remote_expr, request, ClientFailed, Liveness, Reply, HEALTH_POLL_TIMEOUT,
+    RPC_TIMEOUT,
 };
 
 /// How long `quit` gives a daemon to exit after asking it to: as long as a
@@ -278,19 +279,24 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
     state::remove_key(key)
 }
 
-/// Ask the daemon to force-quit (`qa!`) and wait up to `QUIT_TIMEOUT` for
-/// it to exit: watching its `pid` (Unix), else until nothing answers on
-/// its socket (Windows). `false` if it is still there.
+/// Ask the daemon to force-quit (`qa!`) and, once asked, wait up to
+/// `QUIT_TIMEOUT` for it to exit: watching its `pid` (Unix), else until
+/// nothing answers on its socket (Windows). `false` if it is still there;
+/// an error if it could not be asked at all.
 fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
-    let deadline = Instant::now() + QUIT_TIMEOUT;
-    // Whatever the request itself says (a daemon exiting mid-request drops
-    // the connection), what counts is whether the daemon then exits.
-    let _ = request(
+    match request(
         socket,
         &["--remote-send", "<cmd>qa!<cr>"],
         sidebar,
         RPC_TIMEOUT,
-    );
+    ) {
+        // Whatever the daemon made of it (one exiting mid-request drops
+        // the connection), what counts is whether it then exits.
+        Ok(_) => {}
+        Err(error) if error.is::<ClientFailed>() => {}
+        Err(error) => return Err(error).context("could not ask it to quit"),
+    }
+    let deadline = Instant::now() + QUIT_TIMEOUT;
     #[cfg(unix)]
     return process::wait_gone(
         pid,
@@ -455,6 +461,37 @@ mod tests {
             stubborn.assert_alive();
             assert_eq!(daemon_keys().unwrap(), [stubborn.tab.key()]);
         }
+    }
+
+    // Issue #61 (review of PR #63): not being able to ask a daemon to quit
+    // (here: no nvim to run the `qa!` client with) says nothing about the
+    // daemon, so it must be an error, never a reason to kill it.
+    #[test]
+    fn a_quit_that_cannot_be_sent_kills_nothing() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("wHnS:t1", &config);
+        let key = daemon.tab.key();
+        let reply = probe(&key, &config.sidebar).unwrap();
+        let probe = liveness(&daemon.socket, reply, None).unwrap();
+        let no_nvim = Sidebar {
+            nvim_bin: "/nonexistent/nvim".to_owned(),
+            ..Default::default()
+        };
+
+        let started = Instant::now();
+        let result = stop_probed(&key, probe, &no_nvim);
+        assert!(result.is_err(), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        daemon.assert_alive();
     }
 
     // Issue #61: the close hooks and gc stop daemons whose tab is gone. A hung

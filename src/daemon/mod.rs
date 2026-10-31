@@ -349,14 +349,28 @@ pub(crate) fn request(
         // E247: "Failed to connect to '<socket>'". A `--remote` client that
         // gets it does not exit: it "edits locally" until it is killed.
         _ if stderr.contains("E247:") => Ok(Reply::Refused),
-        Some(status) => bail!(
+        Some(status) => Err(ClientFailed(format!(
             "nvim --server {} {} failed ({status}): {stderr}",
             socket.display(),
             args.first().copied().unwrap_or_default()
-        ),
+        ))
+        .into()),
         None => Ok(Reply::TimedOut),
     }
 }
+
+/// A request's client ran but failed: the daemon answered with an error,
+/// or dropped the connection.
+#[derive(Debug)]
+pub(crate) struct ClientFailed(String);
+
+impl std::fmt::Display for ClientFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ClientFailed {}
 
 /// How long a request waits, once its client is reaped, for the rest of
 /// the client's output.
