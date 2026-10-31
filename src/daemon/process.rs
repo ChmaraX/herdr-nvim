@@ -85,9 +85,10 @@ impl ProcessTable {
         let mut pids: Vec<u32> = self
             .procs
             .iter()
+            // The snapshot's command lines rule out all but a few.
             .filter(|(_, proc_)| listens_on(&proc_.args, socket))
             .map(|(&pid, _)| pid)
-            .filter(|&pid| command_name(pid).is_some_and(|name| is_nvim(&name)))
+            .filter(|&pid| is_daemon(pid, socket))
             .collect();
         pids.sort_unstable();
         pids
@@ -132,6 +133,7 @@ fn listens_on(args: &str, socket: &Path) -> bool {
 /// Whether `ps`'s command name (`comm`: the executable, unlike `args`,
 /// whatever argv[0] says, and on macOS a full path that may hold spaces)
 /// is an nvim.
+#[cfg_attr(windows, allow(dead_code))]
 fn is_nvim(command_name: &str) -> bool {
     Path::new(command_name)
         .file_name()
@@ -150,21 +152,18 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
     (output.status.success() && !text.is_empty()).then_some(text)
 }
 
-#[cfg(unix)]
-fn command_name(pid: u32) -> Option<String> {
-    ps_field(pid, "comm=")
-}
-
-#[cfg(windows)]
-fn command_name(_pid: u32) -> Option<String> {
-    None
-}
-
-/// Whether `pid` is still the nvim listening on `socket`.
+/// Whether `pid` is (still) the nvim listening on `socket`: the one test of
+/// a daemon's identity, by its current command line and executable.
 #[cfg(unix)]
 fn is_daemon(pid: u32, socket: &Path) -> bool {
     ps_field(pid, "args=").is_some_and(|args| listens_on(&args, socket))
-        && command_name(pid).is_some_and(|name| is_nvim(&name))
+        && ps_field(pid, "comm=").is_some_and(|name| is_nvim(&name))
+}
+
+/// Windows: command lines are not read, so no process is known to be one.
+#[cfg(windows)]
+fn is_daemon(_pid: u32, _socket: &Path) -> bool {
+    false
 }
 
 /// Wait up to `timeout` for `pid`, the nvim listening on `socket`, to exit
@@ -173,9 +172,7 @@ fn is_daemon(pid: u32, socket: &Path) -> bool {
 pub(crate) fn wait_gone(pid: u32, socket: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        // The command line alone tells our daemon from anything since
-        // given its pid.
-        if !ps_field(pid, "args=").is_some_and(|args| listens_on(&args, socket)) {
+        if !is_daemon(pid, socket) {
             return true;
         }
         if Instant::now() >= deadline {
@@ -198,24 +195,27 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// process group, as a spawned one does (`detach_command`), is signalled
 /// with its whole group, so its LSP servers and jobs go too. The pid comes
 /// from the process table (`ProcessTable::daemon`), and right before each
-/// signal it is checked again to still be that nvim, so a pid since reused
-/// by another process is never signalled. Several unrelated listeners are
-/// an error that signals nothing.
+/// round of signals it is checked again to still be that nvim, so a pid
+/// since reused by another process is never signalled. Several unrelated
+/// listeners are an error that signals nothing.
 #[cfg(unix)]
 pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
     let pid = ProcessTable::load()
         .context("could not read the process table")?
         .daemon(socket)?;
+    let Some(pgid) = ps_field(pid, "pgid=") else {
+        return Ok(pid);
+    };
+    let target = if pgid.parse() == Ok(pid) {
+        format!("-{pid}")
+    } else {
+        pid.to_string()
+    };
     for signals in [&["TERM", "CONT"][..], &["KILL"]] {
+        if !is_daemon(pid, socket) {
+            return Ok(pid);
+        }
         for signal in signals {
-            let Some(group) = signal_group(pid, socket) else {
-                return Ok(pid);
-            };
-            let target = if group {
-                format!("-{pid}")
-            } else {
-                pid.to_string()
-            };
             let _ = Command::new("kill")
                 .args(["-s", signal, "--", &target])
                 .output();
@@ -228,14 +228,6 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
         "nvim daemon pid {pid} on {} survived SIGKILL",
         socket.display()
     )
-}
-
-/// Whether to signal `pid`'s whole process group (it leads it) or `pid`
-/// alone; `None` if `pid` is no longer the nvim listening on `socket`.
-#[cfg(unix)]
-fn signal_group(pid: u32, socket: &Path) -> Option<bool> {
-    let pgid: u32 = ps_field(pid, "pgid=")?.parse().ok()?;
-    is_daemon(pid, socket).then_some(pgid == pid)
 }
 
 #[cfg(windows)]

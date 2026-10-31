@@ -331,18 +331,16 @@ fn open_in_nvim(
 ) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
-    daemon::request(socket, &["--remote", path], sidebar, OPEN_TIMEOUT)
-        .and_then(|reply| reply.answer(socket))
+    daemon::ask(socket, &["--remote", path], sidebar, OPEN_TIMEOUT)
         .with_context(|| format!("nvim --remote failed to open {path}"))?;
     // Jump to the line, if known.
     if let Some(line) = line {
-        daemon::remote_expr(
+        daemon::ask(
             socket,
-            &format!("cursor({line}, 1)"),
+            &["--remote-expr", &format!("cursor({line}, 1)")],
             sidebar,
             daemon::RPC_TIMEOUT,
         )
-        .and_then(|reply| reply.answer(socket))
         .with_context(|| format!("nvim --remote-expr failed to jump to line {line} in {path}"))?;
     }
     Ok(())

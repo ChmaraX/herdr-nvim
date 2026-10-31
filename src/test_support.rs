@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     config::{Config, Sidebar},
-    daemon::{ensure_daemon, registry, remote_expr, Reply, RPC_TIMEOUT},
+    daemon::{ask, ensure_daemon, registry, remote_expr, Reply, RPC_TIMEOUT},
     state::{self, TabId},
 };
 
@@ -145,11 +145,15 @@ impl TestDaemon {
     pub(crate) fn spawn(tab: &str, config: &Config) -> Self {
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let socket = ensure_daemon(tab, &plugin_root, config, &plugin_root).expect("ensure_daemon");
-        let pid = remote_expr(&socket, "getpid()", &config.sidebar, RPC_TIMEOUT)
-            .and_then(|reply| reply.answer(&socket))
-            .expect("daemon pid")
-            .parse()
-            .expect("numeric pid");
+        let pid = ask(
+            &socket,
+            &["--remote-expr", "getpid()"],
+            &config.sidebar,
+            RPC_TIMEOUT,
+        )
+        .expect("daemon pid")
+        .parse()
+        .expect("numeric pid");
         // Give the daemon a sidebar state file so its cleanup is observable.
         let state_file = state::state_path(tab);
         fs::create_dir_all(state_file.parent().unwrap()).unwrap();
@@ -163,9 +167,13 @@ impl TestDaemon {
 
     /// Evaluate `expr` on the daemon; panics if it does not answer.
     pub(crate) fn eval(&self, expr: &str) -> String {
-        remote_expr(&self.socket, expr, &Sidebar::default(), RPC_TIMEOUT)
-            .and_then(|reply| reply.answer(&self.socket))
-            .unwrap_or_else(|error| panic!("{} daemon did not answer {expr}: {error}", self.tab))
+        ask(
+            &self.socket,
+            &["--remote-expr", expr],
+            &Sidebar::default(),
+            RPC_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("{} daemon did not answer {expr}: {error}", self.tab))
     }
 
     /// Leave a modified, listed buffer in the daemon. `noswapfile`: parallel

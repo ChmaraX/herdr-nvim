@@ -40,7 +40,7 @@ pub(crate) enum DaemonState {
     Orphaned,
     /// Its process holds the socket but does not answer in time: busy or
     /// hung. Stopping it means killing it.
-    Hung,
+    Unresponsive,
     /// Registered, but nothing listens on its socket: it died without
     /// cleaning up. Stopping it only removes the entry.
     Stale,
@@ -54,7 +54,7 @@ impl DaemonState {
         match self {
             Self::Alive => "alive",
             Self::Orphaned => "orphaned",
-            Self::Hung => "unresponsive",
+            Self::Unresponsive => "unresponsive",
             Self::Stale => "stale",
             Self::Unknown => "unknown",
         }
@@ -89,7 +89,7 @@ pub(crate) struct DaemonInfo {
 impl DaemonInfo {
     pub(crate) fn state(&self) -> DaemonState {
         match (&self.probe, &self.tab, self.herdr_reachable) {
-            (Liveness::Unresponsive, _, _) => DaemonState::Hung,
+            (Liveness::Unresponsive, _, _) => DaemonState::Unresponsive,
             (Liveness::Gone, _, _) => DaemonState::Stale,
             (Liveness::Answered(_), Some(_), _) => DaemonState::Alive,
             (Liveness::Answered(_), None, true) => DaemonState::Orphaned,
@@ -107,7 +107,7 @@ impl DaemonInfo {
         }
         let name = self.name();
         match self.state() {
-            DaemonState::Hung => Some(format!(
+            DaemonState::Unresponsive => Some(format!(
                 "not stopping {name}: it is busy or hung, so it can only be killed, \
                  losing any unsaved work in it (use --force to kill it)"
             )),
@@ -521,7 +521,7 @@ pub(crate) fn doctor_summary(h: &mut dyn Herdr, sidebar: &Sidebar) -> String {
     let mut line = summary(&daemons);
     for state in [
         DaemonState::Orphaned,
-        DaemonState::Hung,
+        DaemonState::Unresponsive,
         DaemonState::Stale,
         DaemonState::Unknown,
     ] {
@@ -759,7 +759,7 @@ mod tests {
         let daemons = collect(&mut herdr, sidebar).unwrap();
         assert!(started.elapsed() < bounded, "{:?}", started.elapsed());
         let hung_row = row(&daemons, "wHnDa:t1");
-        assert_eq!(hung_row.state(), DaemonState::Hung);
+        assert_eq!(hung_row.state(), DaemonState::Unresponsive);
         assert_eq!(hung_row.pid, Some(hung.pid), "found by its --listen argv");
         assert!(hung_row.rss_bytes.is_some());
         assert_eq!(row(&daemons, "wHnDb:t1").state(), DaemonState::Alive);
@@ -830,7 +830,7 @@ mod tests {
 
         let mut herdr = herdr_with_tabs(3);
         let daemons = collect(&mut herdr, sidebar).unwrap();
-        assert_eq!(daemons[0].state(), DaemonState::Hung);
+        assert_eq!(daemons[0].state(), DaemonState::Unresponsive);
         assert_eq!(daemons[0].pid, Some(hung.pid));
         let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), false).unwrap();
         assert_eq!(outcome.refused.len(), 1, "{outcome:?}");

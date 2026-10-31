@@ -388,13 +388,12 @@ fn first_split_ratio(layout: &Value) -> Result<f64> {
 }
 
 fn nvim_remote_send(socket: &Path, keys: &str, sidebar: &crate::config::Sidebar) -> Result<()> {
-    daemon::request(
+    daemon::ask(
         socket,
         &["--remote-send", keys],
         sidebar,
         daemon::RPC_TIMEOUT,
-    )?
-    .answer(socket)
+    )
     .context("nvim --remote-send failed")?;
     Ok(())
 }

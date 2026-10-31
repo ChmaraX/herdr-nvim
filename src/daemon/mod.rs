@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
@@ -231,23 +231,6 @@ pub(crate) enum Reply<T = String> {
     TimedOut,
 }
 
-impl<T> Reply<T> {
-    /// The answer, or an error saying why there is none.
-    pub(crate) fn answer(self, socket: &Path) -> Result<T> {
-        match self {
-            Self::Answered(answer) => Ok(answer),
-            Self::Refused => Err(anyhow!(
-                "no nvim daemon accepts connections on {}",
-                socket.display()
-            )),
-            Self::TimedOut => Err(anyhow!(
-                "the nvim daemon on {} is busy or hung (no reply in time)",
-                socket.display()
-            )),
-        }
-    }
-}
-
 /// Whether the daemon on a socket is there, as `liveness` decides it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Liveness<T = String> {
@@ -365,6 +348,25 @@ pub(crate) fn request(
     }
 }
 
+/// `request` for a caller that needs the answer: the answer, or an error
+/// saying why there is none.
+pub(crate) fn ask(
+    socket: &Path,
+    args: &[&str],
+    sidebar: &Sidebar,
+    timeout: Duration,
+) -> Result<String> {
+    match request(socket, args, sidebar, timeout)? {
+        Reply::Answered(answer) => Ok(answer),
+        Reply::Refused => bail!("no nvim daemon accepts connections on {}", socket.display()),
+        Reply::TimedOut => bail!(
+            "the nvim daemon on {} is busy or hung (no reply within {}s)",
+            socket.display(),
+            timeout.as_secs()
+        ),
+    }
+}
+
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`.
 pub(crate) fn remote_expr(
     socket: &Path,
@@ -387,11 +389,9 @@ fn vim_string_literal(s: &str) -> String {
 /// the daemon first spawned cannot be treated as current.
 fn refresh_daemon_pane_id(socket: &Path, pane: &str, sidebar: &Sidebar) -> Result<()> {
     let expr = format!("setenv('HERDR_PANE_ID', {})", vim_string_literal(pane));
-    remote_expr(socket, &expr, sidebar, RPC_TIMEOUT)
-        .and_then(|reply| reply.answer(socket))
-        .with_context(|| {
-            format!("failed to update nvim daemon with current sidebar pane id {pane}")
-        })?;
+    ask(socket, &["--remote-expr", &expr], sidebar, RPC_TIMEOUT).with_context(|| {
+        format!("failed to update nvim daemon with current sidebar pane id {pane}")
+    })?;
     Ok(())
 }
 
