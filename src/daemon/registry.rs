@@ -20,7 +20,7 @@ use crate::{
     state::{self, tab_key},
 };
 
-use super::{process, remote_expr, request, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT};
+use super::{liveness, process, remote_expr, request, Liveness, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT};
 
 /// How long `quit` gives a daemon to exit after asking it to: as long as a
 /// daemon gets to answer at all, since a slow but healthy `VimLeavePre`
@@ -189,30 +189,27 @@ fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
     // Doubles as the liveness probe.
     let expr = format!("getpid() .. ' ' .. {UNSAVED_BUFFERS_EXPR}");
-    let probe = remote_expr(&socket, &expr, sidebar, RPC_TIMEOUT)?
-        .confirmed(&socket)
-        .map(|answer| {
-            let mut numbers = answer.split(' ').map(|n| n.parse().ok());
-            StopProbe {
-                pid: numbers.next().flatten(),
-                unsaved: numbers.next().flatten().unwrap_or(0),
-            }
-        });
-    stop_probed(key, probe, sidebar)
+    let reply = remote_expr(&socket, &expr, sidebar, RPC_TIMEOUT)?.map(|answer| {
+        let mut numbers = answer.split(' ').map(|n| n.parse().ok());
+        StopProbe {
+            pid: numbers.next().flatten(),
+            unsaved: numbers.next().flatten().unwrap_or(0),
+        }
+    });
+    stop_probed(key, liveness(&socket, reply, None), sidebar)
 }
 
-/// `stop_tab_key` for a daemon already probed (`Absent` confirmed, see
-/// `Reply::confirmed`). Unsaved buffers are discarded -- the tab is gone,
+/// `stop_tab_key` for a daemon already probed. Unsaved buffers are discarded -- the tab is gone,
 /// or `daemons stop` was told it may -- but reported on stderr (herdr's
 /// plugin command log). A daemon that does not answer cannot be asked to
 /// quit, and one that does not exit after `qa!` will not; either is killed
 /// by its verified pid (`process::kill_daemon`), which loses nothing `qa!`
 /// would not. A daemon that does not go away keeps its registry entry and
 /// state, so it stays listable and reachable, and is reported as an error.
-pub(crate) fn stop_probed(key: &str, probe: Reply<StopProbe>, sidebar: &Sidebar) -> Result<()> {
+pub(crate) fn stop_probed(key: &str, probe: Liveness<StopProbe>, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
     match probe {
-        Reply::Answered(StopProbe { pid, unsaved }) => {
+        Liveness::Answered(StopProbe { pid, unsaved }) => {
             if unsaved > 0 {
                 eprintln!(
                     "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
@@ -226,8 +223,8 @@ pub(crate) fn stop_probed(key: &str, probe: Reply<StopProbe>, sidebar: &Sidebar)
                 )?;
             }
         }
-        Reply::Absent => {}
-        Reply::Unresponsive => kill(key, &socket, "was not answering")?,
+        Liveness::Gone => {}
+        Liveness::Unresponsive => kill(key, &socket, "was not answering")?,
     }
     // `key` is a filename component, already sanitized, so it goes through
     // `state::remove_key` rather than `state::remove` -- that avoids
@@ -265,8 +262,10 @@ fn quit(socket: &Path, pid: Option<u32>, sidebar: &Sidebar) -> Result<bool> {
             return Ok(false);
         }
         // An error here is a connection dropped by a daemon on its way out.
-        if let Ok(Reply::Absent) = remote_expr(socket, "1", sidebar, remaining) {
-            return Ok(true);
+        if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
+            if liveness(socket, reply, None) == Liveness::Gone {
+                return Ok(true);
+            }
         }
         sleep(QUIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }

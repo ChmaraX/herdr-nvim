@@ -75,21 +75,22 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
-    match remote_expr(&socket, "1+1", &config.sidebar, HEALTH_POLL_TIMEOUT)?.confirmed(&socket) {
-        Reply::Answered(_) => {
+    let reply = remote_expr(&socket, "1+1", &config.sidebar, HEALTH_POLL_TIMEOUT)?;
+    match liveness(&socket, reply, None) {
+        Liveness::Answered(_) => {
             // Also (re)register an already-running daemon, so one spawned
             // before the Windows marker existed still becomes discoverable.
             #[cfg(windows)]
             registry::register_daemon(tab)?;
             return Ok(socket);
         }
-        Reply::Unresponsive => bail!(
+        Liveness::Unresponsive => bail!(
             "the nvim daemon for tab {tab} is busy or hung (no reply within {}s); \
              if it stays that way, `herdr-nvim daemons stop {tab} --force` kills it \
              and loses its unsaved work",
             HEALTH_POLL_TIMEOUT.as_secs()
         ),
-        Reply::Absent => {}
+        Liveness::Gone => {}
     }
 
     #[cfg(not(windows))]
@@ -215,32 +216,27 @@ pub(crate) fn detach_command(command: &mut Command) {
     }
 }
 
-/// What a daemon did with one request (see `request`).
+/// What one request's `nvim --server` client saw (see `request`). Only the
+/// client's view: a hung daemon refuses connections too once dozens of
+/// requests have timed out on it (its listen queue is full), so a refusal
+/// is no proof that the daemon is gone. Nothing destructive acts on a
+/// `Reply`; `liveness` turns it into the `Liveness` that those take.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Reply<T = String> {
     /// It answered; for `--remote-expr`, with the trimmed result.
     Answered(T),
-    /// The client could not connect: nothing listens on the socket -- as
-    /// far as the client can tell (see `confirmed`).
-    Absent,
-    /// Something accepted the connection but sent no answer in time: a
-    /// daemon whose main loop is blocked, or a stopped process.
-    Unresponsive,
+    /// The client could not connect (nvim's E247).
+    Refused,
+    /// Something accepted the connection but sent no answer in time.
+    TimedOut,
 }
 
 impl<T> Reply<T> {
     pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Reply<U> {
         match self {
             Self::Answered(answer) => Reply::Answered(f(answer)),
-            Self::Absent => Reply::Absent,
-            Self::Unresponsive => Reply::Unresponsive,
-        }
-    }
-
-    pub(crate) fn answered(&self) -> Option<&T> {
-        match self {
-            Self::Answered(answer) => Some(answer),
-            Self::Absent | Self::Unresponsive => None,
+            Self::Refused => Reply::Refused,
+            Self::TimedOut => Reply::TimedOut,
         }
     }
 
@@ -248,41 +244,68 @@ impl<T> Reply<T> {
     pub(crate) fn answer(self, socket: &Path) -> Result<T> {
         match self {
             Self::Answered(answer) => Ok(answer),
-            Self::Absent => Err(anyhow!("no nvim daemon listens on {}", socket.display())),
-            Self::Unresponsive => Err(anyhow!(
+            Self::Refused => Err(anyhow!(
+                "no nvim daemon accepts connections on {}",
+                socket.display()
+            )),
+            Self::TimedOut => Err(anyhow!(
                 "the nvim daemon on {} is busy or hung (no reply in time)",
                 socket.display()
             )),
         }
     }
+}
 
-    /// `Absent` only says the client could not connect, and a hung daemon
-    /// refuses connections too once dozens of requests have timed out on it
-    /// (its listen queue is full). So before acting on absence -- removing
-    /// the socket, spawning a new daemon, forgetting the old one -- this
-    /// checks the process table: a process still listening on `socket`
-    /// makes it `Unresponsive`.
-    pub(crate) fn confirmed(self, socket: &Path) -> Self {
+/// Whether the daemon on a socket is there, as `liveness` decides it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Liveness<T = String> {
+    /// It answered.
+    Answered(T),
+    /// Its process holds the socket but does not answer in time: a daemon
+    /// whose main loop is blocked, or a stopped process.
+    Unresponsive,
+    /// No process listens on the socket.
+    Gone,
+}
+
+impl<T> Liveness<T> {
+    pub(crate) fn answered(&self) -> Option<&T> {
         match self {
-            Self::Absent => {
-                Self::Absent.confirmed_by(socket, process::ProcessTable::load().as_ref())
-            }
-            reply => reply,
+            Self::Answered(answer) => Some(answer),
+            Self::Unresponsive | Self::Gone => None,
         }
     }
+}
 
-    /// `confirmed` against a process table already loaded. Without a socket
-    /// file or a readable process table (or on Windows, where command lines
-    /// are not read) the client's verdict stands.
-    pub(crate) fn confirmed_by(self, socket: &Path, table: Option<&process::ProcessTable>) -> Self {
-        match self {
-            Self::Absent
-                if socket.exists()
-                    && table.is_some_and(|table| !table.listeners(socket).is_empty()) =>
-            {
-                Self::Unresponsive
+/// The one way to learn whether the daemon on `socket` is there, from a
+/// client's `reply`: a refusal is checked against the process table, where
+/// an nvim still listening on `socket` makes it `Unresponsive`. `table` is
+/// one already loaded, if any; else one is loaded when the verdict needs it.
+/// Without a socket file or a readable process table the client's verdict
+/// stands.
+pub(crate) fn liveness<T>(
+    socket: &Path,
+    reply: Reply<T>,
+    table: Option<&process::ProcessTable>,
+) -> Liveness<T> {
+    match reply {
+        Reply::Answered(answer) => Liveness::Answered(answer),
+        Reply::TimedOut => Liveness::Unresponsive,
+        Reply::Refused if !socket.exists() => Liveness::Gone,
+        Reply::Refused => {
+            let loaded;
+            let table = match table {
+                Some(table) => Some(table),
+                None => {
+                    loaded = process::ProcessTable::load();
+                    loaded.as_ref()
+                }
+            };
+            if table.is_some_and(|table| !table.listeners(socket).is_empty()) {
+                Liveness::Unresponsive
+            } else {
+                Liveness::Gone
             }
-            reply => reply,
         }
     }
 }
@@ -340,13 +363,13 @@ pub(crate) fn request(
     match status.context("failed to wait for an nvim --server client")? {
         Some(status) if status.success() => Ok(Reply::Answered(stdout)),
         // E247: "Failed to connect to '<socket>'".
-        Some(_) if stderr.contains("E247:") => Ok(Reply::Absent),
+        Some(_) if stderr.contains("E247:") => Ok(Reply::Refused),
         Some(status) => bail!(
             "nvim --server {} {} failed ({status}): {stderr}",
             socket.display(),
             args.first().copied().unwrap_or_default()
         ),
-        None => Ok(Reply::Unresponsive),
+        None => Ok(Reply::TimedOut),
     }
 }
 

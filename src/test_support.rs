@@ -219,7 +219,7 @@ impl TestDaemon {
         assert!(
             matches!(
                 remote_expr(&self.socket, "1+1", &Sidebar::default(), RPC_TIMEOUT),
-                Ok(Reply::Absent)
+                Ok(Reply::Refused)
             ),
             "{tab} daemon still answering"
         );

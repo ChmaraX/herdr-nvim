@@ -21,11 +21,12 @@ use crate::{
 };
 
 use super::{
+    liveness,
     process::ProcessTable,
     registry::{
         daemon_keys, orphans, socket_path_for_key, stop_probed, StopProbe, UNSAVED_BUFFERS_EXPR,
     },
-    remote_expr, Reply, RPC_TIMEOUT,
+    remote_expr, Liveness, Reply, RPC_TIMEOUT,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -88,7 +89,7 @@ pub(crate) struct DaemonInfo {
     pub tab: Option<TabInfo>,
     pub herdr_reachable: bool,
     /// What the daemon answered to the probe, if anything.
-    pub probe: Reply<Probe>,
+    pub probe: Liveness<Probe>,
     /// The daemon's process: as it reported itself, or, if it does not
     /// answer, the one process listening on its socket.
     pub pid: Option<u32>,
@@ -100,11 +101,11 @@ pub(crate) struct DaemonInfo {
 impl DaemonInfo {
     pub(crate) fn state(&self) -> DaemonState {
         match (&self.probe, &self.tab, self.herdr_reachable) {
-            (Reply::Unresponsive, _, _) => DaemonState::Hung,
-            (Reply::Absent, _, _) => DaemonState::Stale,
-            (Reply::Answered(_), Some(_), _) => DaemonState::Alive,
-            (Reply::Answered(_), None, true) => DaemonState::Orphaned,
-            (Reply::Answered(_), None, false) => DaemonState::Unknown,
+            (Liveness::Unresponsive, _, _) => DaemonState::Hung,
+            (Liveness::Gone, _, _) => DaemonState::Stale,
+            (Liveness::Answered(_), Some(_), _) => DaemonState::Alive,
+            (Liveness::Answered(_), None, true) => DaemonState::Orphaned,
+            (Liveness::Answered(_), None, false) => DaemonState::Unknown,
         }
     }
 
@@ -271,7 +272,7 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
 /// `tabs` (`None` when herdr could not be asked). The probes run in
 /// parallel, so hung daemons cost one `RPC_TIMEOUT` in all, not one each.
 /// A daemon that refuses connections while its process still listens is
-/// hung, not stale (see `Reply::confirmed`).
+/// hung, not stale (see `liveness`).
 fn describe(
     keys: Vec<String>,
     tabs: Option<&[TabInfo]>,
@@ -296,7 +297,7 @@ fn describe(
         .zip(probes)
         .map(|(key, probe)| {
             let socket = socket_path_for_key(&key);
-            let probe = probe?.confirmed_by(&socket, procs.as_ref());
+            let probe = liveness(&socket, probe?, procs.as_ref());
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
@@ -378,10 +379,14 @@ pub(crate) fn stop(
     for daemon in doomed {
         // Reuses the probe above instead of asking (and, for a hung daemon,
         // waiting) a second time.
-        let probe = daemon.probe.clone().map(|probe| StopProbe {
-            pid: probe.pid,
-            unsaved: probe.unsaved.unwrap_or(0),
-        });
+        let probe = match &daemon.probe {
+            Liveness::Answered(probe) => Liveness::Answered(StopProbe {
+                pid: probe.pid,
+                unsaved: probe.unsaved.unwrap_or(0),
+            }),
+            Liveness::Unresponsive => Liveness::Unresponsive,
+            Liveness::Gone => Liveness::Gone,
+        };
         match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
@@ -863,7 +868,7 @@ mod tests {
         let refused = remote_expr(&hung.socket, "1", sidebar, RPC_TIMEOUT).unwrap();
         assert_eq!(
             (refused, started.elapsed() < Duration::from_secs(2)),
-            (Reply::Absent, true),
+            (Reply::Refused, true),
             "precondition: the full queue refuses a new client at once"
         );
 
