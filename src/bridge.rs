@@ -338,13 +338,9 @@ fn open_in_nvim(
         .with_context(|| format!("nvim --remote failed to open {path}"))?;
     // Jump to the line, if known.
     if let Some(line) = line {
-        daemon::ask(
-            socket,
-            &["--remote-expr", &format!("cursor({line}, 1)")],
-            sidebar,
-            daemon::RPC_TIMEOUT,
-        )
-        .with_context(|| format!("nvim --remote-expr failed to jump to line {line} in {path}"))?;
+        daemon::ask_expr(socket, &format!("cursor({line}, 1)"), sidebar).with_context(|| {
+            format!("nvim --remote-expr failed to jump to line {line} in {path}")
+        })?;
     }
     Ok(())
 }

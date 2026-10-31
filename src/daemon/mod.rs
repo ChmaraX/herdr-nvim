@@ -451,6 +451,12 @@ pub(crate) fn ask(
     }
 }
 
+/// `ask` the daemon for the value of a vimscript expression
+/// (`--remote-expr`), giving it `RPC_TIMEOUT`.
+pub(crate) fn ask_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Result<String> {
+    ask(socket, &["--remote-expr", expr], sidebar, RPC_TIMEOUT)
+}
+
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`.
 pub(crate) fn remote_expr(
     socket: &Path,
@@ -473,7 +479,7 @@ fn vim_string_literal(s: &str) -> String {
 /// the daemon first spawned cannot be treated as current.
 fn refresh_daemon_pane_id(socket: &Path, pane: &str, sidebar: &Sidebar) -> Result<()> {
     let expr = format!("setenv('HERDR_PANE_ID', {})", vim_string_literal(pane));
-    ask(socket, &["--remote-expr", &expr], sidebar, RPC_TIMEOUT).with_context(|| {
+    ask_expr(socket, &expr, sidebar).with_context(|| {
         format!("failed to update nvim daemon with current sidebar pane id {pane}")
     })?;
     Ok(())
