@@ -11,7 +11,8 @@ use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::mpsc,
     thread::{self, sleep},
     time::{Duration, Instant},
 };
@@ -293,55 +294,54 @@ pub(crate) fn liveness<T>(
 
 /// Send one request to the daemon on `socket` as an `nvim --server <socket>
 /// <args>` client, giving it `timeout` to answer. A client still waiting
-/// then is killed and reaped, never left behind. Every request to a daemon
-/// goes through here; only the long-lived `--remote-ui` attach does not.
+/// then is killed and reaped, never left behind: on Unix it runs in its own
+/// process group, and the whole group is killed, so an `nvim_bin` launcher
+/// that starts the real nvim as its child does not leave that one behind.
+/// Every request to a daemon goes through here; only the long-lived
+/// `--remote-ui` attach does not.
 ///
 /// `Err` when there is no verdict on the daemon: the client could not be
-/// run, or the daemon answered with an error.
+/// run, killed or reaped, or the daemon answered with an error.
 pub(crate) fn request(
     socket: &Path,
     args: &[&str],
     sidebar: &Sidebar,
     timeout: Duration,
 ) -> Result<Reply> {
-    let mut child = nvim_cmd(sidebar)
+    let mut command = nvim_cmd(sidebar);
+    command
         .arg("--headless")
         .arg("--server")
         .arg(socket)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
         .spawn()
         .with_context(|| format!("failed to run {}", sidebar.nvim_bin))?;
-    // Drain the pipes on the side, so a large answer cannot fill one and
-    // stall the client. Killing the client closes them and ends these.
-    fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
-        thread::spawn(move || {
-            let mut out = Vec::new();
-            let _ = pipe.read_to_end(&mut out);
-            String::from_utf8_lossy(&out).trim().to_owned()
-        })
-    }
     let stdout = drain(child.stdout.take().expect("stdout is piped"));
     let stderr = drain(child.stderr.take().expect("stderr is piped"));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(Some(status)),
+            Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => sleep(CLIENT_POLL_INTERVAL),
-            waited => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break waited.map(|_| None);
+            Ok(None) => {
+                kill_client(&mut child)?;
+                break None;
+            }
+            Err(error) => {
+                let _ = kill_client(&mut child);
+                return Err(error).context("failed to wait for an nvim --server client");
             }
         }
     };
-    let (stdout, stderr) = (
-        stdout.join().unwrap_or_default(),
-        stderr.join().unwrap_or_default(),
-    );
-    match status.context("failed to wait for an nvim --server client")? {
+    let drained = Instant::now() + DRAIN_TIMEOUT;
+    let (stdout, stderr) = (output(stdout, drained), output(stderr, drained));
+    match status {
         Some(status) if status.success() => Ok(Reply::Answered(stdout)),
         // E247: "Failed to connect to '<socket>'".
         Some(_) if stderr.contains("E247:") => Ok(Reply::Refused),
@@ -352,6 +352,64 @@ pub(crate) fn request(
         ),
         None => Ok(Reply::TimedOut),
     }
+}
+
+/// How long a request waits, once its client is reaped, for the rest of
+/// the client's output.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Read `pipe` to its end on the side, so a large answer cannot fill it and
+/// stall the client.
+fn drain(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = pipe.read_to_end(&mut out);
+        let _ = sender.send(String::from_utf8_lossy(&out).trim().to_owned());
+    });
+    receiver
+}
+
+/// What `drain` read, waiting no later than `deadline`. Once the client and
+/// its process group are dead the pipe is closed, but a process that left
+/// the group could still hold it open; that must not block the caller, so
+/// the reader is then left to finish on its own.
+fn output(drained: mpsc::Receiver<String>, deadline: Instant) -> String {
+    drained
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default()
+}
+
+/// Kill a request's client, with everything it started (its process
+/// group, Unix), and reap it.
+fn kill_client(child: &mut Child) -> Result<()> {
+    #[cfg(unix)]
+    let killed = Command::new("kill")
+        .args(["-s", "KILL", "--", &format!("-{}", child.id())])
+        .output()
+        .context("could not run kill")
+        .and_then(|output| {
+            if !output.status.success() {
+                bail!(
+                    "kill -s KILL -- -{} failed ({}): {}",
+                    child.id(),
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(())
+        });
+    #[cfg(windows)]
+    let killed = child
+        .kill()
+        .context("failed to kill an nvim --server client");
+    if killed.is_err() {
+        let _ = child.kill();
+    }
+    child
+        .wait()
+        .context("failed to reap an nvim --server client")?;
+    killed
 }
 
 /// `request` for a caller that needs the answer: the answer, or an error
@@ -610,6 +668,71 @@ mod tests {
             daemon.pid.to_string(),
             "the wedged daemon must not be replaced by a twin on its socket"
         );
+    }
+
+    /// Command lines of the `nvim --server` clients still talking to `socket`.
+    #[cfg(unix)]
+    fn clients_of(socket: &Path) -> Vec<String> {
+        let output = Command::new("ps")
+            .args(["-A", "-ww", "-o", "args="])
+            .output()
+            .expect("run ps");
+        let needle = format!("--server {}", socket.display());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.contains(&needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // Issue #61 (review of PR #63): `nvim_bin` may be a launcher that starts
+    // the real nvim as its child instead of `exec`ing it (a wrapper script,
+    // bob's shim). A request to a hung daemon through it must still give up
+    // at its deadline, and leave no `nvim --server` client behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_request_through_a_launcher_shim_is_bounded_and_leaves_no_client() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let env = TestEnv::new();
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("w61:t2", &config);
+        daemon.hang();
+        let nvim = Command::new("sh")
+            .args(["-c", "command -v nvim"])
+            .output()
+            .expect("find nvim");
+        let nvim = String::from_utf8_lossy(&nvim.stdout).trim().to_owned();
+        let shim = env.dir.join("nvim-shim");
+        fs::write(&shim, format!("#!/bin/sh\n{} \"$@\"\n", shell_quote(&nvim))).unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        let sidebar = Sidebar {
+            nvim_bin: shim.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let socket = daemon.socket.clone();
+        let started = Instant::now();
+        let worker = std::thread::spawn(move || {
+            let reply = remote_expr(&socket, "1+1", &sidebar, Duration::from_secs(1));
+            let _ = tx.send(reply.map_err(|e| format!("{e:#}")));
+        });
+        let outcome = rx.recv_timeout(Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        let leftover = clients_of(&daemon.socket);
+        // Unwedge before asserting, so a failure leaves nothing stuck.
+        daemon.resume();
+        let _ = worker.join();
+
+        let outcome = outcome
+            .unwrap_or_else(|_| panic!("a request through a shim still blocked after {elapsed:?}"));
+        assert_eq!(outcome, Ok(Reply::TimedOut));
+        assert!(leftover.is_empty(), "clients left behind: {leftover:?}");
     }
 
     #[test]
