@@ -228,16 +228,22 @@ fn gather_candidates(
     })
 }
 
-/// Phase 2: act on the user's selection from the handoff file.
+/// Phase 2: act on the user's selection from the handoff file, then delete
+/// it, whatever came of it.
 fn finish_pick(handoff_path: &str) -> Result<()> {
+    let result = act_on_pick(handoff_path);
+    cleanup_handoff(handoff_path);
+    result
+}
+
+fn act_on_pick(handoff_path: &str) -> Result<()> {
     let raw = std::fs::read_to_string(handoff_path)
         .with_context(|| format!("reading handoff {handoff_path}"))?;
     let handoff: Handoff =
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
-    // No selection (overlay dismissed): nothing to do but clean up.
+    // No selection (overlay dismissed): nothing to do.
     let Some(chosen) = handoff.chosen else {
-        cleanup_handoff(handoff_path);
         return Ok(());
     };
     let candidate = handoff
@@ -256,10 +262,7 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     };
     let mut herdr = CliHerdr;
 
-    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)?;
-
-    cleanup_handoff(handoff_path);
-    Ok(())
+    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)
 }
 
 /// Ensure the sidebar is open in `ctx.tab`, open `path` (optionally at
@@ -539,6 +542,36 @@ mod tests {
             max_offset_from_bottom: 500,
         };
         assert_eq!(effective_scan_lines(50, Some(scroll)), 50);
+    }
+
+    // A finisher that fails must not leave its handoff file in the temp dir:
+    // with a hung daemon (issue #61), every pick would leave one more.
+    #[test]
+    fn a_failed_finish_still_removes_its_handoff() {
+        let dir = env::temp_dir().join(format!("hn-handoff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_of_range = Handoff {
+            candidates: Vec::new(),
+            chosen: Some(3),
+            workspace: "w1".into(),
+            tab: "w1:t1".into(),
+            focused_pane: "w1:p1".into(),
+            cwd: dir.to_string_lossy().into_owned(),
+            max_files: 10,
+        };
+        for (name, contents) in [
+            (
+                "out-of-range.json",
+                serde_json::to_string(&out_of_range).unwrap(),
+            ),
+            ("garbled.json", "{not json".to_owned()),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            assert!(finish_pick(&path.to_string_lossy()).is_err(), "{name}");
+            assert!(!path.exists(), "{name}: handoff left behind");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
