@@ -323,14 +323,17 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
 }
 
 /// Kill the daemon of `key` because it `why` (say, "was not answering"),
-/// and say so on stderr.
+/// and say so on stderr. One that has exited by then is stopped already.
 fn kill(key: &str, socket: &Path, why: &str) -> Result<()> {
-    let pid = process::kill_daemon(socket)
+    let killed = process::kill_daemon(socket)
         .with_context(|| format!("the nvim daemon of tab {key} {why} and could not be killed"))?;
-    eprintln!(
-        "herdr-nvim: the nvim daemon of tab {key} {why}; killed it (pid {pid}), \
-         discarding any unsaved work"
-    );
+    match killed {
+        Some(pid) => eprintln!(
+            "herdr-nvim: the nvim daemon of tab {key} {why}; killed it (pid {pid}), \
+             discarding any unsaved work"
+        ),
+        None => eprintln!("herdr-nvim: the nvim daemon of tab {key} {why}; it has already exited"),
+    }
     Ok(())
 }
 
@@ -563,6 +566,35 @@ mod tests {
             started.elapsed()
         );
         daemon.assert_alive();
+    }
+
+    // Issue #61 (principles review of PR #63): a daemon can exit between the
+    // probe (or quit wait) that found it hung and its kill. The stop has
+    // then reached its goal: it must succeed and drop the registry entry,
+    // not fail on finding nothing to kill.
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_that_exits_before_its_kill_is_stopped() {
+        use crate::test_support::{kill, wait_dead};
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("wHnX:t1", &config);
+        let key = daemon.tab.key();
+        daemon.hang();
+        let reply = probe(&key, &config.sidebar).unwrap();
+        let probe = liveness(&daemon.socket, reply, None).unwrap();
+        assert_eq!(probe, Liveness::Unresponsive, "precondition");
+        kill(daemon.pid);
+        wait_dead(daemon.pid);
+
+        let result = stop_probed(&key, probe, &config.sidebar);
+        assert!(result.is_ok(), "{result:?}");
+        daemon.assert_gone();
     }
 
     // Issue #61: the close hooks and gc stop daemons whose tab is gone. A hung

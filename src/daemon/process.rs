@@ -95,8 +95,9 @@ impl ProcessTable {
     }
 
     /// The daemon listening on `socket`: its one listener or, when a shim
-    /// and the nvim it started both listen, the innermost one.
-    pub(crate) fn daemon(&self, socket: &Path) -> Result<u32> {
+    /// and the nvim it started both listen, the innermost one. `None` when
+    /// nothing listens.
+    pub(crate) fn daemon(&self, socket: &Path) -> Result<Option<u32>> {
         let pids = self.listeners(socket)?;
         let innermost: Vec<u32> = pids
             .iter()
@@ -108,8 +109,8 @@ impl ProcessTable {
             })
             .collect();
         match (&pids[..], &innermost[..]) {
-            (_, [pid]) => Ok(*pid),
-            ([], _) => bail!("found no nvim process listening on {}", socket.display()),
+            (_, [pid]) => Ok(Some(*pid)),
+            ([], _) => Ok(None),
             _ => bail!(
                 "found {} nvim processes listening on {} (pids {pids:?})",
                 pids.len(),
@@ -209,22 +210,25 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// with its whole group, so its LSP servers and jobs go too. The pid comes
 /// from the process table (`ProcessTable::daemon`), and right before each
 /// round of signals it is checked again to still be that nvim, so a pid
-/// since reused by another process is never signalled. Several unrelated
+/// since reused by another process is never signalled. `None` when the
+/// daemon had already exited, before any signal. Several unrelated
 /// listeners are an error that signals nothing.
 #[cfg(unix)]
-pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
-    let pid = ProcessTable::load()?.daemon(socket)?;
+pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
+    let Some(pid) = ProcessTable::load()?.daemon(socket)? else {
+        return Ok(None);
+    };
     let Some(pgid) = ps_field(pid, "pgid=")? else {
-        return Ok(pid);
+        return Ok(None);
     };
     let target = if pgid.parse() == Ok(pid) {
         format!("-{pid}")
     } else {
         pid.to_string()
     };
-    for signals in [&["TERM", "CONT"][..], &["KILL"]] {
+    for (round, signals) in [&["TERM", "CONT"][..], &["KILL"]].into_iter().enumerate() {
         if !is_daemon(pid, socket)? {
-            return Ok(pid);
+            return Ok((round > 0).then_some(pid));
         }
         for signal in signals {
             // Whether it took is for the wait below to say.
@@ -234,7 +238,7 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
                 .context("could not run kill")?;
         }
         if wait_gone(pid, socket, EXIT_TIMEOUT)? {
-            return Ok(pid);
+            return Ok(Some(pid));
         }
     }
     bail!(
@@ -244,7 +248,7 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
 }
 
 #[cfg(windows)]
-pub(crate) fn kill_daemon(socket: &Path) -> Result<u32> {
+pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
     bail!(
         "cannot force-stop an nvim daemon on Windows; \
          end the nvim.exe listening on {} by hand",
