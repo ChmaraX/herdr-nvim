@@ -13,9 +13,8 @@
 //!   same test (`wHnA:t9`).
 //! - Hung daemon (a plugin stuck in a loop: its socket takes connections,
 //!   nothing answers, SIGTERM is ignored; issue #61): on Unix the close
-//!   kills it by its pid with SIGKILL, and reports it, within its
-//!   deadlines. On Windows the hook fails and keeps its entry. Covered:
-//!   same test (`wHnA:t4`).
+//!   kills it by its pid with SIGKILL, and reports it. On Windows the hook
+//!   fails and keeps its entry. Covered: same test (`wHnA:t4`).
 //! - Quit timeout (a daemon that ignores `qa!`): on Unix it is killed by its
 //!   pid once the quit wait is up, and the kill is reported. On Windows,
 //!   which cannot do that, the hook fails, and the daemon keeps its registry

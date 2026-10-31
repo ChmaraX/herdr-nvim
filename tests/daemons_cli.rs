@@ -220,7 +220,14 @@ fn a_daemon_whose_probe_fails_spoils_only_its_own_row() {
     let table = sandbox.run(&["daemons"], None);
     log.step("daemons", "", &table);
     assert!(table.status.success(), "{}", stderr(&table));
-    assert!(stdout(&table).contains("error"), "{}", stdout(&table));
+    assert!(
+        stdout(&table)
+            .lines()
+            .any(|line| line.starts_with("wHnDe:t2 ")
+                && line.split_whitespace().last() == Some("error")),
+        "{}",
+        stdout(&table)
+    );
 
     for args in [
         &["daemons", "stop", "--all", "--force"][..],

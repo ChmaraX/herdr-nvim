@@ -680,7 +680,9 @@ mod tests {
             panic!("ensure_daemon still blocked on an unresponsive daemon after {elapsed:?}")
         });
         assert!(
-            outcome.is_err(),
+            outcome
+                .as_ref()
+                .is_err_and(|error| error.contains("busy or hung")),
             "ensure_daemon must report an unresponsive daemon, got {outcome:?}"
         );
         assert_eq!(
