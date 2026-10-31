@@ -104,7 +104,9 @@ killed, so a plain `daemons stop <tab>` refuses it; `daemons stop <tab> --force`
 kills it (unsaved work in it is lost), and so does closing its tab. A daemon that has not exited 10 s after being stopped is
 killed the same way. Killing one is not supported on Windows yet: end its
 `nvim.exe` by hand. A daemon that died without cleaning up shows as `stale`;
-any stop removes it.
+any stop removes it. One that answers with an error shows as `error`, with
+the reason; no stop touches it, while the other daemons are listed and
+stopped as usual.
 
 The next toggle in that tab starts a fresh nvim.
 

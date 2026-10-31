@@ -46,6 +46,9 @@ pub(crate) enum DaemonState {
     Stale,
     /// Answers, but herdr could not be asked whether its tab still exists.
     Unknown,
+    /// Its probe failed: it answered with an error, or its process could
+    /// not be inspected. Nothing is known about it, so nothing stops it.
+    Error,
 }
 
 impl DaemonState {
@@ -57,6 +60,7 @@ impl DaemonState {
             Self::Unresponsive => "unresponsive",
             Self::Stale => "stale",
             Self::Unknown => "unknown",
+            Self::Error => "error",
         }
     }
 }
@@ -76,8 +80,9 @@ pub(crate) struct DaemonInfo {
     /// not be asked (see `herdr_reachable`).
     pub tab: Option<TabInfo>,
     pub herdr_reachable: bool,
-    /// What the daemon answered to the probe, if anything.
-    pub probe: Liveness<Probe>,
+    /// What the daemon answered to the probe, if anything, or why the
+    /// probe failed.
+    pub probe: Result<Liveness<Probe>, String>,
     /// The daemon's process: as it reported itself, or, if it does not
     /// answer, the one process listening on its socket.
     pub pid: Option<u32>,
@@ -89,11 +94,12 @@ pub(crate) struct DaemonInfo {
 impl DaemonInfo {
     pub(crate) fn state(&self) -> DaemonState {
         match (&self.probe, &self.tab, self.herdr_reachable) {
-            (Liveness::Unresponsive, _, _) => DaemonState::Unresponsive,
-            (Liveness::Gone, _, _) => DaemonState::Stale,
-            (Liveness::Answered(_), Some(_), _) => DaemonState::Alive,
-            (Liveness::Answered(_), None, true) => DaemonState::Orphaned,
-            (Liveness::Answered(_), None, false) => DaemonState::Unknown,
+            (Err(_), _, _) => DaemonState::Error,
+            (Ok(Liveness::Unresponsive), _, _) => DaemonState::Unresponsive,
+            (Ok(Liveness::Gone), _, _) => DaemonState::Stale,
+            (Ok(Liveness::Answered(_)), Some(_), _) => DaemonState::Alive,
+            (Ok(Liveness::Answered(_)), None, true) => DaemonState::Orphaned,
+            (Ok(Liveness::Answered(_)), None, false) => DaemonState::Unknown,
         }
     }
 
@@ -126,12 +132,22 @@ impl DaemonInfo {
         self.herdr_reachable && self.tab.is_none()
     }
 
-    /// The tab id, from the daemon itself or from herdr. `None` for an
-    /// unresponsive daemon whose tab herdr does not know: a key cannot be
-    /// decoded back into an id.
+    /// What the daemon answered, if it did.
+    fn answered(&self) -> Option<&Probe> {
+        self.probe.as_ref().ok().and_then(Liveness::answered)
+    }
+
+    /// Why its probe failed, if it did.
+    fn error(&self) -> Option<&str> {
+        self.probe.as_ref().err().map(String::as_str)
+    }
+
+    /// The tab id, from the daemon itself or from herdr. `None` for a
+    /// daemon that did not answer (unresponsive, stale or failing) and
+    /// whose tab herdr does not know: a key cannot be decoded back into an
+    /// id.
     fn tab_id(&self) -> Option<&TabId> {
-        self.probe
-            .answered()
+        self.answered()
             .and_then(|probe| probe.tab_id.as_ref())
             .or(self.tab.as_ref().map(|tab| &tab.tab_id))
     }
@@ -142,11 +158,11 @@ impl DaemonInfo {
     }
 
     fn unsaved(&self) -> Option<u32> {
-        self.probe.answered().map(|probe| probe.unsaved)
+        self.answered().map(|probe| probe.unsaved)
     }
 
     fn comments(&self) -> Option<u32> {
-        self.probe.answered().map(|probe| probe.comments)
+        self.answered().map(|probe| probe.comments)
     }
 
     /// `workspace / tab` as herdr shows it, or `None` for a tab herdr does
@@ -192,6 +208,7 @@ impl Serialize for DaemonInfo {
             state: DaemonState,
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
+            error: Option<&'a str>,
         }
         let tab = self.tab.as_ref();
         Row {
@@ -206,6 +223,7 @@ impl Serialize for DaemonInfo {
             state: self.state(),
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
+            error: self.error(),
         }
         .serialize(serializer)
     }
@@ -218,19 +236,16 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    describe(keys, h.tab_infos().ok().as_deref(), sidebar)
+    Ok(describe(keys, h.tab_infos().ok().as_deref(), sidebar))
 }
 
 /// Probe and measure the daemons for `keys`, naming them from herdr's live
 /// `tabs` (`None` when herdr could not be asked). The probes run in
 /// parallel, so hung daemons cost one `RPC_TIMEOUT` in all, not one each.
 /// A daemon that refuses connections while its process still listens is
-/// hung, not stale (see `liveness`).
-fn describe(
-    keys: Vec<String>,
-    tabs: Option<&[TabInfo]>,
-    sidebar: &Sidebar,
-) -> Result<Vec<DaemonInfo>> {
+/// hung, not stale (see `liveness`). A probe that fails spoils only its own
+/// daemon's row (`DaemonState::Error`).
+fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
     let probes: Vec<Result<Reply<Probe>>> = thread::scope(|scope| {
         let probes: Vec<_> = keys
@@ -250,11 +265,14 @@ fn describe(
         .zip(probes)
         .map(|(key, probe)| {
             let socket = socket_path_for_key(&key);
-            let probe = liveness(&socket, probe?, procs.as_ref().ok())?;
+            let probe = probe
+                .and_then(|reply| liveness(&socket, reply, procs.as_ref().ok()))
+                .map_err(|error| format!("{error:#}"));
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
-            let pid = match (probe.answered(), &procs) {
+            let answered = probe.as_ref().ok().and_then(Liveness::answered);
+            let pid = match (answered, &procs) {
                 (Some(answer), _) => Some(answer.pid),
                 (None, Ok(procs)) => procs.daemon(&socket).ok(),
                 (None, Err(_)) => None,
@@ -263,7 +281,7 @@ fn describe(
                 (Some(pid), Ok(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
-            Ok(DaemonInfo {
+            DaemonInfo {
                 key,
                 tab,
                 herdr_reachable: tabs.is_some(),
@@ -271,7 +289,7 @@ fn describe(
                 pid,
                 rss_bytes,
                 uptime_secs,
-            })
+            }
         })
         .collect()
 }
@@ -296,7 +314,8 @@ pub(crate) struct StopOutcome {
 }
 
 /// Stop the targeted daemons. One that `DaemonInfo::refusal` protects is
-/// left running unless `force`. `--orphans` needs herdr: without it, every
+/// left running unless `force`; one whose probe failed always is, and is
+/// reported as failed. `--orphans` needs herdr: without it, every
 /// daemon would look orphaned.
 pub(crate) fn stop(
     h: &mut dyn Herdr,
@@ -323,19 +342,25 @@ pub(crate) fn stop(
     };
     let mut outcome = StopOutcome::default();
     let mut doomed = Vec::new();
-    for daemon in describe(selected, tabs.as_deref(), sidebar)? {
+    for daemon in describe(selected, tabs.as_deref(), sidebar) {
+        let probe = match &daemon.probe {
+            Ok(probe) => probe.clone(),
+            Err(error) => {
+                outcome
+                    .failed
+                    .push(format!("could not stop {}: {error}", daemon.name()));
+                continue;
+            }
+        };
         match (force, daemon.refusal()) {
             (false, Some(refusal)) => outcome.refused.push(refusal),
-            _ => doomed.push(daemon),
+            _ => doomed.push((daemon, probe)),
         }
     }
-    for daemon in doomed {
+    for (daemon, probe) in doomed {
         // Reuses the probe above instead of asking (and, for a hung daemon,
         // waiting) a second time.
-        match (
-            stop_probed(&daemon.key, daemon.probe.clone(), sidebar),
-            daemon.rss_bytes,
-        ) {
+        match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
                 daemon.name(),
@@ -473,6 +498,12 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
         out.push_str(&row[4]);
         out.push('\n');
     }
+    for daemon in daemons {
+        if let Some(error) = daemon.error() {
+            let first_line = error.lines().next().unwrap_or_default();
+            out.push_str(&format!("{}: {first_line}\n", daemon.tab_ref()));
+        }
+    }
     out.push('\n');
     out.push_str(&summary(daemons));
     out.push('\n');
@@ -524,6 +555,7 @@ pub(crate) fn doctor_summary(h: &mut dyn Herdr, sidebar: &Sidebar) -> String {
         DaemonState::Unresponsive,
         DaemonState::Stale,
         DaemonState::Unknown,
+        DaemonState::Error,
     ] {
         match count(state) {
             0 => {}

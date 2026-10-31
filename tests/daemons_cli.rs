@@ -20,6 +20,10 @@
 //!   taken for gone: the stale entry stays, a stop of it fails, and so does
 //!   the close hook. Covered:
 //!   `nothing_is_forgotten_while_the_process_table_cannot_be_read` (Unix).
+//! - One daemon's probe fails (it answers with an error): that row says
+//!   `error` with the reason, the others are listed and stopped as usual,
+//!   and nothing, not even `--force`, stops the failing one. Covered:
+//!   `a_daemon_whose_probe_fails_spoils_only_its_own_row`.
 //! - Prefix trap on `stop <tab>`: only that key, never a longer id sharing
 //!   its prefix. Covered: same test (`wHnDa:t1` vs `wHnDa:t10`).
 //! - Quit timeout and partial failure: covered through the shared stop path
@@ -38,6 +42,11 @@ use support::Sandbox;
 
 fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(unix)]
+fn stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 #[test]
@@ -177,6 +186,66 @@ fn lists_reaps_and_refuses_against_real_daemons() {
 
 #[cfg(unix)]
 #[test]
+fn a_daemon_whose_probe_fails_spoils_only_its_own_row() {
+    use support::{nvim_available, Artifact, Daemon};
+
+    if !nvim_available() {
+        eprintln!("skipping: nvim not found on PATH");
+        return;
+    }
+    let sandbox = Sandbox::new("daemons-probe-error");
+    let mut log = Artifact::new("a_daemon_whose_probe_fails_spoils_only_its_own_row");
+    let mut fine = Daemon::spawn(&sandbox, "wHnDe:t1");
+    let mut broken = Daemon::spawn(&sandbox, "wHnDe:t2");
+    // A comment store whose list is not a list: the probe's comment count
+    // then raises a Lua error, so the daemon answers the probe with one.
+    broken
+        .eval(r#"luaeval("(function() package.loaded['herdr-nvim.comments'] = { list = function() return 1 end } return 1 end)()")"#)
+        .expect("break the comment store");
+    sandbox.herdr_tabs(&[("wHnDe:t1", "novu", "api"), ("wHnDe:t2", "novu", "web")]);
+
+    let listed = sandbox.run(&["daemons", "--json"], None);
+    log.step("daemons --json", "", &listed);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let value: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(value[0]["state"], "alive", "{value}");
+    assert_eq!(value[1]["state"], "error", "{value}");
+    assert!(
+        value[1]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("wHnDe_t2")),
+        "{value}"
+    );
+
+    let table = sandbox.run(&["daemons"], None);
+    log.step("daemons", "", &table);
+    assert!(table.status.success(), "{}", stderr(&table));
+    assert!(stdout(&table).contains("error"), "{}", stdout(&table));
+
+    for args in [
+        &["daemons", "stop", "--all", "--force"][..],
+        &["daemons", "stop", "--all"],
+    ] {
+        let stopped = sandbox.run(args, None);
+        log.step(&args.join(" "), "", &stopped);
+        assert_eq!(stopped.status.code(), Some(1));
+        assert!(
+            stderr(&stopped).contains("could not stop novu / web"),
+            "{}",
+            stderr(&stopped)
+        );
+        assert!(
+            broken.running(),
+            "a daemon whose probe failed is never stopped"
+        );
+        assert!(broken.entry.exists(), "nor forgotten");
+    }
+    fine.assert_gone(&sandbox);
+    log.note("result: pass");
+}
+
+#[cfg(unix)]
+#[test]
 fn nothing_is_forgotten_while_the_process_table_cannot_be_read() {
     use support::Artifact;
 
@@ -215,8 +284,6 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
         eprintln!("skipping: nvim not found on PATH");
         return;
     }
-    let stderr =
-        |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
     let sandbox = Sandbox::new("daemons-hung");
     let mut log = Artifact::new("a_hung_daemon_is_listed_refused_then_killed_with_force");
     let mut hung = Daemon::spawn(&sandbox, "wHnDh:t1");
