@@ -67,7 +67,9 @@ pub(crate) fn nvim_cmd(sidebar: &Sidebar) -> Command {
 /// All of it, the first probe included, takes at most `HEALTH_POLL_TIMEOUT`.
 /// A daemon that holds its socket but does not answer in that time is an
 /// error, never a reason to spawn a second daemon over it: that would
-/// orphan the stuck one, still holding its memory.
+/// orphan the stuck one, still holding its memory. One that refuses
+/// connections while its process listens is asked again until then: it may
+/// be one that another caller has just spawned, not accepting yet.
 pub fn ensure_daemon(
     tab: &str,
     plugin_root: &Path,
@@ -76,22 +78,28 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
-    let reply = remote_expr(&socket, "1+1", &config.sidebar, HEALTH_POLL_TIMEOUT)?;
-    match liveness(&socket, reply, None)? {
-        Liveness::Answered(_) => {
-            // Also (re)register an already-running daemon, so one spawned
-            // before the Windows marker existed still becomes discoverable.
-            #[cfg(windows)]
-            registry::register_daemon(tab)?;
-            return Ok(socket);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let reply = remote_expr(&socket, "1+1", &config.sidebar, remaining)?;
+        match liveness(&socket, reply, None)? {
+            Liveness::Answered(_) => {
+                // Also (re)register an already-running daemon, so one spawned
+                // before the Windows marker existed still becomes discoverable.
+                #[cfg(windows)]
+                registry::register_daemon(tab)?;
+                return Ok(socket);
+            }
+            Liveness::Unresponsive if Instant::now() + HEALTH_POLL_INTERVAL < deadline => {
+                sleep(HEALTH_POLL_INTERVAL)
+            }
+            Liveness::Unresponsive => bail!(
+                "the nvim daemon for tab {tab} is busy or hung (no reply within {}s); \
+                 if it stays that way, `herdr-nvim daemons stop {tab} --force` kills it \
+                 and loses its unsaved work",
+                HEALTH_POLL_TIMEOUT.as_secs()
+            ),
+            Liveness::Gone => break,
         }
-        Liveness::Unresponsive => bail!(
-            "the nvim daemon for tab {tab} is busy or hung (no reply within {}s); \
-             if it stays that way, `herdr-nvim daemons stop {tab} --force` kills it \
-             and loses its unsaved work",
-            HEALTH_POLL_TIMEOUT.as_secs()
-        ),
-        Liveness::Gone => {}
     }
 
     #[cfg(not(windows))]
@@ -685,6 +693,65 @@ mod tests {
             daemon.eval("getpid()"),
             daemon.pid.to_string(),
             "the wedged daemon must not be replaced by a twin on its socket"
+        );
+    }
+
+    // Issue #61 (principles review of PR #63): a daemon that another caller
+    // has just spawned runs, `--listen <socket>` argv and all, a moment
+    // before it accepts connections. A refusal then is a daemon starting up,
+    // not a hung one: `ensure_daemon` must wait for it within its deadline,
+    // and not spawn a twin over it. The stand-in is an nvim with that argv
+    // (after `--`, as file names) that starts listening only after 1.5 s.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_daemon_waits_for_a_daemon_that_is_still_starting() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
+        let socket = socket_path("w61:t3");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listen_late = format!(
+            "lua vim.uv.sleep(1500) vim.fn.serverstart({:?})",
+            socket.to_string_lossy()
+        );
+        let starting = Command::new("nvim")
+            .args([
+                "--headless",
+                "--clean",
+                "--cmd",
+                &listen_late,
+                "--",
+                "--listen",
+            ])
+            .arg(&socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn nvim");
+        // Killed on drop.
+        let daemon = TestDaemon {
+            tab: TabId::new("w61:t3"),
+            socket: socket.clone(),
+            pid: starting.id(),
+        };
+        let reply = remote_expr(&socket, "1+1", &config.sidebar, RPC_TIMEOUT).unwrap();
+        assert_eq!(
+            reply,
+            Reply::Refused,
+            "precondition: it does not accept yet"
+        );
+
+        let outcome = ensure_daemon("w61:t3", &plugin_root, &config, &plugin_root);
+        assert_eq!(outcome.map_err(|e| format!("{e:#}")), Ok(socket));
+        assert_eq!(
+            daemon.eval("getpid()"),
+            daemon.pid.to_string(),
+            "the starting daemon must not be replaced by a twin on its socket"
         );
     }
 
