@@ -99,9 +99,10 @@ unless given `--force`; `--orphans` stops the daemons whose tab is gone.
 A daemon whose nvim stops answering (a plugin stuck in a loop, say) shows as
 `unresponsive`. herdr-nvim never waits on one forever: toggling the sidebar or
 opening a file in that tab fails instead (a picked or clicked file says so in
-a notification), after 10 s when the daemon was already hung, and after about
-25 s at worst, when it hangs halfway through an open. No second daemon is
-started over it. It can only be killed, so a plain `daemons stop <tab>`
+a notification): after 10 s when the daemon was already hung. One that hangs
+halfway through an open can take up to 25 s, the sum of the time limits of
+the steps involved (10 s + 10 s + 5 s), not a measured time. No second daemon
+is started over it. It can only be killed, so a plain `daemons stop <tab>`
 refuses it; `daemons stop <tab> --force` kills it (unsaved work in it is
 lost), and so does closing its tab. A daemon that has not exited 10 s after
 being asked to quit is killed the same way. Killing one is not supported on
