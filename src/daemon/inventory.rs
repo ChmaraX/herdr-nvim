@@ -23,10 +23,8 @@ use crate::{
 use super::{
     liveness,
     process::ProcessTable,
-    registry::{
-        daemon_keys, orphans, socket_path_for_key, stop_probed, StopProbe, UNSAVED_BUFFERS_EXPR,
-    },
-    remote_expr, Liveness, Reply, RPC_TIMEOUT,
+    registry::{daemon_keys, orphans, probe, socket_path_for_key, stop_probed, Probe},
+    Liveness, Reply,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -67,16 +65,6 @@ impl Serialize for DaemonState {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
-}
-
-/// What a registered daemon said about itself over its socket.
-#[derive(Clone, Debug)]
-pub(crate) struct Probe {
-    pub pid: Option<u32>,
-    pub unsaved: Option<u32>,
-    pub comments: Option<u32>,
-    /// The daemon's own `$HERDR_TAB_ID`, if it matches its registry key.
-    pub tab_id: Option<TabId>,
 }
 
 /// One registered daemon.
@@ -154,11 +142,11 @@ impl DaemonInfo {
     }
 
     fn unsaved(&self) -> Option<u32> {
-        self.probe.answered().and_then(|probe| probe.unsaved)
+        self.probe.answered().map(|probe| probe.unsaved)
     }
 
     fn comments(&self) -> Option<u32> {
-        self.probe.answered().and_then(|probe| probe.comments)
+        self.probe.answered().map(|probe| probe.comments)
     }
 
     /// `workspace / tab` as herdr shows it, or `None` for a tab herdr does
@@ -223,41 +211,6 @@ impl Serialize for DaemonInfo {
     }
 }
 
-/// Vimscript returning `"<pid> <unsaved> <comments> <tab id>"` in one round
-/// trip. Comments are only counted if the plugin's comment store is already
-/// loaded, so the probe never loads modules into the daemon.
-fn probe_expr() -> String {
-    let comments = "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
-                    if not c then return 0 end local ok, l = pcall(c.list) \
-                    return ok and #l or 0 end)()\")";
-    format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
-}
-
-fn probe(key: &str, sidebar: &Sidebar) -> Result<Reply<Probe>> {
-    let socket = socket_path_for_key(key);
-    let reply = remote_expr(&socket, &probe_expr(), sidebar, RPC_TIMEOUT)
-        .with_context(|| format!("could not query the nvim daemon of tab {key}"))?;
-    Ok(reply.map(|out| parse_probe(key, &out)))
-}
-
-fn parse_probe(key: &str, out: &str) -> Probe {
-    let mut parts = out.splitn(4, ' ');
-    let mut number = || parts.next().and_then(|part| part.parse().ok());
-    let pid = number();
-    let unsaved = number();
-    let comments = number();
-    let tab_id = parts
-        .next()
-        .map(TabId::new)
-        .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
-    Probe {
-        pid,
-        unsaved,
-        comments,
-        tab_id,
-    }
-}
-
 /// Every registered daemon, sorted by key. herdr being unreachable is not
 /// an error: names are then unknown and responsive daemons are `Unknown`.
 pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<DaemonInfo>> {
@@ -302,7 +255,7 @@ fn describe(
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
             let pid = match (probe.answered(), &procs) {
-                (Some(answer), _) => answer.pid,
+                (Some(answer), _) => Some(answer.pid),
                 (None, Some(procs)) => procs.daemon(&socket).ok(),
                 (None, None) => None,
             };
@@ -379,15 +332,10 @@ pub(crate) fn stop(
     for daemon in doomed {
         // Reuses the probe above instead of asking (and, for a hung daemon,
         // waiting) a second time.
-        let probe = match &daemon.probe {
-            Liveness::Answered(probe) => Liveness::Answered(StopProbe {
-                pid: probe.pid,
-                unsaved: probe.unsaved.unwrap_or(0),
-            }),
-            Liveness::Unresponsive => Liveness::Unresponsive,
-            Liveness::Gone => Liveness::Gone,
-        };
-        match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
+        match (
+            stop_probed(&daemon.key, daemon.probe.clone(), sidebar),
+            daemon.rss_bytes,
+        ) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
                 daemon.name(),
@@ -617,6 +565,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    #[cfg(unix)]
+    use crate::daemon::{remote_expr, RPC_TIMEOUT};
     use crate::{
         config::Config,
         herdr::MockHerdr,

@@ -2,13 +2,14 @@
 //! stop path (`stop_keys`) shared by `daemon-gc`, the herdr close hooks and
 //! `herdr-nvim daemons stop`.
 
+#[cfg(windows)]
+use std::thread::sleep;
 use std::{
     env,
     ffi::OsStr,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    thread::sleep,
     time::{Duration, Instant},
 };
 
@@ -17,15 +18,18 @@ use anyhow::{anyhow, Context, Result};
 use crate::{
     config::Sidebar,
     herdr::{CliHerdr, Herdr, TabInfo},
-    state::{self, tab_key},
+    state::{self, tab_key, TabId},
 };
 
-use super::{liveness, process, remote_expr, request, Liveness, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT};
+use super::{
+    liveness, process, remote_expr, request, Liveness, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT,
+};
 
 /// How long `quit` gives a daemon to exit after asking it to: as long as a
 /// daemon gets to answer at all, since a slow but healthy `VimLeavePre`
 /// (session or shada plugins) runs first.
 const QUIT_TIMEOUT: Duration = HEALTH_POLL_TIMEOUT;
+#[cfg(windows)]
 const QUIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Directory that registers every running daemon, one entry per tab.
@@ -144,8 +148,7 @@ pub(crate) fn gc(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<()> {
 }
 
 /// Vimscript: number of listed buffers with unsaved changes.
-pub(crate) const UNSAVED_BUFFERS_EXPR: &str =
-    "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
+const UNSAVED_BUFFERS_EXPR: &str = "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))";
 
 /// Stop each daemon in `keys`, in order. Best effort: one failing does not
 /// spare the rest. Returns every key with its own outcome, in input order.
@@ -172,13 +175,64 @@ pub(crate) fn all_stopped(results: Vec<(String, Result<()>)>) -> Result<()> {
     ))
 }
 
-/// What a daemon about to be stopped answered about itself.
+/// What a registered daemon says about itself over its socket, the one
+/// probe both `herdr-nvim daemons` and every stop ask.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct StopProbe {
+pub(crate) struct Probe {
     /// Its own pid, to watch it exit.
-    pub pid: Option<u32>,
+    pub pid: u32,
     /// Its listed buffers with unsaved changes.
     pub unsaved: u32,
+    /// Its pending review comments.
+    pub comments: u32,
+    /// Its own `$HERDR_TAB_ID`, if that matches its registry key.
+    pub tab_id: Option<TabId>,
+}
+
+/// Vimscript returning `"<pid> <unsaved> <comments> <tab id>"` in one round
+/// trip. Comments are only counted if the plugin's comment store is already
+/// loaded, so the probe never loads modules into the daemon.
+fn probe_expr() -> String {
+    let comments = "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
+                    if not c then return 0 end local ok, l = pcall(c.list) \
+                    return ok and #l or 0 end)()\")";
+    format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
+}
+
+/// Ask the daemon of `key` the `Probe` questions.
+pub(crate) fn probe(key: &str, sidebar: &Sidebar) -> Result<Reply<Probe>> {
+    let socket = socket_path_for_key(key);
+    let context = || format!("could not query the nvim daemon of tab {key}");
+    Ok(
+        match remote_expr(&socket, &probe_expr(), sidebar, RPC_TIMEOUT).with_context(context)? {
+            Reply::Answered(out) => Reply::Answered(parse_probe(key, &out).with_context(context)?),
+            Reply::Refused => Reply::Refused,
+            Reply::TimedOut => Reply::TimedOut,
+        },
+    )
+}
+
+fn parse_probe(key: &str, out: &str) -> Result<Probe> {
+    let mut parts = out.splitn(4, ' ');
+    let mut number = |what: &str| {
+        parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .with_context(|| format!("no {what} in its answer {out:?}"))
+    };
+    let pid = number("pid")?;
+    let unsaved = number("unsaved buffer count")?;
+    let comments = number("comment count")?;
+    let tab_id = parts
+        .next()
+        .map(TabId::new)
+        .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
+    Ok(Probe {
+        pid,
+        unsaved,
+        comments,
+        tab_id,
+    })
 }
 
 /// Stop the daemon for an already-sanitized tab key (a `socket_dir` entry
@@ -187,16 +241,7 @@ pub(crate) struct StopProbe {
 /// gone is a no-op beyond the file cleanup.
 fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
-    // Doubles as the liveness probe.
-    let expr = format!("getpid() .. ' ' .. {UNSAVED_BUFFERS_EXPR}");
-    let reply = remote_expr(&socket, &expr, sidebar, RPC_TIMEOUT)?.map(|answer| {
-        let mut numbers = answer.split(' ').map(|n| n.parse().ok());
-        StopProbe {
-            pid: numbers.next().flatten(),
-            unsaved: numbers.next().flatten().unwrap_or(0),
-        }
-    });
-    stop_probed(key, liveness(&socket, reply, None), sidebar)
+    stop_probed(key, liveness(&socket, probe(key, sidebar)?, None), sidebar)
 }
 
 /// `stop_tab_key` for a daemon already probed. Unsaved buffers are discarded -- the tab is gone,
@@ -206,10 +251,10 @@ fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
 /// by its verified pid (`process::kill_daemon`), which loses nothing `qa!`
 /// would not. A daemon that does not go away keeps its registry entry and
 /// state, so it stays listable and reachable, and is reported as an error.
-pub(crate) fn stop_probed(key: &str, probe: Liveness<StopProbe>, sidebar: &Sidebar) -> Result<()> {
+pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path_for_key(key);
     match probe {
-        Liveness::Answered(StopProbe { pid, unsaved }) => {
+        Liveness::Answered(Probe { pid, unsaved, .. }) => {
             if unsaved > 0 {
                 eprintln!(
                     "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
@@ -234,9 +279,9 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<StopProbe>, sidebar: &Sideb
 }
 
 /// Ask the daemon to force-quit (`qa!`) and wait up to `QUIT_TIMEOUT` for
-/// it to exit: watching its `pid` where that is known and can be watched,
-/// else until nothing answers on its socket. `false` if it is still there.
-fn quit(socket: &Path, pid: Option<u32>, sidebar: &Sidebar) -> Result<bool> {
+/// it to exit: watching its `pid` (Unix), else until nothing answers on
+/// its socket (Windows). `false` if it is still there.
+fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
     let deadline = Instant::now() + QUIT_TIMEOUT;
     // Whatever the request itself says (a daemon exiting mid-request drops
     // the connection), what counts is whether the daemon then exits.
@@ -247,27 +292,27 @@ fn quit(socket: &Path, pid: Option<u32>, sidebar: &Sidebar) -> Result<bool> {
         RPC_TIMEOUT,
     );
     #[cfg(unix)]
-    if let Some(pid) = pid {
-        return Ok(process::wait_gone(
-            pid,
-            socket,
-            deadline.saturating_duration_since(Instant::now()),
-        ));
-    }
+    return Ok(process::wait_gone(
+        pid,
+        socket,
+        deadline.saturating_duration_since(Instant::now()),
+    ));
     #[cfg(windows)]
-    let _ = pid;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        // An error here is a connection dropped by a daemon on its way out.
-        if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
-            if liveness(socket, reply, None) == Liveness::Gone {
-                return Ok(true);
+    {
+        let _ = pid;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
             }
+            // An error here is a connection dropped by a daemon on its way out.
+            if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
+                if liveness(socket, reply, None) == Liveness::Gone {
+                    return Ok(true);
+                }
+            }
+            sleep(QUIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
         }
-        sleep(QUIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 

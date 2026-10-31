@@ -232,14 +232,6 @@ pub(crate) enum Reply<T = String> {
 }
 
 impl<T> Reply<T> {
-    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Reply<U> {
-        match self {
-            Self::Answered(answer) => Reply::Answered(f(answer)),
-            Self::Refused => Reply::Refused,
-            Self::TimedOut => Reply::TimedOut,
-        }
-    }
-
     /// The answer, or an error saying why there is none.
     pub(crate) fn answer(self, socket: &Path) -> Result<T> {
         match self {
