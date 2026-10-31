@@ -127,8 +127,10 @@ pub fn ensure_daemon(
                 HEALTH_POLL_TIMEOUT.as_secs()
             );
         }
-        if let Reply::Answered(_) = remote_expr(&socket, "1+1", &config.sidebar, remaining)? {
-            return Ok(socket);
+        match remote_expr(&socket, "1+1", &config.sidebar, remaining)? {
+            Reply::Answered(_) => return Ok(socket),
+            Reply::Refused | Reply::TimedOut => {}
+            Reply::Failed(error) => bail!("{error}"),
         }
         sleep(HEALTH_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
@@ -238,6 +240,9 @@ pub(crate) enum Reply<T = String> {
     Refused,
     /// Something accepted the connection but sent no answer in time.
     TimedOut,
+    /// The client ran and failed, saying why: the daemon answered with an
+    /// error, or dropped the connection (one exiting mid-request does).
+    Failed(String),
 }
 
 /// Whether the daemon on a socket is there, as `liveness` decides it.
@@ -265,7 +270,8 @@ impl<T> Liveness<T> {
 /// client's `reply`. On Unix a refusal is checked against the process
 /// table: an nvim still listening on `socket` (even one whose socket file
 /// was deleted) makes it `Unresponsive`, and a table that cannot be read is
-/// an error, never `Gone`. `table` is one already loaded, if any; else one
+/// an error, never `Gone`. A `Failed` client says nothing about liveness
+/// either, so it is an error too. `table` is one already loaded, if any; else one
 /// is loaded when the verdict needs it. Windows reads no command lines, so
 /// there a refusal stands and no table is loaded.
 pub(crate) fn liveness<T>(
@@ -276,6 +282,7 @@ pub(crate) fn liveness<T>(
     Ok(match reply {
         Reply::Answered(answer) => Liveness::Answered(answer),
         Reply::TimedOut => Liveness::Unresponsive,
+        Reply::Failed(error) => bail!("{error}"),
         #[cfg(windows)]
         Reply::Refused => {
             let _ = (socket, table);
@@ -308,8 +315,8 @@ pub(crate) fn liveness<T>(
 /// Every request to a daemon goes through here; only the long-lived
 /// `--remote-ui` attach does not. The client runs with `--clean`.
 ///
-/// `Err` when there is no verdict on the daemon: the client could not be
-/// run, killed or reaped, or the daemon answered with an error.
+/// `Err` only when the client could not be run, killed or reaped, so it
+/// says nothing about the daemon.
 pub(crate) fn request(
     socket: &Path,
     args: &[&str],
@@ -357,28 +364,14 @@ pub(crate) fn request(
         // E247: "Failed to connect to '<socket>'". A `--remote` client that
         // gets it does not exit: it "edits locally" until it is killed.
         _ if stderr.contains("E247:") => Ok(Reply::Refused),
-        Some(status) => Err(ClientFailed(format!(
+        Some(status) => Ok(Reply::Failed(format!(
             "nvim --server {} {} failed ({status}): {stderr}",
             socket.display(),
             args.first().copied().unwrap_or_default()
-        ))
-        .into()),
+        ))),
         None => Ok(Reply::TimedOut),
     }
 }
-
-/// A request's client ran but failed: the daemon answered with an error,
-/// or dropped the connection.
-#[derive(Debug)]
-pub(crate) struct ClientFailed(String);
-
-impl std::fmt::Display for ClientFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ClientFailed {}
 
 /// How long a request waits, once its client is reaped, for the rest of
 /// the client's output.
@@ -454,6 +447,7 @@ pub(crate) fn ask(
             socket.display(),
             timeout.as_secs()
         ),
+        Reply::Failed(error) => bail!("{error}"),
     }
 }
 

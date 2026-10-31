@@ -22,8 +22,7 @@ use crate::{
 };
 
 use super::{
-    liveness, process, remote_expr, request, ClientFailed, Liveness, Reply, HEALTH_POLL_TIMEOUT,
-    RPC_TIMEOUT,
+    liveness, process, remote_expr, request, Liveness, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT,
 };
 
 /// How long `quit` gives a daemon to exit after asking it to: as long as a
@@ -209,6 +208,7 @@ pub(crate) fn probe(key: &str, sidebar: &Sidebar) -> Result<Reply<Probe>> {
             Reply::Answered(out) => Reply::Answered(parse_probe(key, &out).with_context(context)?),
             Reply::Refused => Reply::Refused,
             Reply::TimedOut => Reply::TimedOut,
+            Reply::Failed(error) => Reply::Failed(format!("{}: {error}", context())),
         },
     )
 }
@@ -284,18 +284,15 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
 /// nothing answers on its socket (Windows). `false` if it is still there;
 /// an error if it could not be asked at all.
 fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
-    match request(
+    // Whatever the daemon made of it (one exiting mid-request drops the
+    // connection: `Reply::Failed`), what counts is whether it then exits.
+    request(
         socket,
         &["--remote-send", "<cmd>qa!<cr>"],
         sidebar,
         RPC_TIMEOUT,
-    ) {
-        // Whatever the daemon made of it (one exiting mid-request drops
-        // the connection), what counts is whether it then exits.
-        Ok(_) => {}
-        Err(error) if error.is::<ClientFailed>() => {}
-        Err(error) => return Err(error).context("could not ask it to quit"),
-    }
+    )
+    .context("could not ask it to quit")?;
     let deadline = Instant::now() + QUIT_TIMEOUT;
     #[cfg(unix)]
     return process::wait_gone(
@@ -311,7 +308,8 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
             if remaining.is_zero() {
                 return Ok(false);
             }
-            // An error here is a connection dropped by a daemon on its way out.
+            // A failed client here is a daemon dropping the connection on its way
+            // out (`Reply::Failed`, which `liveness` makes an error).
             if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
                 if let Ok(Liveness::Gone) = liveness(socket, reply, None) {
                     return Ok(true);
