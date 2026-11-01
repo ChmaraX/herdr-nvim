@@ -13,8 +13,9 @@
 //!   same test (`wHnA:t9`).
 //! - Hung daemon (a plugin stuck in a loop: its socket takes connections,
 //!   nothing answers, SIGTERM is ignored; issue #61): on Unix the close
-//!   kills it by its pid with SIGKILL, and reports it. On Windows the hook
-//!   fails and keeps its entry. Covered: same test (`wHnA:t4`).
+//!   kills it by its pid with SIGKILL, with its process group. Covered
+//!   through the shared stop path in
+//!   `registry::tests::a_busy_daemon_is_killed_with_its_process_group`.
 //! - Quit timeout (a daemon that ignores `qa!`): on Unix it is killed by its
 //!   pid once the quit wait is up, and the kill is reported. On Windows,
 //!   which cannot do that, the hook fails, and the daemon keeps its registry
@@ -61,8 +62,6 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
     let mut a1 = Daemon::spawn(&sandbox, "wHnA:t1");
     let mut a2 = Daemon::spawn(&sandbox, "wHnA:t2");
     let mut stubborn = Daemon::spawn_unquittable(&sandbox, "wHnA:t3");
-    let mut hung = Daemon::spawn(&sandbox, "wHnA:t4");
-    hung.busy();
     let stale = sandbox.stale_entry("wHnA:t9");
     let mut ab1 = Daemon::spawn(&sandbox, "wHnAB:t1");
     let mut b1 = Daemon::spawn(&sandbox, "wHnB:t1");
@@ -72,7 +71,6 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
         ("wHnA:t1", "alpha", "one"),
         ("wHnA:t2", "alpha", "two"),
         ("wHnA:t3", "alpha", "stubborn"),
-        ("wHnA:t4", "alpha", "hung"),
         ("wHnAB:t1", "alphabet", "one"),
         ("wHnB:t1", "beta", "one"),
     ]);
@@ -94,27 +92,17 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
     for daemon in [&mut a2, &mut stubborn, &mut ab1, &mut b1] {
         daemon.assert_alive(&sandbox);
     }
-    assert!(hung.running(), "the hung daemon is not in the closed tab");
 
     let event = workspace_closed("wHnA");
     let output = sandbox.run(&["on-event"], Some(&event));
     log.step("workspace_closed wHnA", &event, &output);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("wHnA_t3"), "{stderr}");
-    assert!(stderr.contains("wHnA_t4"), "{stderr}");
     #[cfg(unix)]
     {
         assert!(output.status.success(), "{stderr}");
         assert!(stderr.contains("did not exit"), "{stderr}");
-        assert!(
-            stderr.contains(&format!(
-                "wHnA_t4 was not answering; killed it (pid {})",
-                hung.pid()
-            )),
-            "{stderr}"
-        );
         stubborn.assert_gone(&sandbox);
-        hung.assert_gone(&sandbox);
     }
     #[cfg(windows)]
     {
@@ -123,7 +111,6 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
             "a daemon that won't quit fails the hook"
         );
         stubborn.assert_alive(&sandbox);
-        assert!(hung.running() && hung.entry.exists());
     }
     a2.assert_gone(&sandbox);
     assert!(!stale.exists(), "stale entry cleaned up");
@@ -143,7 +130,7 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
     #[cfg(unix)]
     assert_eq!(keys, ["wHnAB_t1", "wHnB_t1"]);
     #[cfg(windows)]
-    assert_eq!(keys, ["wHnAB_t1", "wHnA_t3", "wHnA_t4", "wHnB_t1"]);
+    assert_eq!(keys, ["wHnAB_t1", "wHnA_t3", "wHnB_t1"]);
     log.note("result: pass");
 }
 
