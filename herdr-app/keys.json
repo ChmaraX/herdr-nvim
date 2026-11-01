@@ -1,0 +1,6 @@
+{
+  "global": {
+    "cmd-j e": "mod.open:herdr-nvim",
+    "cmd-j f": "mod.open:herdr-nvim-pick"
+  }
+}

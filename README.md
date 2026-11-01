@@ -66,6 +66,25 @@ description = "open file from agent output"
 { "ChmaraX/herdr-nvim", opts = {} }
 ```
 
+## Herdr desktop app
+
+herdr-nvim also runs in the new Herdr app (herdr-app 0.1.11+, herdr-core
+0.1.16+) as a mod, from this same repo and the same Rust/Lua core. The
+app's **Files** button shows a native file tree; picking a file opens it in
+the tab's own nvim, a full-height pane beside the tab's other panes. `cmd-j e`
+toggles that pane, `cmd-j f` opens a file from agent output, and the
+annotations work as below. With the app open:
+
+```sh
+herdr-app/install.sh              # install (again after an app update)
+herdr-app/install.sh --uninstall  # back to the stock Files browser
+```
+
+What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
+Other mods open a file in a tab's nvim with
+`<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
+`herdr-app/e2e/run.sh` checks all of it in a private app and core.
+
 ## The sidebar
 
 `prefix+e` toggles it. Each tab gets its own nvim, backed by a headless
