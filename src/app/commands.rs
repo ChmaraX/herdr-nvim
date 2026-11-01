@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::{bridge, config, extract, herdr::Herdr, openlink, pathkey};
 
-use super::{cli, host, rpc, sidebar, AppHost};
+use super::{cli, host, rpc, session, sidebar, AppHost};
 
 /// `herdr-nvim app-agents`: every agent the app shows, in the shape of the
 /// TUI's `herdr agent list`, so `agents.lua` parses both the same way.
@@ -60,9 +60,11 @@ pub fn send_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim pick-file [--ctx JSON]` in the app: gather the candidates and
-/// start the picker in a hidden core terminal. Prints `{"terminal": "t9"}` for
-/// the mod to show in a dialog, or `{"empty": "<why>"}`.
+/// `herdr-nvim pick-file [--ctx JSON] [--list]` in the app: gather the
+/// candidates (the agent's session log first, then git changes, the paths on
+/// its screen and the repo) and start the picker in a hidden core terminal.
+/// Prints `{"terminal": "t9"}` for the mod to show in a dialog, or
+/// `{"empty": "<why>"}`. `--list` prints the candidates instead.
 pub(crate) fn start_pick() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
@@ -76,13 +78,23 @@ pub(crate) fn start_pick() -> Result<()> {
                 return Ok(());
             }
         };
-    let snapshot = herdr.pane_snapshot(&target)?;
+    let facts = host::terminal(&target)?;
+    let cwd = host::cwd_of(&facts).context("the agent's terminal has no folder")?;
+    let agent_session = session::find(&facts);
     let text = herdr.read_pane(&target, config.picker.scan_lines)?;
-    let candidates = bridge::gather_candidates(None, &text, &snapshot.cwd, &|path| path.is_file());
+    let candidates =
+        bridge::gather_candidates(agent_session.as_ref(), &text, &cwd, &|path| path.is_file());
+    if args.iter().any(|arg| arg == "--list") {
+        println!(
+            "{}",
+            json!({"agent": target, "session": agent_session.map(|s| s.value), "candidates": candidates})
+        );
+        return Ok(());
+    }
     if candidates.is_empty() {
         println!(
             "{}",
-            json!({"empty": "No file paths found in agent output"})
+            json!({"empty": "Nothing to pick yet: the agent has no session log here, the folder is not a git repo, and no file paths are on its screen"})
         );
         return Ok(());
     }
@@ -92,7 +104,7 @@ pub(crate) fn start_pick() -> Result<()> {
         workspace: ctx.workspace.clone(),
         tab: ctx.tab.clone(),
         focused_pane: ctx.focused_pane.clone(),
-        cwd: snapshot.cwd.to_string_lossy().into_owned(),
+        cwd: cwd.to_string_lossy().into_owned(),
         max_files: config.picker.max_files,
     };
     let handoff_path = bridge::write_handoff(&handoff)?;
@@ -100,7 +112,7 @@ pub(crate) fn start_pick() -> Result<()> {
         "terminal.run",
         json!({
             "argv": [cli::self_command()?.to_string_lossy(), "picker"],
-            "cwd": snapshot.cwd,
+            "cwd": cwd,
             "env": {"HERDR_NVIM_HANDOFF": handoff_path, "TERM": "xterm-256color", "COLORTERM": "truecolor"},
             "no_parent": true,
             "rm": true,

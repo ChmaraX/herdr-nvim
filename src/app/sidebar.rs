@@ -51,7 +51,20 @@ pub(crate) fn close(terminal: &str) -> Result<()> {
     }
 }
 
+/// Give `terminal`'s pane the keyboard. A dialog still on screen (the picker,
+/// closing as its program exits) hands the keyboard back to the pane it was
+/// opened over when it goes, so wait for it to go first (at most 3 s).
 pub(crate) fn focus(terminal: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline
+        && cli::app_status()
+            .ok()
+            .and_then(|status| status.get("overlays").cloned())
+            .and_then(|overlays| overlays.as_array().cloned())
+            .is_some_and(|overlays| overlays.iter().any(|o| o == "layout"))
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     cli::app_do("pane.focus", &json!({"terminal": terminal})).map(drop)
 }
 
@@ -140,16 +153,51 @@ pub(crate) fn ctx_for_tab(app: &AppCtx) -> Result<Ctx> {
     })
 }
 
-/// `herdr-nvim toggle [--ctx JSON]`: close this tab's sidebar, or open it.
+/// What `toggle --state <open|close>` asks for; no `--state` flips it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Want {
+    Flip,
+    Open,
+    Close,
+}
+
+/// Pure: the `--state` argument.
+pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
+    match args
+        .iter()
+        .position(|arg| arg == "--state")
+        .map(|at| args.get(at + 1).map(String::as_str))
+    {
+        None => Ok(Want::Flip),
+        Some(Some("open")) => Ok(Want::Open),
+        Some(Some("close")) => Ok(Want::Close),
+        Some(other) => anyhow::bail!("--state is open or close, not {other:?}"),
+    }
+}
+
+/// `herdr-nvim toggle [--state open|close] [--ctx JSON]`: open or close this
+/// tab's nvim pane. With `--state` it is idempotent: the Files panel's
+/// controller says what it wants, never "the other way round". Prints
+/// `{"terminal": "tN"}` (open) or `{"closed": "tN"}`.
 pub fn toggle_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
+    let want = want_from_args(&args)?;
     let ctx = ctx(&cli::read_ctx(&args)?)?;
     // Best-effort: a reap failure must never block a toggle.
     let _ = watch::reconcile();
-    match find(&ctx.tab)? {
-        Some(terminal) => close(&terminal),
-        None => open(&ctx).map(drop),
-    }
+    // What changed, for the caller to wait on: the pane's terminal, opened
+    // (`terminal`) or closed (`closed`).
+    let made = match (find(&ctx.tab)?, want) {
+        (Some(terminal), Want::Flip | Want::Close) => {
+            close(&terminal)?;
+            json!({"closed": terminal})
+        }
+        (None, Want::Flip | Want::Open) => json!({"terminal": open(&ctx)?}),
+        (Some(terminal), Want::Open) => json!({"terminal": terminal}),
+        (None, Want::Close) => json!({}),
+    };
+    println!("{made}");
+    Ok(())
 }
 
 /// Inside the sidebar terminal: which tab it belongs to (the app labels its
@@ -169,4 +217,28 @@ pub(crate) fn identity() -> Result<(TabId, String, PathBuf)> {
         .or_else(|| host::cwd_of(&facts))
         .context("no folder for the sidebar")?;
     Ok((TabId::new(tab), me, cwd))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn state_argument_makes_the_toggle_idempotent() {
+        assert_eq!(want_from_args(&args(&["--ctx", "{}"])).unwrap(), Want::Flip);
+        assert_eq!(
+            want_from_args(&args(&["--state", "open"])).unwrap(),
+            Want::Open
+        );
+        assert_eq!(
+            want_from_args(&args(&["--state", "close"])).unwrap(),
+            Want::Close
+        );
+        assert!(want_from_args(&args(&["--state", "maybe"])).is_err());
+        assert!(want_from_args(&args(&["--state"])).is_err());
+    }
 }

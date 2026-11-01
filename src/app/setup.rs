@@ -1,15 +1,14 @@
-//! `herdr-nvim app-setup install|uninstall --keys <keys.json>`: the two edits
+//! `herdr-nvim app-setup install|uninstall --keys <keys.json> [--panel-width N]`: the two edits
 //! the Herdr app install makes outside the mod folders, and undoes.
 //!
-//! * **Layout**: the shown layout's `files` slot (the side panel's Files
-//!   browser, which the tab bar's Files button shows) gets the `herdr-nvim`
-//!   mod; the slot's old content is kept in the block's props and put back on
-//!   uninstall. Only that block changes. Herdr's own layouts can't be edited,
-//!   so a shipped one is cloned first (`<name>-mods`, shared with other mods
-//!   that patch other slots the same way); a personal one is patched in place.
-//!   Every write re-reads the file and replaces it whole only if nobody
-//!   changed it meanwhile. Uninstall drops a clone that no longer differs from
-//!   the layout it was cloned from.
+//! * **Layout** (`layout_patch`): the shown layout's `files` slot gets the
+//!   `herdr-nvim` tree, a floating `herdr-nvim-sync` controller is added and
+//!   the panel narrowed to `--panel-width` (default 300). Herdr's own layouts
+//!   can't be edited, so a shipped one is cloned first (`<name>-mods`, shared
+//!   with other mods that patch other slots the same way); a personal one is
+//!   patched in place. Every write re-reads the file and replaces it whole only
+//!   if nobody changed it meanwhile. Uninstall takes it all out and drops a
+//!   clone that no longer differs from the layout it was cloned from.
 //! * **Keys**: the mod's `keys.json` entries are added where the key is free;
 //!   a key already bound to something else is left alone and reported.
 
@@ -21,10 +20,10 @@ use std::{
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use super::cli;
-
-const MOD: &str = "herdr-nvim";
-const SLOT: &str = "files";
+use super::{
+    cli,
+    layout_patch::{self, DEFAULT_PANEL_PX},
+};
 
 fn home() -> PathBuf {
     env::var_os("HERDR_APP_HOME")
@@ -39,65 +38,6 @@ fn shipped(home: &Path, name: &str) -> bool {
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .is_some_and(|installed| installed.get(format!("layout:{name}")).is_some())
-}
-
-fn find_mut<'a>(node: &'a mut Value, id: &str) -> Option<&'a mut Value> {
-    if node.get("id").and_then(Value::as_str) == Some(id) {
-        return Some(node);
-    }
-    node.get_mut("children")?
-        .as_array_mut()?
-        .iter_mut()
-        .find_map(|child| find_mut(child, id))
-}
-
-fn walk_mut(node: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
-    visit(node);
-    if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
-        for child in children {
-            walk_mut(child, visit);
-        }
-    }
-}
-
-/// Pure: put the mod in the `files` slot. `Ok(false)`: it already is there.
-pub(crate) fn patch(layout: &mut Value) -> Result<bool> {
-    let slot = find_mut(layout, SLOT)
-        .context("this layout has no `files` slot (the side panel's Files browser) to replace")?;
-    let old = slot.get("content").cloned().unwrap_or(Value::Null);
-    if old.get("mod").and_then(Value::as_str) == Some(MOD) {
-        return Ok(false);
-    }
-    slot["content"] = json!({"mod": MOD, "props": {"replaces": old}});
-    Ok(true)
-}
-
-/// Pure: put back what the mod replaced. `false`: nothing of ours was there.
-pub(crate) fn restore(layout: &mut Value) -> bool {
-    let mut changed = false;
-    walk_mut(layout, &mut |node| {
-        if node.pointer("/content/mod").and_then(Value::as_str) != Some(MOD) {
-            return;
-        }
-        let old = node
-            .pointer("/content/props/replaces")
-            .filter(|old| !old.is_null())
-            .cloned()
-            .unwrap_or_else(|| json!({"mod": SLOT}));
-        node["content"] = old;
-        changed = true;
-    });
-    changed
-}
-
-/// Pure: whether a clone is back to being its origin (nothing but the clone
-/// record differs).
-pub(crate) fn same_as_origin(clone: &Value, origin: &Value) -> bool {
-    let mut clone = clone.clone();
-    if let Some(root) = clone.as_object_mut() {
-        root.remove("cloned_from");
-    }
-    clone == *origin
 }
 
 /// Read, change, and replace `path` whole, unless it changed meanwhile (then
@@ -179,7 +119,7 @@ fn shown_layout() -> Result<String> {
         .context("herdr-app status names no layout")
 }
 
-fn install_layout(home: &Path) -> Result<()> {
+fn install_layout(home: &Path, panel_width: u32) -> Result<()> {
     let shown = shown_layout()?;
     let target = if shipped(home, &shown) {
         let clone = env::var("HERDR_NVIM_LAYOUT_AS").unwrap_or_else(|_| format!("{shown}-mods"));
@@ -194,8 +134,10 @@ fn install_layout(home: &Path) -> Result<()> {
     } else {
         shown
     };
-    if edit_json(&layout_path(home, &target), &mut patch)? {
-        println!("layout: {target}: the Files button now shows herdr-nvim's file tree");
+    if edit_json(&layout_path(home, &target), &mut |layout| {
+        layout_patch::patch(layout, panel_width)
+    })? {
+        println!("layout: {target}: Files now opens herdr-nvim's tree and the tab's nvim together");
     } else {
         println!("layout: {target}: already uses herdr-nvim for Files");
     }
@@ -217,7 +159,7 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") || shipped(home, &name) {
             continue;
         }
-        if edit_json(&path, &mut |layout| Ok(restore(layout)))? {
+        if edit_json(&path, &mut |layout| Ok(layout_patch::restore(layout)))? {
             println!("layout: {name}: Files is the shipped Files browser again");
         }
         let layout: Value = serde_json::from_slice(&fs::read(&path)?)?;
@@ -227,7 +169,9 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
         let origin_layout = fs::read(layout_path(home, origin))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-        if !name.ends_with("-mods") || !origin_layout.is_some_and(|o| same_as_origin(&layout, &o)) {
+        if !name.ends_with("-mods")
+            || !origin_layout.is_some_and(|o| layout_patch::same_as_origin(&layout, &o))
+        {
             continue;
         }
         if shown.as_deref() == Some(name.as_str()) {
@@ -248,6 +192,18 @@ fn keys_file(args: &[String]) -> Result<Value> {
         .context("--keys <keys.json> is required")?;
     serde_json::from_str(&fs::read_to_string(path)?)
         .with_context(|| format!("{path}: invalid JSON"))
+}
+
+/// `--panel-width N` (logical px), else herdr-nvim's default.
+fn panel_width(args: &[String]) -> Result<u32> {
+    match args.iter().position(|arg| arg == "--panel-width") {
+        None => Ok(DEFAULT_PANEL_PX),
+        Some(at) => args
+            .get(at + 1)
+            .and_then(|w| w.parse::<u32>().ok())
+            .filter(|w| (120..=1200).contains(w))
+            .context("--panel-width takes a width in px between 120 and 1200"),
+    }
 }
 
 pub fn setup_cmd() -> Result<()> {
@@ -273,7 +229,7 @@ pub fn setup_cmd() -> Result<()> {
                 .1
                 .iter()
                 .for_each(|line| println!("keys: kept {line}"));
-            install_layout(&home)
+            install_layout(&home, panel_width(&args)?)
         }
         Some("uninstall") => {
             let mut removed = Vec::new();
@@ -286,69 +242,15 @@ pub fn setup_cmd() -> Result<()> {
                 .for_each(|line| println!("keys: removed {line}"));
             uninstall_layouts(&home)
         }
-        _ => bail!("usage: herdr-nvim app-setup install|uninstall --keys <keys.json>"),
+        _ => bail!(
+            "usage: herdr-nvim app-setup install|uninstall --keys <keys.json> [--panel-width N]"
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The side panel of Herdr 0.1.11's `main` layout, with another mod's
-    /// patch already applied to the Changes slot.
-    fn layout() -> Value {
-        json!({"id": "root", "type": "row", "cloned_from": {"name": "main", "version": "0.1.11"},
-            "children": [{"id": "panel", "type": "column", "hidden": true, "children": [
-                {"id": "panel-body", "type": "stack", "active": "files", "children": [
-                    {"id": "files", "type": "block", "content": {"mod": "files"}},
-                    {"id": "changes", "type": "block", "content": {"mod": "gitview", "props": {"replaces": {"mod": "changes"}}}}]}]}]})
-    }
-
-    #[test]
-    fn patch_touches_only_the_files_slot_and_is_idempotent() {
-        let mut value = layout();
-        assert!(patch(&mut value).unwrap());
-        assert_eq!(
-            value
-                .pointer("/children/0/children/0/children/0/content")
-                .unwrap(),
-            &json!({"mod": "herdr-nvim", "props": {"replaces": {"mod": "files"}}})
-        );
-        assert_eq!(
-            value
-                .pointer("/children/0/children/0/children/1/content/mod")
-                .unwrap(),
-            "gitview",
-            "the other slot is someone else's"
-        );
-        let once = value.clone();
-        assert!(!patch(&mut value).unwrap());
-        assert_eq!(value, once);
-    }
-
-    #[test]
-    fn restore_puts_back_what_was_there_and_clone_detection_sees_others() {
-        let mut value = layout();
-        patch(&mut value).unwrap();
-        assert!(restore(&mut value));
-        assert_eq!(value, layout());
-        assert!(!restore(&mut value));
-        // gitview's slot still differs from main: the clone must stay.
-        let mut origin = layout();
-        origin.as_object_mut().unwrap().remove("cloned_from");
-        assert!(!same_as_origin(&value, &{
-            let mut o = origin.clone();
-            o["children"][0]["children"][0]["children"][1]["content"] = json!({"mod": "changes"});
-            o
-        }));
-        assert!(same_as_origin(&value, &origin));
-    }
-
-    #[test]
-    fn a_layout_without_a_files_slot_is_refused() {
-        let mut value = json!({"id": "root", "type": "row", "children": []});
-        assert!(patch(&mut value).is_err());
-    }
 
     #[test]
     fn keys_merge_only_into_free_keys_and_unmerge_only_ours() {

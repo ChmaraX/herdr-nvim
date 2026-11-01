@@ -23,7 +23,7 @@ export default class HerdrNvimPick extends View {
       if (out === null) return;
       const result = JSON.parse(out);
       if (result.empty) {
-        notify({ title: "herdr-nvim", body: result.empty, level: "info" });
+        notify({ title: "herdr-nvim: nothing to pick", body: result.empty, level: "warning", timeout: 8000 });
         return;
       }
       openOverlay({

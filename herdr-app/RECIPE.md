@@ -1,55 +1,66 @@
 # herdr-nvim
 
-Neovim in every tab, with a native file tree beside it. The tab bar's
-**Files** button shows a native tree of the tab's folder (git marks
-included); picking a file opens it in the tab's own nvim: a real nvim
-terminal in a full-height pane on the right of the tab, backed by a
-persistent per-tab nvim (buffers, LSPs, pending comments survive closing the
-pane). A picker opens the files the agent mentioned or changed, and code
-comments written in nvim go to the tab's agent with file:line context.
+Neovim in every tab, with a native file tree beside it, opened and closed as
+one. The tab bar's **Files** button (or `cmd-e`) shows a narrow native tree of
+the tab's folder on the right and, directly left of it, the tab's own nvim: a
+real nvim terminal in a full-height pane, backed by a persistent per-tab nvim
+(buffers, LSPs and pending comments survive closing it). Picking a file in the
+tree opens it in that nvim. `cmd-o` lists the files the tab's agent read and
+edited, newest first. Code comments written in nvim go to the tab's agent with
+file:line context.
 
 ![herdr-nvim](preview.png)
 
 ## What you see
 
-- **Files panel** (the tab bar's own Files button, top right; the panel is
-  368px wide on the right of the window): a 42px header with "Files"
-  (semibold), the folder name in `dim`, a spinner while a file opens, and an
-  `nvim` button (theme `surface`, `border`; reads "Close nvim" on `selected`
-  while this tab's nvim pane is open). Below, 28px rows: chevron, folder/file
-  icon (the shipped `files` mod's SVGs, `muted`), name, and a git mark (`A`
-  in `ansi2`, `D`/`U` in `ansi1`, `M` in `blocked`); the selected row on
-  `selected`, hover on `hover`. A footer hint in `dim`:
-  "Click or ⏎ opens in this tab's nvim · ↑↓ ← →".
-- **nvim pane**: splits the whole tab, so it is as tall as the tab and every
-  other pane keeps its arrangement on the left (half the width; drag the
-  divider). Its header reads `nvim · <file>`.
+- **Files panel** (right edge of the window, 300px by default): a 42px header
+  with "Files" (semibold) and the folder name in `dim`, a ring spinner
+  (`svg(...).spin(900)`, `muted`) while a file opens. Below, 28px rows:
+  chevron, folder/file icon (the shipped `files` mod's SVGs, `muted`), name,
+  and a git mark (`A` in `ansi2`, `D`/`U` in `ansi1`, `M` in `blocked`); the
+  selected row on `selected`, hover on `hover`; background `background`, a
+  1px `border` frame with 10px corners. A footer hint in `dim`: "Click or ⏎
+  opens in this tab's nvim · ↑↓ ← →".
+- **nvim pane**, directly left of the panel: it splits the whole tab, so it is
+  as tall as the tab, and the tab's other panes keep their arrangement on its
+  left (the tab area is shared half and half; drag the divider). Its header
+  reads `nvim · <file>`. nvim's own file explorer is not opened.
 - **Picker** (`cmd-o`): an 820×470 dialog titled "Open file from agent
   output" on a 30px `chrome` bar with a `border` line and a `dim` hint; under
-  it herdr-nvim's terminal picker: newest agent-touched files first with
-  `+N -M` diff stats and ages; typing fuzzy-searches the whole repo.
+  it herdr-nvim's terminal picker: the files the agent's session log shows it
+  touched (newest first), then uncommitted git changes, with `+N -M` diff
+  stats and ages; typing fuzzy-searches the whole repo.
 - **Annotations** (inside nvim, default `<leader>a…` maps): `ac` comment the
   line or selection, `al` list, `as` paste all comments into the agent's
   input, `aS` send them (submitted), `ai` reference `path:line`.
 
 ## How it behaves
 
-- Click a file in the tree (or select it with ↑↓ and press ⏎; ←/→ fold and
-  unfold folders once the tree has the keyboard): the tab's nvim pane opens if
-  it isn't open, shows the file, and takes the keyboard. Folders expand in
-  place. The tree follows the focused tab's folder and refreshes when anything
-  under it changes (a folder watch, no polling).
-- `nvim` in the header or `cmd-e`: open or close this tab's nvim pane. Closing
-  it does not stop that tab's nvim: reopening reattaches to the same process,
-  same buffer and cursor.
-- Switching tabs shows each tab's own nvim pane (or none): they are panes of
-  their tab. Two tabs never share an nvim. The panel itself is per window and
-  per space, as the tab bar remembers it.
-- The picker reads the focused tab's agent (the focused terminal if it is an
-  agent, else the agent in the same tab, else the first agent of the space):
-  its screen and history plus the repo's git changes. ⏎ opens the file in the
-  tab's nvim at the line the agent named, and focuses it; Esc closes it. No
-  agent, or no paths: a toast says so. Errors from any action are toasts.
+- **Files button = `cmd-e`**: in a tab without them, both open together (the
+  panel, and the tab's nvim pane with the keyboard); pressing again closes
+  both. Closing never stops the tab's nvim: reopening reattaches to the same
+  process, same buffer and cursor.
+- **Switching tabs or spaces**: the panel follows the tab you land on. A tab
+  whose nvim pane is open shows the panel with it; a tab without one shows
+  no panel. Looking at a tab never opens an nvim in it: nvim panes are per
+  tab, the panel is per window. Switching the panel to Changes leaves the nvim
+  pane open (Changes can open files in it); Files brings the tree back.
+- **The pair stays a pair**: if the nvim pane opens some other way (the
+  picker, `open`, another mod), the panel opens with it; if it goes (`:q`,
+  closing the pane), the panel goes too.
+- Click a file in the tree (or ↑↓ and ⏎ once the tree has the keyboard; ←/→
+  fold and unfold): it opens in the tab's nvim pane, which takes the keyboard.
+  Folders expand in place. The tree follows the focused tab's folder and
+  refreshes when anything under it changes (a folder watch, no polling).
+- **Picker**: reads the focused tab's agent (the focused terminal if it is an
+  agent, else the agent in the same tab, else the first agent of the space).
+  Its session log comes first (pi: `~/.pi/agent/sessions/--<cwd>--/*.jsonl`;
+  Claude Code: `~/.claude/projects/<cwd>/*.jsonl`; the newest log written
+  since the agent's process started), then uncommitted git changes; without a
+  log, the paths on the agent's screen. ⏎ opens the file in the tab's nvim
+  (at the line the agent named, for a path taken from its screen) and focuses
+  it; Esc closes the dialog. With nothing to list, an 8-second warning toast
+  says why.
 - Annotations go to the tab's agent: the only agent of the space, or the only
   one in this tab; otherwise nvim asks which. "Send" pastes and presses Enter
   once the person has stopped typing for ~3 s (`hc send`); "paste" leaves the
@@ -67,33 +78,53 @@ comments written in nvim go to the tab's agent with file:line context.
 - Other mods open files in a tab's nvim with
   `<appHome>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`
   (relative paths resolve against the tab's folder; prints
-  `{"terminal": "tN"}`). It needs no herdr-nvim mod copy on screen.
+  `{"terminal": "tN"}`; the panel opens with it). It needs no herdr-nvim mod
+  copy on screen.
 
 ## Built from
 
-- **Layout tweak, no layout file shipped**: the shown layout's node `files`
-  (the child of the `panel-body` stack that the Files button selects) gets
-  `content: {mod: "herdr-nvim", props: {replaces: <old content>}}`. Herdr's
-  own layouts can't change content, so the install clones the shown shipped
-  layout first (`layout.clone {name, as: "<name>-mods"}`, which switches to
-  it) and edits only that node of the clone's file, re-reading the file and
-  replacing it whole only if unchanged meanwhile. A personal layout is edited
-  in place. Other slots (`changes`) are left for other mods.
-- **Mod `herdr-nvim`** (`mods/herdr-nvim`, `place: none`; overlay: popup
-  1×1, frame none). In a layout block it is the tree: `main.js` (view, keys
-  via `track_focus` + `on_key_down`), `tree.js` (a POSIX `sh` listing like the
-  shipped `files` mod's, folders first, 500 per folder; `git status
-  --porcelain -z` marks), `watchFolder(root)` to refresh. A file pick `exec`s
-  `bin/herdr-nvim open <abs path> --ctx <focused()>`; the header button
-  `bin/herdr-nvim toggle --ctx …`; the button's state is
-  `terminals().some(t => t.labels["herdr-nvim.sidebar"] === tab)`. Opened
-  with `mod.open:herdr-nvim` (a key) it toggles once and `closeOverlay`s.
+- **Layout tweak, no layout file shipped** (`src/app/layout_patch.rs`):
+  - the node `files` (the `panel-body` stack's child that the Files button
+    selects) gets `content: {mod: "herdr-nvim", props: {replaces: <old>,
+    panel_width: 300, panel_width_was: 368}}`;
+  - `floating` gets `{id: "herdr-nvim-sync", content: {mod: "herdr-nvim",
+    props: {role: "sync"}}, edge: "bottom", align: "end"}`: an empty floating
+    block (0×0, invisible) whose mod copy is always rendered. A hidden block's
+    copy is not rendered at all, so the tree itself can't see the panel close;
+  - the stack's parent (`panel`) gets `size: {px: 300}` (`install.sh
+    --panel-width N`), only if its width is still the shipped 368 or the
+    width a previous install set; a person's drag resizes it as before.
+  Herdr's own layouts can't change content, so the install clones the shown
+  shipped layout first (`layout.clone {name, as: "<name>-mods"}`, which
+  switches to it); a personal layout is patched in place. Each write re-reads
+  the file and replaces it whole only if unchanged meanwhile; other slots
+  (`changes`) are left for other mods.
+- **Mod `herdr-nvim`** (`place: none`; overlay: popup 1×1, frame none), roles
+  by where it is shown:
+  - `files` slot → `tree-view.js` + `tree.js`: the tree (POSIX `sh` listing
+    like the shipped `files` mod's, 500 per folder; `git status --porcelain
+    -z` marks; `watchFolder(root)`; `track_focus` + `on_key_down`). A file
+    pick `exec`s `bin/herdr-nvim open <abs path> --ctx <focused()>`.
+  - `role: "sync"` → `sync.js`, rendered on every live change (`layout()`,
+    `focused()`, `terminals()`). It compares the shown tab, "Files shown"
+    (`panel.js`: no hidden node above the slot and the stack showing it),
+    "another child shown" and "tab has a live terminal labelled
+    `herdr-nvim.sidebar=<tab>`" with its previous look and acts on what
+    changed: tab → `layout.show`/`layout.hide` to match the tab's nvim pane;
+    Files on the same tab → `exec bin/herdr-nvim toggle --state open|close`;
+    nvim pane appeared or went → panel to match. One action at a time;
+    `toggle` prints the terminal it opened or closed, and until
+    `terminals()` shows that, the result is assumed.
+  - overlay (`mod.open:herdr-nvim`, `cmd-e`): exactly the Files button
+    (`layout.select {stack, child}` + `layout.show`, or `layout.hide`), then
+    `closeOverlay`.
 - **Mod `herdr-nvim-pick`**: `mod.open` → `exec bin/herdr-nvim pick-file
   --ctx …`, which prints `{"terminal": "tN"}` (the picker started by
   herdr-core, unlabeled, so no tab shows it) or `{"empty": "<why>"}`; then
   `closeOverlay` itself and `openOverlay({kind: "dialog", layout: column
   [{mod: herdr-nvim-pick, props: {bar: true}, 30px}, {terminal: tN}]})`. A
-  dialog focuses its first terminal; the dialog closes when the picker exits.
+  dialog focuses its first terminal; it closes when the picker exits.
+  `pick-file --list` prints the candidates instead (what the e2e checks).
 - `lib.js` (identical in both folders: mods can't import each other) runs the
   wrapper `<appHome>/mods/herdr-nvim/bin/herdr-nvim` and posts errors with
   `notify`.
@@ -102,8 +133,9 @@ comments written in nvim go to the tab's agent with file:line context.
   then execs the herdr-nvim binary (Rust, this repo) from
   `${XDG_DATA_HOME:-~/.local/share}/herdr-nvim/app`. It does:
   - `open`: makes sure the tab's daemon and nvim pane exist, then
-    `nvim --remote` + `cursor(line, col)`, and `pane.focus {terminal}`.
-  - `toggle`: finds the tab's sidebar by the label `herdr-nvim.sidebar=<tab>`
+    `nvim --remote` + `cursor(line, col)`, and `pane.focus {terminal}` once no
+    dialog is left to take the keyboard back.
+  - `toggle [--state open|close]`: finds the tab's pane by its label
     (`terminal.list`); closes it with `pane.close`, or `pane.split {direction:
     right, pane: <the tab's root node id from the core's herdr-app document>,
     argv: [wrapper, sidebar, --cwd, dir]}`.
@@ -111,6 +143,10 @@ comments written in nvim go to the tab's agent with file:line context.
     `herdr.tab` labels, starts the tab's headless nvim daemon if needed
     (socket `…/herdr-nvim/app/<space12>_<tab12>.sock`, `titlestring` "nvim ·
     %t"), starts the watcher, and execs `nvim --remote-ui`.
+  - `pick-file`: finds the agent's session log from `terminal.get` (its
+    status report or program for the kind, its folder, its process's age from
+    `ps -o etime=`; `PI_CODING_AGENT_DIR` / `CLAUDE_CONFIG_DIR` move the
+    roots) and mines it with the TUI plugin's session parser.
   - `app-watch`: a named core terminal `herdr-nvim-watch` (no labels, so no
     tab shows it) that follows `hc events` and, on each change of the
     `herdr-app` document, stops daemons whose tab is gone; it ends when none
@@ -124,12 +160,23 @@ comments written in nvim go to the tab's agent with file:line context.
 
 ## Watch out
 
-- It runs programs (`exec` of the wrapper, `hc`, `nvim`, `git`), reads files
-  outside its folder (the repo, the agent's output) and edits `keys.json` and
-  one layout. No network.
+- It runs programs (`exec` of the wrapper, `hc`, `nvim`, `git`, `ps`), reads
+  files outside its folder (the repo, the agent's output and session logs)
+  and edits `keys.json` and one layout. No network.
 - The clone (`main-mods`) no longer follows Herdr's updates of `main`; run
-  the install again after an app update (it is idempotent) or uninstall and
-  reinstall to start from the new `main`.
+  the install again after an app update (it upgrades in place) or uninstall
+  and reinstall to start from the new `main`.
+- Narrowing the panel in the layout file drops a width the person had
+  dragged (a file edit beats a click); later drags stick.
+- `terminals()` lags a command by a moment: a controller that reacts to it
+  must not read its own just-closed pane as still open (see `sync.js`).
+- The tab bar remembers the panel per space and restores it on a space
+  switch; the controller then makes it follow the shown tab. A restore the
+  person never saw (a space whose Files panel was open before the install)
+  can close that tab's nvim pane once.
+- A session log row has no line (as in the TUI: with a log, the screen's
+  `path:line` mentions are not scraped). Two agents of the same kind in the
+  same folder can't be told apart: the log written last wins.
 - A terminal block in a layout is removed from the layout file when its
   terminal ends, so don't put the nvim terminal itself in the `files` slot.
 - Overlay terminal blocks can't be focused by command (`pane.focus` fails);
@@ -138,10 +185,7 @@ comments written in nvim go to the tab's agent with file:line context.
   drop `HC_SCOPE`/`HC_TERMINAL_ID`, or herdr-core ends them with it.
 - The split always goes right (or down with `position = "bottom"` in
   `~/.config/herdr-nvim/config.toml`); `left`/`top` fall back to right/down.
-- Spaces on other machines are not supported (the sidebar would run there).
-- The tree needs a click before it takes the keyboard (mods can't be focused
-  by command). With the panel and the nvim pane open, a narrow window gets
-  three columns; drag the panel narrower or close it.
+- Spaces on other machines are not supported (the tree says so).
 - The picker stays a terminal program on purpose: its repo-wide ranking (fff:
   typo tolerance, frecency) is the Rust core the TUI plugin shares.
 - macOS was tested; the wrapper and install script are POSIX sh/bash.
@@ -149,19 +193,26 @@ comments written in nvim go to the tab's agent with file:line context.
 ## Done when
 
 - `herdr-app check` passes for both mod folders and `herdr-app status` shows
-  no errors; a second install reports "already uses herdr-nvim".
-- Files shows the native tree of the tab's folder with git marks; opening
-  `src/greet.js` from it opens a right-hand nvim pane on greet.js with focus in
-  it; the toggle closes the pane and reopening finds the same daemon pid and
-  buffer.
-- `bin/herdr-nvim open --tab <tab> src/notes.md:3:6` with the panel hidden
-  leaves that tab's nvim at line 3, column 6.
-- `cmd-e` in a second tab opens a sidebar with a different daemon pid.
-- `cmd-o` over an agent that printed `src/notes.md:3` shows the picker;
-  typing `note` + Enter leaves the tab's nvim on `notes.md` line 3, focused.
-- `<leader>ac` + `<leader>aS` in the sidebar: the agent receives "Code review
+  no errors; a second install reports "already uses herdr-nvim"; the clone
+  differs from `main` only in the `files` content, the panel size and
+  `floating`.
+- The Files button commands in a tab open the panel (300px) and the tab's
+  nvim pane, focused, with no nvim explorer window; opening `src/greet.js`
+  from the tree shows it in that pane; Files again closes both and the daemon
+  keeps running.
+- `cmd-e` in a second tab does the same with its own daemon; switching to the
+  first tab hides the panel and opens no pane there, switching back shows it;
+  switching to another space and back does the same; `cmd-e` again closes
+  both.
+- `cmd-o` over an agent whose pi log read `package.json` and then edited
+  `src/notes.md` lists `src/notes.md`, `package.json`, then the git change
+  `src/greet.js`; `note` + ⏎ opens notes.md in the tab's nvim (focused) and
+  the panel with it.
+- `<leader>ac` + `<leader>aS` in nvim: the agent receives "Code review
   comments … src/notes.md:3 … Comment: …" submitted; `<leader>as` leaves it in
   the input unsubmitted.
+- `bin/herdr-nvim open --tab <tab> src/notes.md:3:6` with both closed opens
+  the pane on line 3, column 6, and the panel with it.
 - Closing the tab stops its nvim; closing the space stops the rest and the
   `herdr-nvim-watch` terminal ends.
 - Uninstall: keys removed, the layout's Files is the shipped browser again,
