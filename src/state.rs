@@ -186,7 +186,7 @@ pub fn remove(tab: &str) -> Result<()> {
 
 /// Remove the state file for an already-sanitized key (e.g. a socket file
 /// stem, which is already in filename form). Used by
-/// `daemon::registry::stop_tab_key`, which only ever has the sanitized key on
+/// `daemon::registry::stop_probed`, which only ever has the sanitized key on
 /// hand -- calling `remove` there would re-sanitize an already-sanitized key,
 /// which only happens to be a no-op because sanitization is idempotent.
 pub(crate) fn remove_key(key: &str) -> Result<()> {

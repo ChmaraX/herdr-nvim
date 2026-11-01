@@ -7,7 +7,7 @@ A popup that lists the files the agent touched. Typing searches the whole repo, 
 - default list: files the agent touched this session, newest first, with the cursor on the newest. Rows show a `new` badge for created files, green/red `+N -M` stats and an age (`now`, `2m`, `3h`). At most `picker.max_files` (20) rows. Sources are the agent's session, git changes (uncommitted, plus commits since the session started) and recent pane text. Files that were edited and then reverted rank lower.
 - fuzzy search: typing searches every repo file (tracked plus untracked, respecting `.gitignore`) by path and name, not by contents. Multi-term and typo-tolerant. Agent-touched files rank first and matches are highlighted.
 - keys: `↑/↓`, `Ctrl+P/N`, `PgUp/PgDn`, `Home/End`, `Ctrl+A/E`, `Ctrl+U` (clear), `Backspace`, `Esc`/`Ctrl+C` (close).
-- open at line: `⏎` closes the popup and opens the file in this tab's sidebar, at the line if one is known, and focuses the sidebar. A closed sidebar is opened; an open one is never toggled shut.
+- open at line: `⏎` closes the popup and opens the file in this tab's sidebar, at the line if one is known, and focuses the sidebar. A closed sidebar is opened; an open one is never toggled shut. If that fails (say the tab's nvim daemon is unresponsive: no answer within 10 s), a herdr notification titled "herdr-nvim" says why, and the finisher exits; it never hangs.
 - frecency: an existing fff.nvim history is reused for ranking. `picker.frecency=false` turns this off.
 
 ## How to get to it (user POV)

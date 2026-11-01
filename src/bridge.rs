@@ -19,7 +19,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context, Result};
@@ -35,6 +35,11 @@ use crate::{
 };
 
 const PLUGIN_ID: &str = "chmarax.herdr-nvim";
+
+/// How long opening a file in the daemon (`--remote`) may take. Longer than
+/// a plain request (`daemon::RPC_TIMEOUT`): it runs the file's autocmds
+/// (filetype, LSP attach), which a heavy config makes slow.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.
@@ -223,16 +228,22 @@ fn gather_candidates(
     })
 }
 
-/// Phase 2: act on the user's selection from the handoff file.
+/// Phase 2: act on the user's selection from the handoff file, then delete
+/// it, whatever came of it.
 fn finish_pick(handoff_path: &str) -> Result<()> {
+    let result = act_on_pick(handoff_path);
+    cleanup_handoff(handoff_path);
+    result
+}
+
+fn act_on_pick(handoff_path: &str) -> Result<()> {
     let raw = std::fs::read_to_string(handoff_path)
         .with_context(|| format!("reading handoff {handoff_path}"))?;
     let handoff: Handoff =
         serde_json::from_str(&raw).with_context(|| format!("parsing handoff {handoff_path}"))?;
 
-    // No selection (overlay dismissed): nothing to do but clean up.
+    // No selection (overlay dismissed): nothing to do.
     let Some(chosen) = handoff.chosen else {
-        cleanup_handoff(handoff_path);
         return Ok(());
     };
     let candidate = handoff
@@ -251,22 +262,28 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
     };
     let mut herdr = CliHerdr;
 
-    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)?;
-
-    cleanup_handoff(handoff_path);
-    Ok(())
+    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)
 }
 
 /// Ensure the sidebar is open in `ctx.tab`, open `path` (optionally at
 /// `line`) in that tab's nvim daemon, and focus the sidebar. Shared by the
 /// pick-file finisher above and (from a later task) `open-link`'s Ctrl+click
 /// handler — one behavior, two entry points.
+///
+/// A failure is also shown as a herdr notification: the user just picked or
+/// clicked a file, and the finisher's stderr goes nowhere.
 pub(crate) fn open_in_sidebar(
     h: &mut dyn Herdr,
     ctx: &Ctx,
     path: &str,
     line: Option<u32>,
 ) -> Result<()> {
+    try_open_in_sidebar(h, ctx, path, line).inspect_err(|error| {
+        notify(&format!("Could not open {path}: {error:#}"));
+    })
+}
+
+fn try_open_in_sidebar(h: &mut dyn Herdr, ctx: &Ctx, path: &str, line: Option<u32>) -> Result<()> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
@@ -317,30 +334,13 @@ fn open_in_nvim(
 ) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
     // path with spaces needs no escaping.
-    let status = daemon::nvim_cmd(sidebar)
-        .arg("--headless")
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote")
-        .arg(path)
-        .status()
-        .context("failed to run nvim --server --remote")?;
-    if !status.success() {
-        bail!("nvim --remote failed to open {path}");
-    }
+    daemon::ask(socket, &["--remote", path], sidebar, OPEN_TIMEOUT)
+        .with_context(|| format!("nvim --remote failed to open {path}"))?;
     // Jump to the line, if known.
     if let Some(line) = line {
-        let status = daemon::nvim_cmd(sidebar)
-            .arg("--headless")
-            .arg("--server")
-            .arg(socket)
-            .arg("--remote-expr")
-            .arg(format!("cursor({line}, 1)"))
-            .status()
-            .context("failed to run nvim --server --remote-expr")?;
-        if !status.success() {
-            bail!("nvim --remote-expr failed to jump to line {line} in {path}");
-        }
+        daemon::ask_expr(socket, &format!("cursor({line}, 1)"), sidebar).with_context(|| {
+            format!("nvim --remote-expr failed to jump to line {line} in {path}")
+        })?;
     }
     Ok(())
 }
@@ -390,20 +390,19 @@ fn open_picker(handoff_path: &str) -> Result<()> {
 /// Show a herdr notification (best-effort, falling back to stderr) that no file
 /// paths were found. Callers exit 0 after this — an empty result is not an error.
 fn notify_no_candidates() {
-    let shown = Command::new("herdr")
-        .args([
-            "notification",
-            "show",
-            "herdr-nvim",
-            "--body",
-            "No file paths found in agent output",
-        ])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-    if !shown {
+    if !notify("No file paths found in agent output") {
         eprintln!("herdr-nvim: no file paths found in agent output");
     }
+}
+
+/// Show a herdr notification titled "herdr-nvim"; `false` if it could not be
+/// shown.
+fn notify(body: &str) -> bool {
+    Command::new("herdr")
+        .args(["notification", "show", "herdr-nvim", "--body", body])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Serialize `handoff` to a uniquely-named temp file, returning its path.
@@ -539,6 +538,36 @@ mod tests {
             max_offset_from_bottom: 500,
         };
         assert_eq!(effective_scan_lines(50, Some(scroll)), 50);
+    }
+
+    // A finisher that fails must not leave its handoff file in the temp dir:
+    // with a hung daemon (issue #61), every pick would leave one more.
+    #[test]
+    fn a_failed_finish_still_removes_its_handoff() {
+        let dir = env::temp_dir().join(format!("hn-handoff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_of_range = Handoff {
+            candidates: Vec::new(),
+            chosen: Some(3),
+            workspace: "w1".into(),
+            tab: "w1:t1".into(),
+            focused_pane: "w1:p1".into(),
+            cwd: dir.to_string_lossy().into_owned(),
+            max_files: 10,
+        };
+        for (name, contents) in [
+            (
+                "out-of-range.json",
+                serde_json::to_string(&out_of_range).unwrap(),
+            ),
+            ("garbled.json", "{not json".to_owned()),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            assert!(finish_pick(&path.to_string_lossy()).is_err(), "{name}");
+            assert!(!path.exists(), "{name}: handoff left behind");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -7,9 +7,9 @@
 //! the close hooks use (`registry::daemon_keys`), queried over their own
 //! socket for pid / unsaved buffers / pending comments / tab id, named
 //! through `herdr api snapshot`, and measured with one OS process-table
-//! snapshot. Stopping goes through the shared `registry::stop_keys`.
+//! snapshot. Stopping goes through the shared `registry::stop_probed`.
 
-use std::{collections::HashMap, env, process::Command};
+use std::{env, thread};
 
 use anyhow::{bail, Context, Result};
 use serde::{Serialize, Serializer};
@@ -21,8 +21,10 @@ use crate::{
 };
 
 use super::{
-    registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
-    remote_expr,
+    liveness,
+    process::ProcessTable,
+    registry::{daemon_keys, orphans, probe, socket_path_for_key, stop_probed, Probe},
+    Liveness, Reply,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -36,10 +38,17 @@ pub(crate) enum DaemonState {
     Alive,
     /// Answers on its socket but its tab is gone from herdr.
     Orphaned,
-    /// Registered, but nothing answers on its socket (stale or hung).
+    /// Its process holds the socket but does not answer in time: busy or
+    /// hung. Stopping it means killing it.
     Unresponsive,
+    /// Registered, but nothing listens on its socket: it died without
+    /// cleaning up. Stopping it only removes the entry.
+    Stale,
     /// Answers, but herdr could not be asked whether its tab still exists.
     Unknown,
+    /// Its probe failed: it answered with an error, or its process could
+    /// not be inspected. Nothing is known about it, so nothing stops it.
+    Error,
 }
 
 impl DaemonState {
@@ -49,7 +58,9 @@ impl DaemonState {
             Self::Alive => "alive",
             Self::Orphaned => "orphaned",
             Self::Unresponsive => "unresponsive",
+            Self::Stale => "stale",
             Self::Unknown => "unknown",
+            Self::Error => "error",
         }
     }
 }
@@ -58,16 +69,6 @@ impl Serialize for DaemonState {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
-}
-
-/// What a registered daemon said about itself over its socket.
-#[derive(Clone, Debug)]
-pub(crate) struct Probe {
-    pub pid: Option<u32>,
-    pub unsaved: Option<u32>,
-    pub comments: Option<u32>,
-    /// The daemon's own `$HERDR_TAB_ID`, if it matches its registry key.
-    pub tab_id: Option<TabId>,
 }
 
 /// One registered daemon.
@@ -79,8 +80,12 @@ pub(crate) struct DaemonInfo {
     /// not be asked (see `herdr_reachable`).
     pub tab: Option<TabInfo>,
     pub herdr_reachable: bool,
-    /// What the daemon answered; `None` if it did not answer.
-    pub probe: Option<Probe>,
+    /// What the daemon answered to the probe, if anything, or why the
+    /// probe failed.
+    pub probe: Result<Liveness<Probe>, String>,
+    /// The daemon's process: as it reported itself, or, if it does not
+    /// answer, the one process listening on its socket.
+    pub pid: Option<u32>,
     /// Resident memory of the daemon plus all of its descendants (LSPs, jobs).
     pub rss_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
@@ -89,10 +94,36 @@ pub(crate) struct DaemonInfo {
 impl DaemonInfo {
     pub(crate) fn state(&self) -> DaemonState {
         match (&self.probe, &self.tab, self.herdr_reachable) {
-            (None, _, _) => DaemonState::Unresponsive,
-            (Some(_), Some(_), _) => DaemonState::Alive,
-            (Some(_), None, true) => DaemonState::Orphaned,
-            (Some(_), None, false) => DaemonState::Unknown,
+            (Err(_), _, _) => DaemonState::Error,
+            (Ok(Liveness::Unresponsive), _, _) => DaemonState::Unresponsive,
+            (Ok(Liveness::Gone), _, _) => DaemonState::Stale,
+            (Ok(Liveness::Answered(_)), Some(_), _) => DaemonState::Alive,
+            (Ok(Liveness::Answered(_)), None, true) => DaemonState::Orphaned,
+            (Ok(Liveness::Answered(_)), None, false) => DaemonState::Unknown,
+        }
+    }
+
+    /// Why a plain `daemons stop` leaves this daemon running, if it does:
+    /// it holds unsaved buffers or pending comments, or it is hung, so it
+    /// can only be killed, losing whatever it holds. Never when its tab is
+    /// gone: whatever it held went with the tab.
+    fn refusal(&self) -> Option<String> {
+        if self.tab_gone() {
+            return None;
+        }
+        let name = self.name();
+        match self.state() {
+            DaemonState::Unresponsive => Some(format!(
+                "not stopping {name}: it is busy or hung, so it can only be killed, \
+                 losing any unsaved work in it (use --force to kill it)"
+            )),
+            _ if self.has_pending_work() => Some(format!(
+                "not stopping {name}: it has {} unsaved buffer(s) and {} pending comment(s) \
+                 (use --force to discard them)",
+                self.unsaved().unwrap_or(0),
+                self.comments().unwrap_or(0),
+            )),
+            _ => None,
         }
     }
 
@@ -101,12 +132,22 @@ impl DaemonInfo {
         self.herdr_reachable && self.tab.is_none()
     }
 
-    /// The tab id, from the daemon itself or from herdr. `None` for an
-    /// unresponsive daemon whose tab herdr does not know: a key cannot be
-    /// decoded back into an id.
+    /// What the daemon answered, if it did.
+    fn answered(&self) -> Option<&Probe> {
+        self.probe.as_ref().ok().and_then(Liveness::answered)
+    }
+
+    /// Why its probe failed, if it did.
+    fn error(&self) -> Option<&str> {
+        self.probe.as_ref().err().map(String::as_str)
+    }
+
+    /// The tab id, from the daemon itself or from herdr. `None` for a
+    /// daemon that did not answer (unresponsive, stale or failing) and
+    /// whose tab herdr does not know: a key cannot be decoded back into an
+    /// id.
     fn tab_id(&self) -> Option<&TabId> {
-        self.probe
-            .as_ref()
+        self.answered()
             .and_then(|probe| probe.tab_id.as_ref())
             .or(self.tab.as_ref().map(|tab| &tab.tab_id))
     }
@@ -117,11 +158,11 @@ impl DaemonInfo {
     }
 
     fn unsaved(&self) -> Option<u32> {
-        self.probe.as_ref().and_then(|probe| probe.unsaved)
+        self.answered().map(|probe| probe.unsaved)
     }
 
     fn comments(&self) -> Option<u32> {
-        self.probe.as_ref().and_then(|probe| probe.comments)
+        self.answered().map(|probe| probe.comments)
     }
 
     /// `workspace / tab` as herdr shows it, or `None` for a tab herdr does
@@ -167,6 +208,7 @@ impl Serialize for DaemonInfo {
             state: DaemonState,
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
+            error: Option<&'a str>,
         }
         let tab = self.tab.as_ref();
         Row {
@@ -175,44 +217,16 @@ impl Serialize for DaemonInfo {
             workspace_label: tab.and_then(|tab| tab.workspace_label.as_deref()),
             tab_label: tab.and_then(|tab| tab.tab_label.as_deref()),
             tab_number: tab.and_then(|tab| tab.tab_number),
-            pid: self.probe.as_ref().and_then(|probe| probe.pid),
+            pid: self.pid,
             rss_bytes: self.rss_bytes,
             uptime_secs: self.uptime_secs,
             state: self.state(),
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
+            error: self.error(),
         }
         .serialize(serializer)
     }
-}
-
-/// Vimscript returning `"<pid> <unsaved> <comments> <tab id>"` in one round
-/// trip. Comments are only counted if the plugin's comment store is already
-/// loaded, so the probe never loads modules into the daemon.
-fn probe_expr() -> String {
-    let comments = "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
-                    if not c then return 0 end local ok, l = pcall(c.list) \
-                    return ok and #l or 0 end)()\")";
-    format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
-}
-
-fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
-    let out = remote_expr(&socket_path_for_key(key), &probe_expr(), sidebar)?;
-    let mut parts = out.splitn(4, ' ');
-    let mut number = || parts.next().and_then(|part| part.parse().ok());
-    let pid = number();
-    let unsaved = number();
-    let comments = number();
-    let tab_id = parts
-        .next()
-        .map(TabId::new)
-        .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
-    Some(Probe {
-        pid,
-        unsaved,
-        comments,
-        tab_id,
-    })
 }
 
 /// Every registered daemon, sorted by key. herdr being unreachable is not
@@ -226,18 +240,45 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
 }
 
 /// Probe and measure the daemons for `keys`, naming them from herdr's live
-/// `tabs` (`None` when herdr could not be asked).
+/// `tabs` (`None` when herdr could not be asked). The probes run in
+/// parallel, so hung daemons cost one `RPC_TIMEOUT` in all, not one each.
+/// A daemon that refuses connections while its process still listens is
+/// hung, not stale (see `liveness`). A probe that fails spoils only its own
+/// daemon's row (`DaemonState::Error`).
 fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
+    let probes: Vec<Result<Reply<Probe>>> = thread::scope(|scope| {
+        let probes: Vec<_> = keys
+            .iter()
+            .map(|key| scope.spawn(|| probe(key, sidebar)))
+            .collect();
+        probes
+            .into_iter()
+            .map(|probe| {
+                probe
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
     keys.into_iter()
-        .map(|key| {
-            let probe = probe(&key, sidebar);
+        .zip(probes)
+        .map(|(key, probe)| {
+            let socket = socket_path_for_key(&key);
+            let probe = probe
+                .and_then(|reply| liveness(&socket, reply, procs.as_ref().ok()))
+                .map_err(|error| format!("{error:#}"));
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
                 .cloned();
-            let pid = probe.as_ref().and_then(|probe| probe.pid);
+            let answered = probe.as_ref().ok().and_then(Liveness::answered);
+            let pid = match (answered, &procs) {
+                (Some(answer), _) => Some(answer.pid),
+                (None, Ok(procs)) => procs.daemon(&socket).ok().flatten(),
+                (None, Err(_)) => None,
+            };
             let (rss_bytes, uptime_secs) = match (pid, &procs) {
-                (Some(pid), Some(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
+                (Some(pid), Ok(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
             DaemonInfo {
@@ -245,6 +286,7 @@ fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> V
                 tab,
                 herdr_reachable: tabs.is_some(),
                 probe,
+                pid,
                 rss_bytes,
                 uptime_secs,
             }
@@ -271,10 +313,15 @@ pub(crate) struct StopOutcome {
     pub failed: Vec<String>,
 }
 
-/// Stop the targeted daemons. A daemon with unsaved buffers or pending
-/// comments is refused unless `force` -- except an orphan, whose tab (and so
-/// whatever it held) is already gone. `--orphans` needs herdr: without it,
-/// every daemon would look orphaned.
+/// Stop the targeted daemons, one after another. One that
+/// `DaemonInfo::refusal` protects is left running unless `force`; one whose
+/// probe failed always is, and is reported as failed. `--orphans` needs
+/// herdr: without it, every daemon would look orphaned.
+///
+/// A stop can take seconds, so the listing's probe of a later daemon may be
+/// stale by its turn: one that answered is probed again right before it is
+/// checked and stopped. One that did not answer keeps its probe, so a hung
+/// daemon is not waited on twice.
 pub(crate) fn stop(
     h: &mut dyn Herdr,
     sidebar: &Sidebar,
@@ -299,23 +346,27 @@ pub(crate) fn stop(
         }
     };
     let mut outcome = StopOutcome::default();
-    let mut doomed = Vec::new();
-    for daemon in describe(selected, tabs.as_deref(), sidebar) {
-        if !force && !daemon.tab_gone() && daemon.has_pending_work() {
-            outcome.refused.push(format!(
-                "not stopping {}: it has {} unsaved buffer(s) and {} pending comment(s) \
-                 (use --force to discard them)",
-                daemon.name(),
-                daemon.unsaved().unwrap_or(0),
-                daemon.comments().unwrap_or(0),
-            ));
-        } else {
-            doomed.push(daemon);
+    for mut daemon in describe(selected, tabs.as_deref(), sidebar) {
+        if let Ok(Liveness::Answered(_)) = daemon.probe {
+            let socket = socket_path_for_key(&daemon.key);
+            daemon.probe = probe(&daemon.key, sidebar)
+                .and_then(|reply| liveness(&socket, reply, None))
+                .map_err(|error| format!("{error:#}"));
         }
-    }
-    let keys: Vec<String> = doomed.iter().map(|daemon| daemon.key.clone()).collect();
-    for (daemon, (_, result)) in doomed.iter().zip(stop_keys(&keys, sidebar)) {
-        match (result, daemon.rss_bytes) {
+        if let (false, Some(refusal)) = (force, daemon.refusal()) {
+            outcome.refused.push(refusal);
+            continue;
+        }
+        let probe = match &daemon.probe {
+            Ok(probe) => probe.clone(),
+            Err(error) => {
+                outcome
+                    .failed
+                    .push(format!("could not stop {}: {error}", daemon.name()));
+                continue;
+            }
+        };
+        match (stop_probed(&daemon.key, probe, sidebar), daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
                 daemon.name(),
@@ -453,6 +504,12 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
         out.push_str(&row[4]);
         out.push('\n');
     }
+    for daemon in daemons {
+        if let Some(error) = daemon.error() {
+            let first_line = error.lines().next().unwrap_or_default();
+            out.push_str(&format!("{}: {first_line}\n", daemon.tab_ref()));
+        }
+    }
     out.push('\n');
     out.push_str(&summary(daemons));
     out.push('\n');
@@ -502,7 +559,9 @@ pub(crate) fn doctor_summary(h: &mut dyn Herdr, sidebar: &Sidebar) -> String {
     for state in [
         DaemonState::Orphaned,
         DaemonState::Unresponsive,
+        DaemonState::Stale,
         DaemonState::Unknown,
+        DaemonState::Error,
     ] {
         match count(state) {
             0 => {}
@@ -537,151 +596,6 @@ fn format_uptime(secs: u64) -> String {
     } else {
         format!("{secs}s")
     }
-}
-
-struct Proc {
-    ppid: u32,
-    rss_bytes: u64,
-    uptime_secs: u64,
-}
-
-/// One snapshot of the OS process table: enough to sum a daemon's memory
-/// together with its descendants' (LSP servers, jobs) and read its age.
-pub(crate) struct ProcessTable {
-    procs: HashMap<u32, Proc>,
-    children: HashMap<u32, Vec<u32>>,
-}
-
-impl ProcessTable {
-    /// `None` when the process table cannot be read; callers show "—".
-    pub(crate) fn load() -> Option<Self> {
-        let procs = read_processes()?;
-        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (&pid, proc_) in &procs {
-            if proc_.ppid != pid {
-                children.entry(proc_.ppid).or_default().push(pid);
-            }
-        }
-        Some(Self { procs, children })
-    }
-
-    /// `pid` and all of its descendants that are still running.
-    pub(crate) fn tree(&self, pid: u32) -> Vec<u32> {
-        let mut seen = vec![pid];
-        let mut index = 0;
-        while index < seen.len() {
-            for &child in self.children.get(&seen[index]).into_iter().flatten() {
-                // Guards against ppid cycles from pid reuse (Windows).
-                if !seen.contains(&child) {
-                    seen.push(child);
-                }
-            }
-            index += 1;
-        }
-        seen
-    }
-
-    pub(crate) fn tree_rss(&self, pid: u32) -> Option<u64> {
-        self.procs.get(&pid)?;
-        Some(
-            self.tree(pid)
-                .iter()
-                .filter_map(|pid| self.procs.get(pid))
-                .map(|proc_| proc_.rss_bytes)
-                .sum(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rss(&self, pid: u32) -> Option<u64> {
-        self.procs.get(&pid).map(|proc_| proc_.rss_bytes)
-    }
-
-    fn uptime(&self, pid: u32) -> Option<u64> {
-        self.procs.get(&pid).map(|proc_| proc_.uptime_secs)
-    }
-}
-
-/// Unix: one `ps` call; `rss` is in KiB, `etime` is `[[dd-]hh:]mm:ss`.
-#[cfg(not(windows))]
-fn read_processes() -> Option<HashMap<u32, Proc>> {
-    let output = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,rss=,etime="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Some(
-        text.lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?.parse().ok()?;
-                let ppid = fields.next()?.parse().ok()?;
-                let rss_kib: u64 = fields.next()?.parse().ok()?;
-                let uptime_secs = parse_etime(fields.next()?)?;
-                Some((
-                    pid,
-                    Proc {
-                        ppid,
-                        rss_bytes: rss_kib * 1024,
-                        uptime_secs,
-                    },
-                ))
-            })
-            .collect(),
-    )
-}
-
-/// Windows: one PowerShell `Get-CimInstance Win32_Process` call (slow-ish,
-/// ~1s, but only run by this manual command); working set stands in for RSS.
-#[cfg(windows)]
-fn read_processes() -> Option<HashMap<u32, Proc>> {
-    let script = "$now = Get-Date; Get-CimInstance Win32_Process | ForEach-Object { \
-                  $up = if ($_.CreationDate) { [int64]($now - $_.CreationDate).TotalSeconds } else { 0 }; \
-                  \"$($_.ProcessId) $($_.ParentProcessId) $($_.WorkingSetSize) $up\" }";
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Some(
-        text.lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?.parse().ok()?;
-                let ppid = fields.next()?.parse().ok()?;
-                let rss_bytes = fields.next()?.parse().ok()?;
-                let uptime_secs = fields.next()?.parse().ok()?;
-                Some((
-                    pid,
-                    Proc {
-                        ppid,
-                        rss_bytes,
-                        uptime_secs,
-                    },
-                ))
-            })
-            .collect(),
-    )
-}
-
-/// `ps` elapsed time `[[dd-]hh:]mm:ss` in seconds.
-#[cfg_attr(windows, allow(dead_code))]
-fn parse_etime(etime: &str) -> Option<u64> {
-    let (days, clock) = match etime.split_once('-') {
-        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
-        None => (0, etime),
-    };
-    let mut secs = 0;
-    for part in clock.split(':') {
-        secs = secs * 60 + part.parse::<u64>().ok()?;
-    }
-    Some(days * 86_400 + secs)
 }
 
 #[cfg(test)]
@@ -772,7 +686,7 @@ mod tests {
         let heavy_row = row(&daemons, "wHnDa:t1");
         assert_eq!(heavy_row.state(), DaemonState::Alive);
         assert_eq!(heavy_row.display_name().as_deref(), Some("novu / api"));
-        assert_eq!(heavy_row.probe.as_ref().unwrap().pid, Some(heavy.pid));
+        assert_eq!(heavy_row.pid, Some(heavy.pid));
         assert_eq!(heavy_row.comments(), Some(1));
         assert_eq!(heavy_row.unsaved(), Some(0));
         assert!(heavy_row.uptime_secs.is_some());
@@ -857,6 +771,47 @@ mod tests {
         assert!(stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).is_err());
     }
 
+    // Issue #61 (principles review of PR #63): `daemons stop --all` probes
+    // every daemon up front, then stops them one after another, and one stop
+    // can take seconds (here: a slow but healthy `VimLeavePre`). Unsaved work
+    // that a later daemon gains meanwhile must still refuse its plain stop.
+    #[test]
+    fn unsaved_work_gained_during_a_stop_all_still_refuses_the_stop() {
+        use std::time::Duration;
+
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let config = Config::default();
+        let slow = TestDaemon::spawn("wHnDa:t1", &config);
+        let later = TestDaemon::spawn("wHnDb:t1", &config);
+        slow.eval(
+            r#"luaeval("(function() vim.api.nvim_create_autocmd('VimLeavePre', { callback = function() vim.uv.sleep(3000) end }) return 1 end)()")"#,
+        );
+
+        let sidebar = config.sidebar.clone();
+        let stopping =
+            thread::spawn(move || stop(&mut herdr_with_tabs(1), &sidebar, &Target::All, false));
+        // The listing probe is long done; the slow daemon is still quitting.
+        thread::sleep(Duration::from_secs(1));
+        later.dirty_a_buffer();
+        let outcome = stopping.join().unwrap().unwrap();
+
+        assert_eq!(
+            (outcome.stopped.len(), outcome.refused.len()),
+            (1, 1),
+            "{outcome:?}"
+        );
+        assert!(
+            outcome.refused[0].contains("1 unsaved buffer"),
+            "{outcome:?}"
+        );
+        slow.assert_gone();
+        later.assert_alive();
+    }
+
     /// Kills a test's child process if an assertion fails before its daemon
     /// takes it down.
     struct KillOnDrop(u32);
@@ -904,9 +859,5 @@ mod tests {
         assert_eq!(format_uptime(12 * 60), "12m");
         assert_eq!(format_uptime(40), "40s");
         assert_eq!(format_uptime(2 * 86_400 + 4 * 3600), "2d 4h");
-        assert_eq!(parse_etime("05:07"), Some(307));
-        assert_eq!(parse_etime("03:31:00"), Some(12_660));
-        assert_eq!(parse_etime("2-00:00:01"), Some(172_801));
-        assert_eq!(parse_etime("garbage"), None);
     }
 }

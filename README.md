@@ -96,6 +96,21 @@ orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)
 `daemons stop <tab>` refuses a daemon with unsaved buffers or pending comments
 unless given `--force`; `--orphans` stops the daemons whose tab is gone.
 
+A daemon whose nvim stops answering (a plugin stuck in a loop, say) shows as
+`unresponsive`. herdr-nvim never waits on one forever: toggling the sidebar or
+opening a file in that tab fails instead (a picked or clicked file says so in
+a notification): after 10 s when the daemon was already hung. One that hangs
+halfway through an open can take up to 25 s, the sum of the time limits of
+the steps involved (10 s + 10 s + 5 s), not a measured time. No second daemon
+is started over it. It can only be killed, so a plain `daemons stop <tab>`
+refuses it; `daemons stop <tab> --force` kills it (unsaved work in it is
+lost), and so does closing its tab. A daemon that has not exited 10 s after
+being asked to quit is killed the same way. Killing one is not supported on
+Windows yet: end its `nvim.exe` by hand. A daemon that died without cleaning
+up shows as `stale`; any stop removes it. One that answers with an error
+shows as `error`, with the reason; no stop touches it, while the other
+daemons are listed and stopped as usual.
+
 The next toggle in that tab starts a fresh nvim.
 
 ## The file picker

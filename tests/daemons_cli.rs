@@ -7,19 +7,35 @@
 //!   `daemons stop --orphans` and `daemon-gc` fail and stop nothing, since
 //!   every daemon would look orphaned. Covered:
 //!   `lists_reaps_and_refuses_against_real_daemons` (Unix only).
-//! - Unresponsive daemon / stale registry entry: listed as `unresponsive`,
-//!   reaped as an orphan once herdr says its tab is gone. Covered: same test.
+//! - Stale registry entry (a daemon that died without cleanup): listed as
+//!   `stale`, reaped as an orphan once herdr says its tab is gone. Covered:
+//!   same test.
+//! - Hung daemon (its socket takes connections, nothing answers; issue
+//!   #61): `daemons` lists it as `unresponsive` with its pid within the
+//!   request timeout, a plain `daemons stop --all` refuses it (exit 1) and
+//!   keeps it but still stops the healthy daemon after it, `--force` kills
+//!   it by its pid. Covered:
+//!   `a_hung_daemon_is_listed_refused_then_killed_with_force` (Unix only).
+//! - Process table unreadable (`ps` fails): a refused socket cannot be
+//!   told from a hung daemon whose listen queue is full, so nothing is
+//!   taken for gone: the stale entry stays, a stop of it fails, and so does
+//!   the close hook. Covered:
+//!   `nothing_is_forgotten_while_the_process_table_cannot_be_read` (Unix).
+//! - One daemon's probe fails (it answers with an error): that row says
+//!   `error` with the reason, the others are listed and stopped as usual,
+//!   and nothing, not even `--force`, stops the failing one. Covered:
+//!   `a_daemon_whose_probe_fails_spoils_only_its_own_row`.
 //! - Prefix trap on `stop <tab>`: only that key, never a longer id sharing
 //!   its prefix. Covered: same test (`wHnDa:t1` vs `wHnDa:t10`).
 //! - Quit timeout and partial failure: covered through the shared stop path
-//!   in tests/on_event_cli.rs and `registry::tests`.
+//!   in tests/on_event_cli.rs.
 //! - Unknown tab, bad arguments, empty registry. Covered:
 //!   `empty_listing_in_text_and_json`,
 //!   `stopping_an_unknown_tab_or_bad_arguments_fail`.
 //! - Not covered on Windows: the fake herdr is a shell script, and
 //!   `Command::new("herdr")` only resolves `.exe` there.
 //!
-//! The E2E test writes its steps to `target/test-artifacts/<test>/log.md`.
+//! The E2E tests write their steps to `target/test-artifacts/<test>/log.md`.
 
 mod support;
 
@@ -27,6 +43,11 @@ use support::Sandbox;
 
 fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(unix)]
+fn stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 #[test]
@@ -106,7 +127,7 @@ fn lists_reaps_and_refuses_against_real_daemons() {
             ("wHnDa_t1", "unknown"),
             ("wHnDa_t10", "unknown"),
             ("wHnDc_t1", "unknown"),
-            ("wHnDs_t1", "unresponsive"),
+            ("wHnDs_t1", "stale"),
         ])
     );
     for args in [&["daemons", "stop", "--orphans"][..], &["daemon-gc"]] {
@@ -131,7 +152,7 @@ fn lists_reaps_and_refuses_against_real_daemons() {
             ("wHnDa_t1", "alive"),
             ("wHnDa_t10", "alive"),
             ("wHnDc_t1", "orphaned"),
-            ("wHnDs_t1", "unresponsive"),
+            ("wHnDs_t1", "stale"),
         ])
     );
     let table = sandbox.run(&["daemons"], None);
@@ -161,5 +182,169 @@ fn lists_reaps_and_refuses_against_real_daemons() {
     assert_eq!(states(&after), pairs(&[("wHnDa_t10", "alive")]));
     let table = stdout(&sandbox.run(&["daemons"], None));
     assert!(!table.contains("--orphans"), "{table}");
+    log.note("result: pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_daemon_whose_probe_fails_spoils_only_its_own_row() {
+    use support::{nvim_available, Artifact, Daemon};
+
+    if !nvim_available() {
+        eprintln!("skipping: nvim not found on PATH");
+        return;
+    }
+    let sandbox = Sandbox::new("daemons-probe-error");
+    let mut log = Artifact::new("a_daemon_whose_probe_fails_spoils_only_its_own_row");
+    let mut fine = Daemon::spawn(&sandbox, "wHnDe:t1");
+    let mut broken = Daemon::spawn(&sandbox, "wHnDe:t2");
+    // A comment store whose list is not a list: the probe's comment count
+    // then raises a Lua error, so the daemon answers the probe with one.
+    broken
+        .eval(r#"luaeval("(function() package.loaded['herdr-nvim.comments'] = { list = function() return 1 end } return 1 end)()")"#)
+        .expect("break the comment store");
+    sandbox.herdr_tabs(&[("wHnDe:t1", "novu", "api"), ("wHnDe:t2", "novu", "web")]);
+
+    let listed = sandbox.run(&["daemons", "--json"], None);
+    log.step("daemons --json", "", &listed);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let value: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(value[0]["state"], "alive", "{value}");
+    assert_eq!(value[1]["state"], "error", "{value}");
+    assert!(
+        value[1]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("wHnDe_t2")),
+        "{value}"
+    );
+
+    let table = sandbox.run(&["daemons"], None);
+    log.step("daemons", "", &table);
+    assert!(table.status.success(), "{}", stderr(&table));
+    assert!(
+        stdout(&table)
+            .lines()
+            .any(|line| line.starts_with("wHnDe:t2 ")
+                && line.split_whitespace().last() == Some("error")),
+        "{}",
+        stdout(&table)
+    );
+
+    for args in [
+        &["daemons", "stop", "--all", "--force"][..],
+        &["daemons", "stop", "--all"],
+    ] {
+        let stopped = sandbox.run(args, None);
+        log.step(&args.join(" "), "", &stopped);
+        assert_eq!(stopped.status.code(), Some(1));
+        assert!(
+            stderr(&stopped).contains("could not stop novu / web"),
+            "{}",
+            stderr(&stopped)
+        );
+        assert!(
+            broken.running(),
+            "a daemon whose probe failed is never stopped"
+        );
+        assert!(broken.entry.exists(), "nor forgotten");
+    }
+    fine.assert_gone(&sandbox);
+    log.note("result: pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn nothing_is_forgotten_while_the_process_table_cannot_be_read() {
+    use support::Artifact;
+
+    let sandbox = Sandbox::new("daemons-no-ps");
+    let mut log = Artifact::new("nothing_is_forgotten_while_the_process_table_cannot_be_read");
+    let stale = sandbox.stale_entry("wHnDp:t1");
+    sandbox.herdr_tabs(&[("wHnDp:t1", "novu", "api")]);
+    sandbox.break_ps();
+
+    let stopped = sandbox.run(&["daemons", "stop", "wHnDp:t1"], None);
+    log.step("daemons stop wHnDp:t1 (ps broken)", "", &stopped);
+    assert_eq!(stopped.status.code(), Some(1));
+    assert!(stale.exists(), "a stop must not forget it");
+
+    let event = r#"{"event":"tab_closed","data":{"type":"tab_closed","tab_id":"wHnDp:t1","workspace_id":"wHnDp"}}"#;
+    let hook = sandbox.run(&["on-event"], Some(event));
+    log.step("on-event tab_closed wHnDp:t1 (ps broken)", event, &hook);
+    assert!(!hook.status.success());
+    assert!(stale.exists(), "the close hook must not forget it");
+
+    sandbox.fix_ps();
+    let stopped = sandbox.run(&["daemons", "stop", "wHnDp:t1"], None);
+    log.step("daemons stop wHnDp:t1 (ps fixed)", "", &stopped);
+    assert!(stopped.status.success(), "{}", stdout(&stopped));
+    assert!(!stale.exists(), "once ps answers, the stale entry goes");
+    log.note("result: pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
+    use std::time::{Duration, Instant};
+    use support::{nvim_available, Artifact, Daemon};
+
+    if !nvim_available() {
+        eprintln!("skipping: nvim not found on PATH");
+        return;
+    }
+    let sandbox = Sandbox::new("daemons-hung");
+    let mut log = Artifact::new("a_hung_daemon_is_listed_refused_then_killed_with_force");
+    let mut hung = Daemon::spawn(&sandbox, "wHnDh:t1");
+    let mut healthy = Daemon::spawn(&sandbox, "wHnDh:t2");
+    hung.hang();
+    sandbox.herdr_tabs(&[("wHnDh:t1", "novu", "api"), ("wHnDh:t2", "novu", "web")]);
+
+    // Listed within the request timeout (5s, plus slack for the binary's
+    // startup on a slow runner), as unresponsive, by its pid.
+    let started = Instant::now();
+    let listed = sandbox.run(&["daemons", "--json"], None);
+    log.step("daemons --json", "", &listed);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(listed.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(value[0]["state"], "unresponsive", "{value}");
+    assert_eq!(value[0]["pid"], hung.pid(), "{value}");
+    assert!(value[0]["rss_bytes"].is_u64(), "{value}");
+
+    // The refusal of the hung daemon must not end the stop: the healthy
+    // daemon after it is still stopped.
+    let plain = sandbox.run(&["daemons", "stop", "--all"], None);
+    log.step("daemons stop --all", "", &plain);
+    assert_eq!(plain.status.code(), Some(1));
+    assert!(
+        stderr(&plain).contains("busy or hung"),
+        "{}",
+        stderr(&plain)
+    );
+    assert!(stderr(&plain).contains("--force"), "{}", stderr(&plain));
+    assert!(hung.running(), "a plain stop must not kill it");
+    assert!(hung.entry.exists(), "nor forget it");
+    healthy.assert_gone(&sandbox);
+    assert!(
+        stdout(&plain).contains("stopped novu / web"),
+        "{}",
+        stdout(&plain)
+    );
+
+    let forced = sandbox.run(&["daemons", "stop", "wHnDh:t1", "--force"], None);
+    log.step("daemons stop wHnDh:t1 --force", "", &forced);
+    assert!(forced.status.success(), "{}", stderr(&forced));
+    assert!(
+        stdout(&forced).contains("stopped novu / api"),
+        "{}",
+        stdout(&forced)
+    );
+    let killed = format!("killed it (pid {})", hung.pid());
+    assert!(stderr(&forced).contains(&killed), "{}", stderr(&forced));
+    hung.assert_gone(&sandbox);
     log.note("result: pass");
 }
