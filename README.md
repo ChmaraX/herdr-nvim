@@ -71,8 +71,8 @@ description = "open file from agent output"
 herdr-nvim also runs in the new Herdr app (herdr-app 0.1.11+, herdr-core
 0.1.16+) as a mod, from this same repo and the same Rust/Lua core. The
 app's **Files** button shows a native file tree; picking a file opens it in
-the tab's own nvim, a full-height pane beside the tab's other panes. `cmd-j e`
-toggles that pane, `cmd-j f` opens a file from agent output, and the
+the tab's own nvim, a full-height pane beside the tab's other panes. `cmd-e`
+toggles that pane, `cmd-o` opens a file from agent output, and the
 annotations work as below. With the app open:
 
 ```sh

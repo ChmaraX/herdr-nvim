@@ -103,4 +103,4 @@ chmod +x "$wrapper"
 
 for m in "${mods[@]}"; do "$app_bin" check "$home/mods/$m"; done
 "$wrapper" app-setup install --keys "$here/keys.json"
-echo "herdr-nvim: installed in $home (Files: native tree that opens files in nvim; cmd-j e: nvim sidebar; cmd-j f: open file from agent output)"
+echo "herdr-nvim: installed in $home (Files: native tree that opens files in nvim; cmd-e: nvim sidebar; cmd-o: open file from agent output)"

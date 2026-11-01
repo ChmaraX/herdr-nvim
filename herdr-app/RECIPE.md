@@ -24,7 +24,7 @@ comments written in nvim go to the tab's agent with file:line context.
 - **nvim pane**: splits the whole tab, so it is as tall as the tab and every
   other pane keeps its arrangement on the left (half the width; drag the
   divider). Its header reads `nvim · <file>`.
-- **Picker** (`cmd-j f`): an 820×470 dialog titled "Open file from agent
+- **Picker** (`cmd-o`): an 820×470 dialog titled "Open file from agent
   output" on a 30px `chrome` bar with a `border` line and a `dim` hint; under
   it herdr-nvim's terminal picker: newest agent-touched files first with
   `+N -M` diff stats and ages; typing fuzzy-searches the whole repo.
@@ -39,7 +39,7 @@ comments written in nvim go to the tab's agent with file:line context.
   it isn't open, shows the file, and takes the keyboard. Folders expand in
   place. The tree follows the focused tab's folder and refreshes when anything
   under it changes (a folder watch, no polling).
-- `nvim` in the header or `cmd-j e`: open or close this tab's nvim pane. Closing
+- `nvim` in the header or `cmd-e`: open or close this tab's nvim pane. Closing
   it does not stop that tab's nvim: reopening reattaches to the same process,
   same buffer and cursor.
 - Switching tabs shows each tab's own nvim pane (or none): they are panes of
@@ -120,7 +120,7 @@ comments written in nvim go to the tab's agent with file:line context.
     sending (`hc send` to submit; paste = a short framed `terminal.attach`
     that types the text, bracketed when the program asked for it).
 - **Keys** (`keys.json`, merged into `global` only where free):
-  `cmd-j e` → `mod.open:herdr-nvim`, `cmd-j f` → `mod.open:herdr-nvim-pick`.
+  `cmd-e` → `mod.open:herdr-nvim`, `cmd-o` → `mod.open:herdr-nvim-pick`.
 
 ## Watch out
 
@@ -156,8 +156,8 @@ comments written in nvim go to the tab's agent with file:line context.
   buffer.
 - `bin/herdr-nvim open --tab <tab> src/notes.md:3:6` with the panel hidden
   leaves that tab's nvim at line 3, column 6.
-- `cmd-j e` in a second tab opens a sidebar with a different daemon pid.
-- `cmd-j f` over an agent that printed `src/notes.md:3` shows the picker;
+- `cmd-e` in a second tab opens a sidebar with a different daemon pid.
+- `cmd-o` over an agent that printed `src/notes.md:3` shows the picker;
   typing `note` + Enter leaves the tab's nvim on `notes.md` line 3, focused.
 - `<leader>ac` + `<leader>aS` in the sidebar: the agent receives "Code review
   comments … src/notes.md:3 … Comment: …" submitted; `<leader>as` leaves it in

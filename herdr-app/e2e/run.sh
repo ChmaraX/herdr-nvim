@@ -213,21 +213,21 @@ H do layout.hide '{"id":"panel"}' >/dev/null
 # --- 2. key in tab B ------------------------------------------------------
 H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_b\"}" >/dev/null
-keys 38:cmd 14 # cmd-j e
-poll 15 sidebar_of "$tab_b" || fail "cmd-j e did not open the sidebar in tab B"
+keys 14:cmd # cmd-e
+poll 15 sidebar_of "$tab_b" || fail "cmd-e did not open the sidebar in tab B"
 sidebar_b=$(sidebar_of "$tab_b")
 poll 15 sh -c "ls $root/run/app/*${tab_b:0:12}.sock" || fail "no daemon for tab B"
 sock_b=$(sock_of "$space" "$tab_b")
 pid_b=$(daemon_pid "$sock_b")
 [ "$pid_a" != "$pid_b" ] || fail "tabs A and B share a daemon"
-say "cmd-j e: tab B sidebar $sidebar_b, its own daemon pid $pid_b"
+say "cmd-e: tab B sidebar $sidebar_b, its own daemon pid $pid_b"
 sleep 0.5
 shot 03-key-tab-b
 
 # --- 3. picker in tab A ---------------------------------------------------
 H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
-keys 38:cmd 3 # cmd-j f
+keys 31:cmd # cmd-o
 poll 15 sh -c "\"$app_bin\" status | tr -d ' \n' | grep -q '\"overlays\":\[\"layout\"'" || fail "the picker dialog did not open"
 sleep 0.6
 shot 04-picker
