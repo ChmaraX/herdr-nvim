@@ -1,3 +1,4 @@
+mod app;
 mod bridge;
 mod candidates;
 mod config;
@@ -8,6 +9,7 @@ mod fff;
 mod gitscan;
 mod herdr;
 mod home;
+mod host;
 mod layout;
 mod maneuver;
 mod openlink;
@@ -36,9 +38,15 @@ fn main() {
         "pick-file" => run(bridge::pick_file_cmd),
         "picker" => run(picker::picker_cmd),
         "open-link" => run(openlink::open_link_cmd),
+        // Herdr app host only (HERDR_NVIM_HOST=app): see `app`.
+        "app-agents" => run(app::commands::agents_cmd),
+        "app-send" => run(app::commands::send_cmd),
+        "app-watch" => run(app::watch::app_watch_cmd),
+        "app-setup" => run(app::setup::setup_cmd),
+        "open" => run(app::commands::open_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open>"
             );
             2
         }

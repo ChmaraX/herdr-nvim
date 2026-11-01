@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
     config::Sidebar,
-    herdr::{CliHerdr, Herdr, TabInfo},
+    herdr::{Herdr, TabInfo},
     state::{self, tab_key},
 };
 
@@ -36,13 +36,21 @@ const QUIT_POLL_TIMEOUT: Duration = Duration::from_secs(3);
 ///
 /// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
 /// XDG runtime dir, falling back to the platform temp dir.
+///
+/// The Herdr app's daemons live in an `app/` subfolder: each host reaps the
+/// daemons whose tab it does not know, so the TUI's `daemon-gc` must never
+/// see the app's daemons (and the app's reconcile must never see the TUI's).
 fn socket_dir() -> PathBuf {
-    env::var_os("HERDR_NVIM_RUNTIME_DIR")
+    let base = env::var_os("HERDR_NVIM_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("XDG_RUNTIME_DIR").map(|path| PathBuf::from(path).join("herdr-nvim"))
         })
-        .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"))
+        .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"));
+    match crate::host::current() {
+        crate::host::Host::Herdr => base,
+        crate::host::Host::App => base.join("app"),
+    }
 }
 
 /// Extension of the per-daemon entries in `socket_dir` (see there).
@@ -124,9 +132,9 @@ pub(crate) fn orphans(keys: &[String], tabs: &[TabInfo]) -> Vec<String> {
 /// Garbage-collect daemons whose tab no longer exists (herdr's `[[startup]]`
 /// hook, after a restart that did not restore every tab).
 pub fn gc_cmd() -> Result<()> {
-    let mut herdr = CliHerdr;
+    let mut herdr = crate::host::connect();
     let config = crate::config::load();
-    gc(&mut herdr, &config.sidebar)
+    gc(&mut *herdr, &config.sidebar)
 }
 
 /// Stop every daemon whose tab herdr no longer has. herdr being unreachable

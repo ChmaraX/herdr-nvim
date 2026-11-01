@@ -28,6 +28,7 @@ use crate::{
     candidates::{self, BuildInput, Candidate},
     config, daemon, extract, gitscan,
     herdr::{self, CliHerdr, Herdr},
+    host::{self, Host},
     maneuver::{self, Ctx},
     pathkey,
     picker::Handoff,
@@ -39,9 +40,10 @@ const PLUGIN_ID: &str = "chmarax.herdr-nvim";
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.
 pub fn pick_file_cmd() -> Result<()> {
-    match finish_handoff_path(env::args()) {
-        Some(handoff) => finish_pick(&handoff),
-        None => start_pick(),
+    match (finish_handoff_path(env::args()), host::current()) {
+        (Some(handoff), _) => finish_pick(&handoff),
+        (None, Host::Herdr) => start_pick(),
+        (None, Host::App) => crate::app::commands::start_pick(),
     }
 }
 
@@ -141,7 +143,7 @@ fn start_pick() -> Result<()> {
 /// the cwd). Never fails: any session-file read error, JSON parse failure,
 /// or git command failure degrades to the remaining layers (brief) -- this
 /// function's return type is `Vec<Candidate>`, not `Result`, on purpose.
-fn gather_candidates(
+pub(crate) fn gather_candidates(
     agent_session: Option<&herdr::AgentSession>,
     scrape_text: &str,
     cwd: &Path,
@@ -249,9 +251,9 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
         // independent cwd lookup.
         cwd: PathBuf::from(&handoff.cwd),
     };
-    let mut herdr = CliHerdr;
+    let mut herdr = host::connect();
 
-    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)?;
+    open_in_sidebar(&mut *herdr, &ctx, &candidate.path, candidate.line)?;
 
     cleanup_handoff(handoff_path);
     Ok(())
@@ -267,6 +269,17 @@ pub(crate) fn open_in_sidebar(
     path: &str,
     line: Option<u32>,
 ) -> Result<()> {
+    open_in_sidebar_at(h, ctx, path, line, None)
+}
+
+/// `open_in_sidebar` with a column too (the app's `open` entry point).
+pub(crate) fn open_in_sidebar_at(
+    h: &mut dyn Herdr,
+    ctx: &Ctx,
+    path: &str,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<()> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
@@ -277,7 +290,7 @@ pub(crate) fn open_in_sidebar(
 
     let sidebar = ensure_sidebar_open(h, ctx)?;
 
-    open_in_nvim(&socket, path, line, &config.sidebar)?;
+    open_in_nvim(&socket, path, line, col, &config.sidebar)?;
     focus_pane(&sidebar);
     Ok(())
 }
@@ -290,6 +303,9 @@ pub(crate) fn open_in_sidebar(
 /// `maneuver::toggle`, which follows its own open/recover semantics and leaves
 /// a fresh sidebar in `ctx.tab`.
 fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx) -> Result<String> {
+    if host::current() == Host::App {
+        return crate::app::sidebar::ensure_open(ctx);
+    }
     if let Some(sidebar) = maneuver::live_open_sidebar(h, &ctx.tab)? {
         return Ok(sidebar);
     }
@@ -313,6 +329,7 @@ fn open_in_nvim(
     socket: &Path,
     path: &str,
     line: Option<u32>,
+    col: Option<u32>,
     sidebar: &crate::config::Sidebar,
 ) -> Result<()> {
     // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
@@ -335,7 +352,7 @@ fn open_in_nvim(
             .arg("--server")
             .arg(socket)
             .arg("--remote-expr")
-            .arg(format!("cursor({line}, 1)"))
+            .arg(format!("cursor({line}, {})", col.unwrap_or(1)))
             .status()
             .context("failed to run nvim --server --remote-expr")?;
         if !status.success() {
@@ -348,6 +365,12 @@ fn open_in_nvim(
 /// Focus the sidebar pane so the user lands in nvim. Best-effort: the file is
 /// already loaded in the daemon regardless, so a focus failure is non-fatal.
 fn focus_pane(pane: &str) {
+    if host::current() == Host::App {
+        if let Err(error) = crate::app::sidebar::focus(pane) {
+            eprintln!("herdr-nvim: could not focus sidebar {pane}: {error:#}");
+        }
+        return;
+    }
     let result = Command::new("herdr")
         .args(["agent", "focus", pane])
         .status();
@@ -407,7 +430,7 @@ fn notify_no_candidates() {
 }
 
 /// Serialize `handoff` to a uniquely-named temp file, returning its path.
-fn write_handoff(handoff: &Handoff) -> Result<String> {
+pub(crate) fn write_handoff(handoff: &Handoff) -> Result<String> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())

@@ -100,3 +100,22 @@ T.test("agents: display row leads with agent kind", function()
   local row = agents.display({ kind = "pi", title = "π - a", status = "idle", cwd = "/x/y/proj" })
   T.eq(row, "pi · idle · proj")
 end)
+
+T.test("agents (app): lists through the wrapper's app-agents and scopes by space", function()
+  local host, self, ws = vim.env.HERDR_NVIM_HOST, vim.env.HERDR_NVIM_SELF, vim.env.HERDR_WORKSPACE_ID
+  vim.env.HERDR_NVIM_HOST, vim.env.HERDR_NVIM_SELF, vim.env.HERDR_WORKSPACE_ID = "app", "/w/herdr-nvim", "spA"
+  local seen
+  -- What `herdr-nvim app-agents` prints (src/app/commands.rs).
+  local out = vim.json.encode({ result = { agents = {
+    { pane_id = "t5", workspace_id = "spA", tab_id = "spA:tbB", agent = "pi", agent_status = "idle", cwd = "/repo" },
+    { pane_id = "t9", workspace_id = "spZ", tab_id = "spZ:tbC", agent = "claude", agent_status = "working", cwd = "/other" },
+  } } })
+  local list, err = agents.list(function(argv) seen = argv; return { code = 0, stdout = out, stderr = "" } end)
+  vim.env.HERDR_NVIM_HOST, vim.env.HERDR_NVIM_SELF, vim.env.HERDR_WORKSPACE_ID = host, self, ws
+  T.eq(err, nil)
+  T.eq(seen, { "/w/herdr-nvim", "app-agents" })
+  T.eq(#list, 1)
+  T.eq(list[1].pane_id, "t5")
+  T.eq(list[1].tab_id, "spA:tbB")
+  T.eq(list[1].title, "pi")
+end)

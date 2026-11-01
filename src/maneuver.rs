@@ -286,6 +286,9 @@ pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
 }
 
 pub fn toggle_cmd() -> Result<()> {
+    if crate::host::current() == crate::host::Host::App {
+        return crate::app::sidebar::toggle_cmd();
+    }
     let mut herdr = CliHerdr;
     let ctx = read_ctx(&mut herdr)?;
     toggle(&mut herdr, &ctx)

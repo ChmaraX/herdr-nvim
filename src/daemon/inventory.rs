@@ -16,7 +16,7 @@ use serde::{Serialize, Serializer};
 
 use crate::{
     config::Sidebar,
-    herdr::{CliHerdr, Herdr, TabInfo},
+    herdr::{Herdr, TabInfo},
     state::{tab_key, TabId},
 };
 
@@ -334,10 +334,11 @@ pub fn daemons_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let command = parse_args(&args)?;
     let sidebar = crate::config::load().sidebar;
-    let mut herdr = CliHerdr;
+    let mut herdr = crate::host::connect();
+    let herdr = &mut *herdr;
     match command {
         Invocation::List { json } => {
-            let daemons = collect(&mut herdr, &sidebar)?;
+            let daemons = collect(herdr, &sidebar)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&daemons)?);
             } else {
@@ -346,7 +347,7 @@ pub fn daemons_cmd() -> Result<()> {
             Ok(())
         }
         Invocation::Stop { target, force } => {
-            let outcome = stop(&mut herdr, &sidebar, &target, force)?;
+            let outcome = stop(herdr, &sidebar, &target, force)?;
             for line in &outcome.stopped {
                 println!("{line}");
             }

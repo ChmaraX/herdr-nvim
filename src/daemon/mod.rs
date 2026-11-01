@@ -140,6 +140,9 @@ fn spawn_daemon(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if crate::host::current() == crate::host::Host::App {
+        app_daemon(&mut command);
+    }
     detach_command(&mut command);
     let child = command
         .spawn()
@@ -151,6 +154,27 @@ fn spawn_daemon(
     let _pid = child.id();
     drop(child);
     Ok(())
+}
+
+/// The app host's daemon outlives the terminal that started it, so it must
+/// not keep that terminal's identity (`hc` would treat the daemon's sends as
+/// the terminal's), and its Lua calls this binary back through the wrapper
+/// (`HERDR_NVIM_SELF`, see `herdr-nvim.agents`/`dispatch`).
+///
+/// It also names its window: the app's pane header shows the terminal title,
+/// which nvim sets from `titlestring` (a user config may still change it).
+fn app_daemon(command: &mut Command) {
+    command
+        .arg("--cmd")
+        .arg("set title titlestring=nvim\\ ·\\ %t")
+        .env("HERDR_NVIM_HOST", "app")
+        .env_remove("HC_TERMINAL_ID")
+        .env_remove("HC_SCOPE");
+    if env::var_os("HERDR_NVIM_SELF").is_none() {
+        if let Ok(exe) = env::current_exe() {
+            command.env("HERDR_NVIM_SELF", exe);
+        }
+    }
 }
 
 /// Detach a child that must survive the pane process which launched it.
@@ -243,16 +267,26 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// and refresh it with the live sidebar pane identity. The pane's own cwd (set
 /// via `--cwd`) is where the daemon spawns.
 pub fn sidebar_cmd() -> Result<()> {
-    let tab = env::var("HERDR_TAB_ID")
-        .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
-    let pane = env::var("HERDR_PANE_ID")
-        .context("herdr-nvim sidebar requires HERDR_PANE_ID (set by herdr for plugin panes)")?;
-    let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
+    let app = crate::host::current() == crate::host::Host::App;
+    let (tab, pane, cwd) = if app {
+        let (tab, pane, cwd) = crate::app::sidebar::identity()?;
+        (tab.as_str().to_owned(), pane, cwd)
+    } else {
+        let tab = env::var("HERDR_TAB_ID")
+            .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
+        let pane = env::var("HERDR_PANE_ID")
+            .context("herdr-nvim sidebar requires HERDR_PANE_ID (set by herdr for plugin panes)")?;
+        let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
+        (tab, pane, cwd)
+    };
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
     wait_for_layout_ready();
     refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
+    if app {
+        crate::app::watch::ensure_running();
+    }
 
     attach_remote_ui(&socket, &config.sidebar)
 }

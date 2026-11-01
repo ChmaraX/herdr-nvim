@@ -768,7 +768,12 @@ fn spawn_finish(handoff_path: &str) -> Result<()> {
         .arg(handoff_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(crate::state::finisher_log())
+        // The picker's terminal ends right after this; inside the Herdr app
+        // herdr-core ends whatever still runs in that terminal's scope, so
+        // the finisher must not carry it.
+        .env_remove("HC_TERMINAL_ID")
+        .env_remove("HC_SCOPE");
     crate::daemon::detach_command(&mut command);
     command.spawn().context("spawning finisher")?;
     Ok(())

@@ -139,6 +139,9 @@ fn read_click_env() -> Option<ClickEnv> {
 /// Ctrl+click of a `file-path`/`file-url` link match (see the
 /// `[[link_handlers]]` entries in `herdr-plugin.toml`).
 pub fn open_link_cmd() -> Result<()> {
+    if crate::host::current() == crate::host::Host::App {
+        return crate::app::commands::open_link();
+    }
     let Some(click) = read_click_env() else {
         return Ok(());
     };
