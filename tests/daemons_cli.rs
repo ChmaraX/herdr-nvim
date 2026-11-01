@@ -28,7 +28,7 @@
 //! - Prefix trap on `stop <tab>`: only that key, never a longer id sharing
 //!   its prefix. Covered: same test (`wHnDa:t1` vs `wHnDa:t10`).
 //! - Quit timeout and partial failure: covered through the shared stop path
-//!   in tests/on_event_cli.rs and `registry::tests`.
+//!   in tests/on_event_cli.rs.
 //! - Unknown tab, bad arguments, empty registry. Covered:
 //!   `empty_listing_in_text_and_json`,
 //!   `stopping_an_unknown_tab_or_bad_arguments_fail`.

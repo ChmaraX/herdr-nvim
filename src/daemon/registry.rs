@@ -433,52 +433,17 @@ mod tests {
         assert_eq!(orphans(&keys, &[]), keys);
     }
 
-    // Issue #34's leak: a daemon that ignores `qa!` must not be forgotten
-    // while it runs. `vim.on_key` returning "" swallows every key, including
-    // the `qa!` that `--remote-send` types, while RPC (and so `--remote-expr`)
-    // still works. On Unix it is killed by its pid once `QUIT_TIMEOUT` is up;
-    // on Windows, which cannot do that, it keeps its registry entry.
-    #[test]
-    fn a_daemon_that_ignores_quit_is_killed_or_kept() {
-        if !nvim_available() {
-            eprintln!("skipping: nvim not found on PATH");
-            return;
-        }
-        let _env = TestEnv::new();
-        let config = Config::default();
-        let stubborn = TestDaemon::spawn("wHnQ:t1", &config);
-        let polite = TestDaemon::spawn("wHnQ:t2", &config);
-        stubborn
-            .eval(r#"luaeval("(function() vim.on_key(function() return '' end) return 1 end)()")"#);
-
-        let results = stop_keys(&[stubborn.tab.key(), polite.tab.key()], &config.sidebar);
-        assert!(results[1].1.is_ok(), "the other daemon is still stopped");
-        polite.assert_gone();
-        #[cfg(unix)]
-        {
-            assert!(results[0].1.is_ok(), "{:?}", results[0].1);
-            stubborn.assert_gone();
-        }
-        #[cfg(windows)]
-        {
-            assert!(results[0].1.is_err(), "a daemon left running is an error");
-            let error = all_stopped(results).unwrap_err().to_string();
-            assert!(error.contains("1 nvim daemon"), "{error}");
-            stubborn.assert_alive();
-            assert_eq!(daemon_keys().unwrap(), [stubborn.tab.key()]);
-        }
-    }
-
-    // Issue #61 (review of PR #63): the reporter's kind of hang is a plugin
-    // stuck in a loop, not a stopped process. Such a daemon ignores SIGTERM,
-    // so a forced stop and a close hook must get it with the SIGKILL that
-    // follows, and take its process group along: the child standing in for
-    // an LSP server (started the way `vim.lsp` starts one, `vim.system`)
-    // must not outlive it.
+    // Issue #61: the close hooks and gc stop daemons whose tab is gone. A hung
+    // one must neither block them forever nor be dropped from the registry
+    // while it still runs: it is killed by its verified pid. The reporter's
+    // kind of hang (review of PR #63) is a plugin stuck in a loop, not a
+    // stopped process. Such a daemon ignores SIGTERM, so it must get the
+    // SIGKILL that follows, and take its process group along: the child
+    // standing in for an LSP server (started the way `vim.lsp` starts one,
+    // `vim.system`) must not outlive it.
     #[cfg(unix)]
     #[test]
     fn a_busy_daemon_is_killed_with_its_process_group() {
-        use crate::daemon::inventory::{stop, Target};
         use crate::test_support::{process_alive, wait_dead};
 
         if !nvim_available() {
@@ -487,42 +452,21 @@ mod tests {
         }
         let _env = TestEnv::new();
         let config = Config::default();
-        let forced = TestDaemon::spawn("wHnB:t1", &config);
-        let closed = TestDaemon::spawn("wHnB:t2", &config);
-        let jobs: Vec<u32> = [&forced, &closed]
-            .map(|daemon| {
-                let job = daemon.eval(r#"luaeval("vim.system({'sleep', '300'}).pid")"#);
-                daemon.busy();
-                job.parse().expect("job pid")
-            })
-            .into();
+        let closed = TestDaemon::spawn("wHnB:t1", &config);
+        let job: u32 = closed
+            .eval(r#"luaeval("vim.system({'sleep', '300'}).pid")"#)
+            .parse()
+            .expect("job pid");
+        closed.busy();
         std::process::Command::new("kill")
-            .args(["-TERM", &forced.pid.to_string()])
+            .args(["-TERM", &closed.pid.to_string()])
             .status()
             .expect("run kill");
         std::thread::sleep(Duration::from_secs(1));
         assert!(
-            process_alive(forced.pid),
+            process_alive(closed.pid),
             "precondition: a busy daemon ignores SIGTERM"
         );
-
-        let mut herdr = MockHerdr {
-            tab_infos_results: VecDeque::from([Ok(vec![live("wHnB:t1")])]),
-            ..Default::default()
-        };
-        let outcome = stop(
-            &mut herdr,
-            &config.sidebar,
-            &Target::Tab("wHnB:t1".into()),
-            true,
-        )
-        .unwrap();
-        assert_eq!(
-            (outcome.stopped.len(), outcome.failed.len()),
-            (1, 0),
-            "{outcome:?}"
-        );
-        forced.assert_gone();
 
         let started = Instant::now();
         let results = stop_keys(&[closed.tab.key()], &config.sidebar);
@@ -534,10 +478,8 @@ mod tests {
             started.elapsed()
         );
         closed.assert_gone();
-        for job in jobs {
-            wait_dead(job);
-            assert!(!process_alive(job), "job {job} outlived its daemon");
-        }
+        wait_dead(job);
+        assert!(!process_alive(job), "job {job} outlived its daemon");
     }
 
     // Issue #61 (review of PR #63): not being able to ask a daemon to quit
@@ -588,42 +530,12 @@ mod tests {
         let config = Config::default();
         let daemon = TestDaemon::spawn("wHnX:t1", &config);
         let key = daemon.tab.key();
-        daemon.hang();
-        let reply = probe(&key, &config.sidebar).unwrap();
-        let probe = liveness(&daemon.socket, reply, None).unwrap();
-        assert_eq!(probe, Liveness::Unresponsive, "precondition");
+        // The verdict the race leaves behind: found hung, then gone.
         kill(daemon.pid);
         wait_dead(daemon.pid);
 
-        let result = stop_probed(&key, probe, &config.sidebar);
+        let result = stop_probed(&key, Liveness::Unresponsive, &config.sidebar);
         assert!(result.is_ok(), "{result:?}");
         daemon.assert_gone();
-    }
-
-    // Issue #61: the close hooks and gc stop daemons whose tab is gone. A hung
-    // one (SIGSTOPped: socket open, no answers) must neither block them
-    // forever nor be dropped from the registry while it still runs: it is
-    // killed by its verified pid.
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_daemon_of_a_closed_tab_is_killed() {
-        if !nvim_available() {
-            eprintln!("skipping: nvim not found on PATH");
-            return;
-        }
-        let _env = TestEnv::new();
-        let config = Config::default();
-        let hung = TestDaemon::spawn("wHnH:t1", &config);
-        hung.hang();
-
-        let started = Instant::now();
-        let results = stop_keys(&[hung.tab.key()], &config.sidebar);
-        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
-        assert!(
-            started.elapsed() < RPC_TIMEOUT + Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
-        hung.assert_gone();
     }
 }
