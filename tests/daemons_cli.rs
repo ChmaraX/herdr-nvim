@@ -12,8 +12,9 @@
 //!   same test.
 //! - Hung daemon (its socket takes connections, nothing answers; issue
 //!   #61): `daemons` lists it as `unresponsive` with its pid within the
-//!   request timeout, a plain `daemons stop` refuses it (exit 1) and keeps
-//!   it, `--force` kills it by its pid. Covered:
+//!   request timeout, a plain `daemons stop --all` refuses it (exit 1) and
+//!   keeps it but still stops the healthy daemon after it, `--force` kills
+//!   it by its pid. Covered:
 //!   `a_hung_daemon_is_listed_refused_then_killed_with_force` (Unix only).
 //! - Process table unreadable (`ps` fails): a refused socket cannot be
 //!   told from a hung daemon whose listen queue is full, so nothing is
@@ -294,8 +295,9 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
     let sandbox = Sandbox::new("daemons-hung");
     let mut log = Artifact::new("a_hung_daemon_is_listed_refused_then_killed_with_force");
     let mut hung = Daemon::spawn(&sandbox, "wHnDh:t1");
+    let mut healthy = Daemon::spawn(&sandbox, "wHnDh:t2");
     hung.hang();
-    sandbox.herdr_tabs(&[("wHnDh:t1", "novu", "api")]);
+    sandbox.herdr_tabs(&[("wHnDh:t1", "novu", "api"), ("wHnDh:t2", "novu", "web")]);
 
     // Listed within the request timeout (5s, plus slack for the binary's
     // startup on a slow runner), as unresponsive, by its pid.
@@ -311,9 +313,12 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
     let value: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
     assert_eq!(value[0]["state"], "unresponsive", "{value}");
     assert_eq!(value[0]["pid"], hung.pid(), "{value}");
+    assert!(value[0]["rss_bytes"].is_u64(), "{value}");
 
-    let plain = sandbox.run(&["daemons", "stop", "wHnDh:t1"], None);
-    log.step("daemons stop wHnDh:t1", "", &plain);
+    // The refusal of the hung daemon must not end the stop: the healthy
+    // daemon after it is still stopped.
+    let plain = sandbox.run(&["daemons", "stop", "--all"], None);
+    log.step("daemons stop --all", "", &plain);
     assert_eq!(plain.status.code(), Some(1));
     assert!(
         stderr(&plain).contains("busy or hung"),
@@ -323,6 +328,12 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
     assert!(stderr(&plain).contains("--force"), "{}", stderr(&plain));
     assert!(hung.running(), "a plain stop must not kill it");
     assert!(hung.entry.exists(), "nor forget it");
+    healthy.assert_gone(&sandbox);
+    assert!(
+        stdout(&plain).contains("stopped novu / web"),
+        "{}",
+        stdout(&plain)
+    );
 
     let forced = sandbox.run(&["daemons", "stop", "wHnDh:t1", "--force"], None);
     log.step("daemons stop wHnDh:t1 --force", "", &forced);

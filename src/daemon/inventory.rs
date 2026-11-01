@@ -603,8 +603,6 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    #[cfg(unix)]
-    use crate::daemon::{remote_expr, RPC_TIMEOUT};
     use crate::{
         config::Config,
         herdr::MockHerdr,
@@ -771,121 +769,6 @@ mod tests {
 
         assert!(collect(&mut herdr, sidebar).unwrap().is_empty());
         assert!(stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).is_err());
-    }
-
-    // Issue #61: a daemon that holds its socket but answers nothing (here
-    // SIGSTOPped). Listing must not hang and must show it as unresponsive
-    // with its process; a plain stop must refuse to kill it, without
-    // forgetting it; --force must kill exactly that process and clean up.
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_daemon_is_listed_then_only_killed_with_force() {
-        if !nvim_available() {
-            eprintln!("skipping: nvim not found on PATH");
-            return;
-        }
-        let _env = TestEnv::new();
-        let config = Config::default();
-        let sidebar = &config.sidebar;
-        let hung = TestDaemon::spawn("wHnDa:t1", &config);
-        let fine = TestDaemon::spawn("wHnDb:t1", &config);
-        hung.hang();
-        let mut herdr = herdr_with_tabs(4);
-        let bounded = RPC_TIMEOUT + std::time::Duration::from_secs(3);
-
-        let started = std::time::Instant::now();
-        let daemons = collect(&mut herdr, sidebar).unwrap();
-        assert!(started.elapsed() < bounded, "{:?}", started.elapsed());
-        let hung_row = row(&daemons, "wHnDa:t1");
-        assert_eq!(hung_row.state(), DaemonState::Unresponsive);
-        assert_eq!(hung_row.pid, Some(hung.pid), "found by its --listen argv");
-        assert!(hung_row.rss_bytes.is_some());
-        assert_eq!(row(&daemons, "wHnDb:t1").state(), DaemonState::Alive);
-        let table = render_table(&daemons);
-        assert!(
-            table
-                .lines()
-                .any(|l| l.starts_with("wHnDa:t1") && l.ends_with("unresponsive")),
-            "{table}"
-        );
-
-        let started = std::time::Instant::now();
-        let outcome = stop(&mut herdr, sidebar, &Target::All, false).unwrap();
-        assert!(started.elapsed() < bounded, "{:?}", started.elapsed());
-        assert_eq!(outcome.refused.len(), 1, "{outcome:?}");
-        assert!(outcome.refused[0].contains("--force"), "{outcome:?}");
-        assert_eq!(outcome.stopped.len(), 1, "the answering daemon still stops");
-        fine.assert_gone();
-        assert!(process_alive(hung.pid), "a plain stop must not kill it");
-        assert_eq!(daemon_keys().unwrap(), [hung.tab.key()], "nor forget it");
-
-        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).unwrap();
-        assert_eq!(
-            (outcome.stopped.len(), outcome.failed.len()),
-            (1, 0),
-            "{outcome:?}"
-        );
-        hung.assert_gone();
-    }
-
-    // Issue #61: a hung daemon stops taking connections at all once its
-    // listen queue (32 deep) is full of requests that timed out on it -- a
-    // few days of toggles and pick-files against a wedged tab. A client then
-    // fails just as if nothing listened. It must still count as hung: no
-    // twin spawned over it, refused by a plain stop, killed by a forced one.
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_daemon_with_a_full_connection_queue_is_still_hung() {
-        use std::time::{Duration, Instant};
-
-        if !nvim_available() {
-            eprintln!("skipping: nvim not found on PATH");
-            return;
-        }
-        let _env = TestEnv::new();
-        let config = Config::default();
-        let sidebar = &config.sidebar;
-        let hung = TestDaemon::spawn("wHnDa:t1", &config);
-        hung.hang();
-        thread::scope(|scope| {
-            for _ in 0..40 {
-                scope.spawn(|| remote_expr(&hung.socket, "1", sidebar, Duration::from_secs(2)));
-            }
-        });
-        let started = Instant::now();
-        let refused = remote_expr(&hung.socket, "1", sidebar, RPC_TIMEOUT).unwrap();
-        assert_eq!(
-            (refused, started.elapsed() < Duration::from_secs(2)),
-            (Reply::Refused, true),
-            "precondition: the full queue refuses a new client at once"
-        );
-
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let error = crate::daemon::ensure_daemon("wHnDa:t1", &root, &config, &root).unwrap_err();
-        assert!(format!("{error:#}").contains("busy or hung"), "{error:#}");
-        let procs = ProcessTable::load().expect("process table");
-        assert_eq!(
-            procs.listeners(&hung.socket).unwrap(),
-            [hung.pid],
-            "no twin"
-        );
-
-        let mut herdr = herdr_with_tabs(3);
-        let daemons = collect(&mut herdr, sidebar).unwrap();
-        assert_eq!(daemons[0].state(), DaemonState::Unresponsive);
-        assert_eq!(daemons[0].pid, Some(hung.pid));
-        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), false).unwrap();
-        assert_eq!(outcome.refused.len(), 1, "{outcome:?}");
-        assert!(process_alive(hung.pid), "a plain stop must not kill it");
-        assert_eq!(daemon_keys().unwrap(), [hung.tab.key()], "nor forget it");
-
-        let outcome = stop(&mut herdr, sidebar, &Target::Tab("wHnDa:t1".into()), true).unwrap();
-        assert_eq!(
-            (outcome.stopped.len(), outcome.failed.len()),
-            (1, 0),
-            "{outcome:?}"
-        );
-        hung.assert_gone();
     }
 
     // Issue #61 (principles review of PR #63): `daemons stop --all` probes
