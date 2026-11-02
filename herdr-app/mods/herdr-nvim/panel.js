@@ -1,7 +1,7 @@
 // The side panel that holds herdr-nvim's tree, as `layout()` describes it, and
 // the commands the tab bar's Files button runs on it (mods/tabs/main.js).
 
-import { run } from "herdr";
+import { focused, run, terminals } from "herdr";
 
 // The nodes from the root to the tree's block (the `files` slot), or null.
 function slotPath(node, trail = []) {
@@ -41,4 +41,17 @@ export function showFiles(p) {
 
 export function hidePanel(p) {
   run("layout.hide", { id: p.panel });
+}
+
+// The live herdr-nvim pane terminals of a tab.
+export function nvimPanes(tab) {
+  return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
+}
+
+// Make the tree the app's focused block, the one way the app has: `pane.go`
+// right from the tab's nvim pane (the full-height pane next to the panel).
+// Only then does the app (0.1.12) move its focus ring off the pane before.
+export function goToTree(terminal) {
+  if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
+  run("pane.go", { direction: "right" });
 }

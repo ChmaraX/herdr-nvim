@@ -12,6 +12,7 @@ import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
+import { goToTree, nvimPanes } from "./panel.js";
 import { TreeModel, dirname } from "./tree-model.js";
 
 const HINT = "? keys";
@@ -42,9 +43,15 @@ export class Tree {
         if (command === "focus") {
           this.handle.focus();
           cx.notify();
-          // Back from our own dialog: the selection stays; from elsewhere, nvim's file.
-          if (this.overlayOpen) this.overlayOpen = false;
+          // Back from our own dialog, or a press in the tree: the selection
+          // stays; from elsewhere, nvim's file.
+          if (this.overlayOpen || this.pressing) this.overlayOpen = this.pressing = false;
           else await this.revealCurrent(cx);
+        } else if (command === "click") {
+          // e2e: a press, as GPUI makes it (a press on a tracked element
+          // focuses it), then the tree's own mouse-down handler.
+          this.handle.focus();
+          this.pressed(cx);
         }
       }
     });
@@ -259,6 +266,19 @@ export class Tree {
     }
   }
 
+  // A mouse press anywhere in the tree (the e2e sends `herdr-nvim.click`).
+  // GPUI has already given the tree the keyboard, but the app still counts
+  // the pane before as focused and keeps its focus ring on it: it moves the
+  // ring only when the app itself gives a mod the keyboard (`pane.go`). So a
+  // press that brings the keyboard here asks the app for it that way.
+  pressed(cx) {
+    const terminal = this.drawnFocused ? null : nvimPanes(this.place?.tab)[0];
+    if (!terminal) return;
+    this.pressing = true; // the app's "focus" that follows keeps the selection
+    goToTree(terminal);
+    cx.notify();
+  }
+
   key(e, rows, cx) {
     if (this.filter) return this.filterKey(e, rows, cx);
     const plain = !e.modifiers.platform && !e.modifiers.control && !e.modifiers.alt;
@@ -393,6 +413,7 @@ export class Tree {
     // same nvim pane, so nvim reports its FocusGained (next to the current
     // file, which this tree watches): every such wake renders this again.
     const t = theme(), rows = this.rows(), focusedNow = this.handle.is_focused();
+    this.drawnFocused = focusedNow;
     if (this.revealing && !this.filter) {
       const at = rows.findIndex((r) => r.abs === this.revealing);
       if (at >= 0) { this.selected = at; this.revealing = null; }
@@ -406,6 +427,7 @@ export class Tree {
       .on_size_change(() => setShared("herdr-nvim.tree-laid-out", (shared("herdr-nvim.tree-laid-out") ?? 0) + 1))
       .bg(t.background).border_1().border_color(focusedNow ? t.accent : t.border).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, rows, cx))
+      .on_mouse_down("left", (_e, cx) => this.pressed(cx))
       .child(this.header(t))
       .when(Boolean(this.filter), (el) => el.child(this.filterBar(t)))
       .child(v_flex().id("herdr-nvim-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)

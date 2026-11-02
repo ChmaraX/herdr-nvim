@@ -24,15 +24,10 @@
 // app's terminal list shows its result, the result is assumed (the list lags
 // the command by a moment).
 
-import { focused, layout, nextCommand, run, shared, spaces, terminals } from "herdr";
+import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
 import { nvim } from "./lib.js";
 import { treeMode } from "./ops.js";
-import { hidePanel, panelState, showFiles } from "./panel.js";
-
-// The live herdr-nvim pane terminals of a tab.
-function nvimPanes(tab) {
-  return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
-}
+import { goToTree, hidePanel, nvimPanes, panelState, showFiles } from "./panel.js";
 
 export class Sync {
   constructor(cx) {
@@ -137,7 +132,6 @@ export class Sync {
     if (!want) return;
     if (!want.shown && (shared("herdr-nvim.tree-laid-out") ?? 0) === want.since) return;
     this.pendingFocus = null;
-    run("pane.focus", { terminal: want.terminal });
-    run("pane.go", { direction: "right" });
+    goToTree(want.terminal);
   }
 }
