@@ -161,29 +161,27 @@ say "space $space: tab A $tab_a (agent $agent_a), tab B $tab_b (agent $agent_b)"
 say "agent A's pi session log: read package.json, edited src/notes.md"
 
 # --- install --------------------------------------------------------------
-"$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log"
+layouts=$HERDR_APP_HOME/layouts
+layouts_now() { (cd "$layouts" && ls -- *.json | sort | tr '\n' ' '); }
+shown_layout() { H status | "$py" -c 'import json,sys; print(json.load(sys.stdin)["layout"])'; }
+shown_is() { [ "$(shown_layout)" = "$1" ]; }
+ldiff() { "$py" "$here/layout_diff.py" "$@" | tee -a "$log"; } # ldiff BEFORE AFTER --expect JSON | --same BEFORE AFTER
+no_change='{"changed": {}, "added": [], "removed": []}'
+in_slot='{"changed": {"files": ["content"], "panel": ["size"], "root": ["floating"]}, "added": [], "removed": []}'
+installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
+echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
+poll 10 shown_is main-copy || fail "the install did not show main-copy"
 wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
 for m in herdr-nvim herdr-nvim-pick; do H check "$HERDR_APP_HOME/mods/$m" | tee -a "$log"; done
 again=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | grep '^layout:' || true)
 echo "$again" | grep -q 'already uses herdr-nvim' || fail "a second install is not a no-op: $again"
 say "second install: $again"
-"$py" - "$HERDR_APP_HOME" <<'EOF' | tee -a "$log" || fail "the clone differs from main elsewhere than the files slot"
-import json, sys
-home = sys.argv[1]
-clone = json.load(open(f"{home}/layouts/main-mods.json"))
-main = json.load(open(f"{home}/layouts/main.json"))
-def blocks(node, out):
-    out[node["id"]] = {k: v for k, v in node.items() if k != "children"}
-    for child in node.get("children", []): blocks(child, out)
-    return out
-a, b = blocks(clone, {}), blocks(main, {})
-a["root"].pop("cloned_from", None)
-diff = {k: sorted(f for f in set(a.get(k, {})) | set(b.get(k, {})) if a.get(k, {}).get(f) != b.get(k, {}).get(f))
-        for k in set(a) | set(b) if a.get(k) != b.get(k)}
-print("layout diff main-mods vs main:", diff)
-print("  files:", a["files"]["content"], " panel:", a["panel"]["size"], " floating:", a["root"]["floating"])
-sys.exit(0 if diff == {"files": ["content"], "panel": ["size"], "root": ["floating"]} else 1)
-EOF
+layouts_installed=$(layouts_now)
+ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$in_slot" ||
+  fail "main-copy differs from main elsewhere than the files slot, the panel width and the controller"
+"$py" -c 'import json,sys; l=json.load(open(sys.argv[1]))
+def find(n,i): return n if n.get("id")==i else next((x for c in n.get("children",[]) for x in [find(c,i)] if x), None)
+print("  files:", json.dumps(find(l,"files")["content"]), " panel:", find(l,"panel")["size"], " floating:", json.dumps(l["floating"]))' "$layouts/main-copy.json" | tee -a "$log"
 H status | grep -q '"errors": \[\]' || fail "the app reports errors: $(H status)"
 
 # An orphan daemon (its tab never existed) for the startup GC to reap.
@@ -675,12 +673,108 @@ say "closed the space: daemon $pid_a stopped, watcher ended"
 
 # --- 9. uninstall --------------------------------------------------------------
 "$repo/herdr-app/install.sh" --uninstall --app-bin "$app_bin" 2>&1 | tee -a "$log"
-[ ! -e "$HERDR_APP_HOME/layouts/main-mods.json" ] || fail "uninstall left the layout clone"
-H status | grep -q '"layout": "main"' || fail "uninstall did not switch back to main"
+[ "$(layouts_now)" = "$layouts_installed" ] || fail "uninstall deleted or added a layout: $(layouts_now)"
+shown_is main-copy || fail "uninstall switched the layout away from main-copy"
+ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$no_change" || fail "main-copy is not back to main"
 grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim" ] || fail "uninstall left the mod"
-H do space.new "{\"name\":\"after\",\"folder\":\"$demo\"}" >/dev/null
+say "uninstall: main-copy kept and shown, back to main's content; keys and mods gone"
+made=$(H do space.new "{\"name\":\"after\",\"folder\":\"$demo\"}")
+space_c=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["space"])')
+tab_c=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
 files_button
 sleep 1.5
 shot 20-uninstalled-stock-files
+H do layout.hide '{"id":"panel"}' >/dev/null
+
+# --- 10. which layout, and back to exactly what it was ---------------------------
+# Each case: install, check where it went and what changed, uninstall, check
+# the layout file holds what it held before (content and key order), no layout
+# was deleted or made, and the layout on screen stayed.
+install_into() { # install_into <expected layout> <expected line>
+  local out; out=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
+  echo "$out" | grep -q "$2" || fail "install: expected '$2'"
+  poll 10 shown_is "$1" || fail "install did not show $1 (shows $(shown_layout))"
+  H status | grep -q '"errors": \[\]' || fail "the app reports errors: $(H status)"
+}
+uninstall_back() { # uninstall_back <layout> <saved copy> <layouts before>
+  "$repo/herdr-app/install.sh" --uninstall --app-bin "$app_bin" 2>&1 | tee -a "$log"
+  ldiff --same "$2" "$layouts/$1.json" || fail "uninstall did not put $1 back as it was"
+  [ "$(layouts_now)" = "$3" ] || fail "uninstall deleted or added a layout: $(layouts_now), was $3"
+  shown_is "$1" || fail "uninstall switched away from $1"
+  H status | grep -q '"errors": \[\]' || fail "the app reports errors: $(H status)"
+}
+
+# 10a. On shipped main with a personal copy already there: that copy is used.
+H do layout.switch '{"name":"main"}' >/dev/null; poll 10 shown_is main || fail "no switch to main"
+cp "$layouts/main-copy.json" "$root/before-main-copy.json"; before=$(layouts_now)
+install_into main-copy 'switched to main-copy, your personal copy of main'
+[ "$(layouts_now)" = "$before" ] || fail "the install made another copy: $(layouts_now)"
+ldiff "$root/before-main-copy.json" "$layouts/main-copy.json" --expect "$in_slot" || fail "main-copy: wrong changes"
+uninstall_back main-copy "$root/before-main-copy.json" "$before"
+say "10a: on main, the install used the existing main-copy; uninstall left it as it was"
+
+# 10b. An older install's main-mods (cloned from main) is the person's copy.
+H do layout.switch '{"name":"main"}' >/dev/null; poll 10 shown_is main || fail "no switch to main"
+rm -f "$layouts/main-copy.json" "$layouts/.state/main-copy.json"
+H do layout.clone '{"name":"main","as":"main-mods"}' >/dev/null
+H do layout.switch '{"name":"main"}' >/dev/null; poll 10 shown_is main || fail "no switch to main"
+cp "$layouts/main-mods.json" "$root/before-main-mods.json"; before=$(layouts_now)
+install_into main-mods 'switched to main-mods, your personal copy of main'
+[ "$(layouts_now)" = "$before" ] || fail "the install cloned main again: $(layouts_now)"
+ldiff "$root/before-main-mods.json" "$layouts/main-mods.json" --expect "$in_slot" || fail "main-mods: wrong changes"
+again=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | grep '^layout:' || true)
+[ "$again" = "layout: main-mods: already uses herdr-nvim for Files" ] || fail "reinstall into main-mods: $again"
+uninstall_back main-mods "$root/before-main-mods.json" "$before"
+say "10b: an older install's main-mods is used as it is (no rename, no new clone); uninstall kept it"
+
+# 10c. A personal layout of the person's own, shown: edited in place. Their
+# panel width (420) and another mod's Changes slot stay; a key they use is kept.
+"$py" - "$layouts/main-mods.json" "$layouts/mine.json" <<'PY'
+import json, sys
+l = json.load(open(sys.argv[1]))
+l.pop("cloned_from", None)
+def find(n, i): return n if n.get("id") == i else next((x for c in n.get("children", []) for x in [find(c, i)] if x), None)
+find(l, "panel")["size"] = {"px": 420}
+find(l, "changes")["content"] = {"mod": "changes", "props": {"by": "another mod"}}
+json.dump(l, open(sys.argv[2], "w"), indent=2)
+PY
+"$py" - "$HERDR_APP_HOME/keys.json" <<'PY'
+import json, sys
+k = json.load(open(sys.argv[1])) if open(sys.argv[1]).read().strip() else {}
+k.setdefault("global", {})["cmd-o"] = "app.palette"
+json.dump(k, open(sys.argv[1], "w"), indent=2)
+PY
+H do layout.switch '{"name":"mine"}' >/dev/null; poll 10 shown_is mine || fail "no switch to mine"
+cp "$layouts/mine.json" "$root/before-mine.json"; cp "$HERDR_APP_HOME/keys.json" "$root/before-keys.json"; before=$(layouts_now)
+install_into mine '^layout: mine: Files now opens'
+grep -q '^keys: kept yours: global cmd-o is "app.palette"' "$log" || fail "the install did not report the key it kept"
+grep -q '"cmd-o": "app.palette"' "$HERDR_APP_HOME/keys.json" || fail "the install replaced the person's cmd-o"
+[ "$(layouts_now)" = "$before" ] || fail "the install made a layout: $(layouts_now)"
+ldiff "$root/before-mine.json" "$layouts/mine.json" --expect '{"changed": {"files": ["content"], "root": ["floating"]}, "added": [], "removed": []}' ||
+  fail "mine: wrong changes (its width and Changes are the person's)"
+uninstall_back mine "$root/before-mine.json" "$before"
+ldiff --same "$root/before-keys.json" "$HERDR_APP_HOME/keys.json" || fail "uninstall did not put keys.json back"
+say "10c: a personal layout edited in place, its width and Changes kept, cmd-o kept and reported; uninstall: layout and keys as before"
+
+# 10d. A personal layout without a Files slot (a copy of Terminals): the
+# standard side panel is added beside the tab, and works.
+H do layout.clone '{"name":"terminals"}' >/dev/null; poll 10 shown_is terminals-copy || fail "no terminals-copy"
+cp "$layouts/terminals-copy.json" "$root/before-terminals-copy.json"; before=$(layouts_now)
+install_into terminals-copy '^layout: terminals-copy: Files now opens'
+ldiff "$root/before-terminals-copy.json" "$layouts/terminals-copy.json" \
+  --expect '{"changed": {"root": ["floating"]}, "added": ["files", "herdr-nvim-row", "panel", "panel-body"], "removed": []}' ||
+  fail "terminals-copy: wrong changes"
+H do space.select "{\"id\":\"$space_c\"}" >/dev/null
+keys 14:cmd
+poll 10 panel_is files || fail "terminals-copy: cmd-e did not show the added panel"
+poll 15 sidebar_of "$tab_c" || fail "terminals-copy: cmd-e did not open the tab's nvim"
+sleep 1.5
+shot 22-terminals-copy-added-panel
+keys 14:cmd
+poll 10 panel_is hidden || fail "terminals-copy: cmd-e did not hide the panel"
+no_sidebar() { ! sidebar_of "$1"; }
+poll 15 no_sidebar "$tab_c" || fail "terminals-copy: cmd-e did not close the tab's nvim"
+uninstall_back terminals-copy "$root/before-terminals-copy.json" "$before"
+say "10d: no Files slot: the side panel was added beside the tab, cmd-e opened tree and nvim; uninstall took it out"
 say "PASS: every step"
