@@ -1,0 +1,3 @@
+{"parentUuid":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p1","name":"Agent","input":{"description":"draft the design","prompt":"write plans/design.md"}}]},"type":"assistant","timestamp":"2026-07-19T10:00:00.000Z","cwd":"/repo"}
+{"parentUuid":"a","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p2","name":"Read","input":{"file_path":"/repo/plans/design.md"}}]},"type":"assistant","timestamp":"2026-07-19T10:05:00.000Z","cwd":"/repo"}
+{"parentUuid":"b","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p3","name":"Edit","input":{"file_path":"/repo/src/lib.rs","old_string":"a","new_string":"b"}}]},"type":"assistant","timestamp":"2026-07-19T10:10:00.000Z","cwd":"/repo"}
