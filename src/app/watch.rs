@@ -14,7 +14,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::{config, daemon::registry, host::Host};
+use crate::{config, daemon::registry};
 
 use super::{cli, doc, rpc};
 
@@ -85,7 +85,6 @@ pub fn app_watch_cmd() -> Result<()> {
 /// Start the watcher unless it runs. Its name is unique among live
 /// terminals, so a second start is refused by herdr-core: no lock needed.
 pub(crate) fn ensure_running() {
-    debug_assert_eq!(crate::host::current(), Host::App);
     let Ok(me) = cli::self_command() else { return };
     let _ = rpc::call(
         "terminal.run",

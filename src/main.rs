@@ -28,27 +28,42 @@ fn main() {
     path::augment_path();
 
     let mode = std::env::args().nth(1).unwrap_or_default();
-    let code = match mode.as_str() {
-        "toggle" => run(maneuver::toggle_cmd),
-        "sidebar" => run(daemon::sidebar_cmd),
-        "daemon-gc" => run(daemon::registry::gc_cmd),
-        "on-event" => run(daemon::events::on_event_cmd),
-        "daemons" => run(daemon::inventory::daemons_cmd),
-        "doctor" => run(doctor::doctor_cmd),
-        "pick-file" => run(bridge::pick_file_cmd),
-        "picker" => run(picker::picker_cmd),
-        "open-link" => run(openlink::open_link_cmd),
+    // The one place that asks which Herdr this is (`host`).
+    let host = host::choose();
+    let app = host == host::Host::App;
+    let code = match (mode.as_str(), app) {
+        ("toggle", false) => run(maneuver::toggle_cmd),
+        ("toggle", true) => run(app::sidebar::toggle_cmd),
+        ("sidebar", _) => run(daemon::sidebar_cmd),
+        ("daemon-gc", _) => run(daemon::registry::gc_cmd),
+        ("on-event", _) => run(daemon::events::on_event_cmd),
+        ("daemons", _) => run(daemon::inventory::daemons_cmd),
+        ("doctor", _) => run(doctor::doctor_cmd),
+        ("pick-file", false) => run(bridge::pick_file_cmd),
+        ("pick-file", true) => run(app::commands::start_pick),
+        ("picker", _) => run(picker::picker_cmd),
+        ("open-link", false) => run(openlink::open_link_cmd),
+        ("open-link", true) => run(app::commands::open_link),
         // Herdr app host only (HERDR_NVIM_HOST=app): see `app`.
-        "app-agents" => run(app::commands::agents_cmd),
-        "app-send" => run(app::commands::send_cmd),
-        "app-watch" => run(app::watch::app_watch_cmd),
-        "app-setup" => run(app::setup::setup_cmd),
-        "open" => run(app::commands::open_cmd),
-        "fs" => run(app::tree::fs_cmd),
-        "app-find" => run(app::tree::find_cmd),
-        "app-current" => run(app::tree::current_cmd),
-        "app-reveal" => run(app::tree::reveal_cmd),
-        "app-config" => run(app::settings::app_config_cmd),
+        ("app-agents", true) => run(app::commands::agents_cmd),
+        ("app-send", true) => run(app::commands::send_cmd),
+        ("app-watch", true) => run(app::watch::app_watch_cmd),
+        ("open", true) => run(app::commands::open_cmd),
+        ("fs", true) => run(app::tree::fs_cmd),
+        ("app-find", true) => run(app::tree::find_cmd),
+        ("app-current", true) => run(app::tree::current_cmd),
+        ("app-reveal", true) => run(app::tree::reveal_cmd),
+        // The install script runs these before the wrapper exists.
+        ("app-setup", _) => run(app::setup::setup_cmd),
+        ("app-config", _) => run(app::settings::app_config_cmd),
+        (
+            "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
+            | "app-reveal",
+            false,
+        ) => {
+            eprintln!("herdr-nvim: `{mode}` is for the Herdr app (HERDR_NVIM_HOST=app)");
+            2
+        }
         _ => {
             eprintln!(
                 "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-config>"

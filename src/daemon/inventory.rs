@@ -353,7 +353,7 @@ pub fn daemons_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let command = parse_args(&args)?;
     let sidebar = crate::config::load().sidebar;
-    let mut herdr = crate::host::connect();
+    let mut herdr = crate::host::ops().herdr();
     let herdr = &mut *herdr;
     match command {
         Invocation::List { json } => {

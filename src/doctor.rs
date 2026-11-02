@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use crate::{
     daemon,
-    herdr::{CliHerdr, Dir, Herdr},
+    herdr::{CliHerdr, Dir, Layout},
     maneuver,
 };
 

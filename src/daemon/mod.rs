@@ -140,9 +140,7 @@ fn spawn_daemon(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if crate::host::current() == crate::host::Host::App {
-        app_daemon(&mut command, tab, runtime_stamp(plugin_root));
-    }
+    crate::host::ops().daemon_env(&mut command, tab, plugin_root);
     detach_command(&mut command);
     let child = command
         .spawn()
@@ -166,7 +164,7 @@ fn spawn_daemon(
 ///
 /// And it records which runtime it loaded (`STAMP_ENV`, the install's
 /// `runtime-stamp`), so a later install can tell it runs older Lua.
-fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>) {
+pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>) {
     match stamp {
         Some(stamp) => command.env(STAMP_ENV, stamp),
         None => command.env_remove(STAMP_ENV),
@@ -329,34 +327,14 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// and refresh it with the live sidebar pane identity. The pane's own cwd (set
 /// via `--cwd`) is where the daemon spawns.
 pub fn sidebar_cmd() -> Result<()> {
-    let app = crate::host::current() == crate::host::Host::App;
-    let (tab, pane, cwd) = if app {
-        let (tab, pane, cwd) = crate::app::sidebar::identity()?;
-        (tab.as_str().to_owned(), pane, cwd)
-    } else {
-        let tab = env::var("HERDR_TAB_ID")
-            .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
-        let pane = env::var("HERDR_PANE_ID")
-            .context("herdr-nvim sidebar requires HERDR_PANE_ID (set by herdr for plugin panes)")?;
-        let cwd = env::current_dir().context("herdr-nvim sidebar could not resolve its cwd")?;
-        (tab, pane, cwd)
-    };
+    let host = crate::host::ops();
+    let (tab, pane, cwd) = host.sidebar_identity()?;
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
     wait_for_layout_ready();
     refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
-    if app {
-        crate::app::watch::ensure_running();
-        if env::args().any(|arg| arg == "--explore") {
-            // nvim's own explorer, once this window is attached (UIEnter).
-            let _ = remote_expr(
-                &socket,
-                "luaeval(\"require('herdr-nvim.app').explore_on_ui()\")",
-                &config.sidebar,
-            );
-        }
-    }
+    host.sidebar_ready(&socket, &config.sidebar);
 
     attach_remote_ui(&socket, &config.sidebar)
 }

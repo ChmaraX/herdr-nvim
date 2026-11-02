@@ -24,7 +24,7 @@ use anyhow::Result;
 use crate::{
     bridge,
     extract::parse_token,
-    herdr::{CliHerdr, Herdr},
+    herdr::{CliHerdr, Layout},
     maneuver::Ctx,
     pathkey::absolute,
 };
@@ -139,9 +139,6 @@ fn read_click_env() -> Option<ClickEnv> {
 /// Ctrl+click of a `file-path`/`file-url` link match (see the
 /// `[[link_handlers]]` entries in `herdr-plugin.toml`).
 pub fn open_link_cmd() -> Result<()> {
-    if crate::host::current() == crate::host::Host::App {
-        return crate::app::commands::open_link();
-    }
     let Some(click) = read_click_env() else {
         return Ok(());
     };
@@ -165,7 +162,7 @@ pub fn open_link_cmd() -> Result<()> {
         // not a second, independent cwd lookup.
         cwd: cwd.clone(),
     };
-    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
+    bridge::open_in_sidebar(&ctx, &resolved.to_string_lossy(), line).map(drop)
 }
 
 #[cfg(test)]

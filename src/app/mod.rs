@@ -20,7 +20,7 @@ pub(crate) mod stale;
 pub(crate) mod tree;
 pub(crate) mod watch;
 
-pub use host::AppHost;
+pub use host::{App, AppHost};
 
 /// The composite tab id the shared code uses (`TabId`).
 pub(crate) fn tab_id(space: &str, tab: &str) -> String {

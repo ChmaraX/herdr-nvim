@@ -148,11 +148,6 @@ pub(crate) fn split_location(text: &str) -> (String, Option<u32>, Option<u32>) {
 /// it needs no mod copy to be shown, only the tab. Relative paths resolve
 /// against the tab's folder. Prints `{"terminal": "<sidebar>"}`.
 pub(crate) fn open_cmd() -> Result<()> {
-    if crate::host::current() != crate::host::Host::App {
-        bail!(
-            "`herdr-nvim open` is for the Herdr app (HERDR_NVIM_HOST=app); the TUI uses open-link"
-        );
-    }
     let args: Vec<String> = env::args().skip(2).collect();
     let value = |flag: &str| {
         args.iter()
@@ -194,11 +189,9 @@ pub(crate) fn open_cmd() -> Result<()> {
     if !path.is_file() {
         bail!("no such file: {}", path.display());
     }
-    let mut herdr = AppHost;
-    bridge::open_in_sidebar_at(&mut herdr, &ctx, &path.to_string_lossy(), line, col)?;
-    let terminal = sidebar::find(&ctx.tab)?.unwrap_or_default();
-    let mut made = json!({"terminal": terminal});
-    if let Some(notice) = super::stale::take_notice() {
+    let opened = bridge::open_in_sidebar_at(&ctx, &path.to_string_lossy(), line, col)?;
+    let mut made = json!({"terminal": opened.pane});
+    if let Some(notice) = opened.notice {
         made["notice"] = json!(notice);
     }
     println!("{made}");
@@ -283,7 +276,7 @@ pub(crate) fn open_link() -> Result<()> {
                 mentioned_line(&text, &ctx.cwd, &resolved)
             })
     });
-    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
+    bridge::open_in_sidebar(&ctx, &resolved.to_string_lossy(), line).map(drop)
 }
 
 #[cfg(test)]

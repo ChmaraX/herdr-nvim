@@ -1,24 +1,74 @@
 //! `Herdr` for the desktop app: panes are herdr-core terminal addresses
 //! (`t7`), tabs are `<space>:<tab>` (see `app::tab_id`), and everything is
 //! answered by herdr-core (`hc`), so it works whether or not the window is
-//! open. The TUI's layout surgery (moving and parking panes) has no
-//! counterpart: the app splits a whole tab in one command (`app::sidebar`).
+//! open. The TUI's layout surgery (`herdr::Layout`) has no counterpart: the
+//! app splits a whole tab in one command (`app::sidebar`).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::herdr::{AgentInfo, Dir, Herdr, PaneRect, PaneSnapshot, TabInfo};
+use crate::{
+    config::Sidebar,
+    daemon,
+    herdr::{AgentInfo, Herdr, PaneSnapshot, TabInfo},
+    host::{HostOps, Opened},
+    maneuver::Ctx,
+};
 
 use super::{doc, rpc, tab_id};
 
 #[derive(Default)]
 pub struct AppHost;
 
-fn unsupported<T>(what: &str) -> Result<T> {
-    bail!("{what} is a Herdr TUI operation; the Herdr app host does not use it")
+/// The Herdr app's side of `host::HostOps`.
+pub struct App;
+
+impl HostOps for App {
+    fn herdr(&self) -> Box<dyn Herdr> {
+        Box::new(AppHost)
+    }
+
+    fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened> {
+        let pane = super::sidebar::ensure_open(ctx)?;
+        Ok(Opened {
+            pane,
+            notice: super::stale::take_notice(),
+        })
+    }
+
+    fn focus(&self, pane: &str) {
+        if let Err(error) = super::sidebar::focus(pane) {
+            eprintln!("herdr-nvim: could not focus sidebar {pane}: {error:#}");
+        }
+    }
+
+    fn daemon_env(&self, command: &mut Command, tab: &str, plugin_root: &Path) {
+        daemon::app_daemon(command, tab, daemon::runtime_stamp(plugin_root));
+    }
+
+    fn socket_subdir(&self) -> Option<&'static str> {
+        Some("app")
+    }
+
+    fn sidebar_identity(&self) -> Result<(String, String, PathBuf)> {
+        let (tab, pane, cwd) = super::sidebar::identity()?;
+        Ok((tab.as_str().to_owned(), pane, cwd))
+    }
+
+    fn sidebar_ready(&self, socket: &Path, sidebar: &Sidebar) {
+        super::watch::ensure_running();
+        if std::env::args().any(|arg| arg == "--explore") {
+            // nvim's own explorer, once this window is attached (UIEnter).
+            let _ = daemon::remote_expr(
+                socket,
+                "luaeval(\"require('herdr-nvim.app').explore_on_ui()\")",
+                sidebar,
+            );
+        }
+    }
 }
 
 /// A live terminal's facts (`terminal.get`).
@@ -72,63 +122,6 @@ pub(crate) fn list_terminals() -> Result<Value> {
 }
 
 impl Herdr for AppHost {
-    fn pane_rects(&mut self, _tab: &str) -> Result<Vec<PaneRect>> {
-        unsupported("pane layout")
-    }
-
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String> {
-        tab_of(&terminal(pane)?).with_context(|| format!("terminal {pane} is in no tab"))
-    }
-
-    fn create_tab(&mut self, _workspace: &str) -> Result<(String, String)> {
-        unsupported("parking tab")
-    }
-
-    fn move_pane(
-        &mut self,
-        _pane: &str,
-        _tab: &str,
-        _dir: Dir,
-        _target: Option<&str>,
-        _ratio: Option<f64>,
-        _focus: bool,
-    ) -> Result<()> {
-        unsupported("pane move")
-    }
-
-    fn split_pane(&mut self, _pane: &str, _dir: Dir, _ratio: f64, _focus: bool) -> Result<String> {
-        unsupported("pane split")
-    }
-
-    fn open_sidebar_pane(
-        &mut self,
-        _anchor: &str,
-        _dir: Dir,
-        _cwd: &Path,
-        _focus: bool,
-        _ready_marker: &Path,
-    ) -> Result<String> {
-        unsupported("plugin pane")
-    }
-
-    fn sync_pane_sizes(&mut self, _pane: &str) -> Result<()> {
-        unsupported("pane resize")
-    }
-
-    fn run_in_pane(&mut self, _pane: &str, _cmd: &str) -> Result<()> {
-        unsupported("pane run")
-    }
-
-    fn close_pane(&mut self, pane: &str) -> Result<()> {
-        super::sidebar::close(pane)
-    }
-
-    fn pane_alive(&mut self, pane: &str) -> Result<bool> {
-        Ok(terminal(pane)
-            .map(|facts| facts.get("state").and_then(Value::as_str) == Some("live"))
-            .unwrap_or(false))
-    }
-
     fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
         let doc = doc::read()?.context("herdr-core has no Herdr app layout document")?;
         Ok(doc::tab_infos(&doc))
@@ -149,10 +142,6 @@ impl Herdr for AppHost {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
-        cwd_of(&terminal(pane)?).with_context(|| format!("terminal {pane} has no folder"))
-    }
-
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
         let prefix = format!("{workspace}:");
         Ok(agents_in(&list_terminals()?)
@@ -167,7 +156,8 @@ impl Herdr for AppHost {
         // own scrollback, so there is nothing to clamp: the picker uses its
         // git and scraped-output tiers.
         Ok(PaneSnapshot {
-            cwd: self.pane_cwd(pane)?,
+            cwd: cwd_of(&terminal(pane)?)
+                .with_context(|| format!("terminal {pane} has no folder"))?,
             agent_session: None,
             scroll: None,
         })
