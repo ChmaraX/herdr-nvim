@@ -24,6 +24,35 @@ pub struct Config {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub picker: Picker,
+    #[serde(default)]
+    pub app: App,
+}
+
+/// The Herdr desktop app's settings (`[app]`; the TUI plugin ignores them).
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct App {
+    /// Which file tree goes with the tab's nvim: herdr-nvim's native tree in
+    /// the Files panel (`native`), or nvim's own explorer inside the nvim
+    /// pane (`nvim`). Read at every use, so a change applies at once.
+    #[serde(default)]
+    pub tree: TreeMode,
+}
+
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum TreeMode {
+    #[default]
+    Native,
+    Nvim,
+}
+
+impl TreeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Nvim => "nvim",
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -128,7 +157,7 @@ fn default_true() -> bool {
 /// Path to the config file. `HERDR_NVIM_CONFIG` overrides everything (used by
 /// tests and power users); otherwise `~/.config/herdr-nvim/config.toml` (via
 /// `XDG_CONFIG_HOME`, falling back to `HOME/.config`).
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("HERDR_NVIM_CONFIG") {
         return Some(PathBuf::from(path));
     }
