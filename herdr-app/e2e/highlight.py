@@ -1,6 +1,7 @@
-"""How many panes look focused in a `herdr-app shot`: the number of accent
-(saturated blue) border edges crossing the middle row, halved. Each focused
-pane or panel has a left and a right accent edge. Usage: highlight.py <png>"""
+"""Which panes look focused in a `herdr-app shot`: prints how many (accent,
+i.e. saturated blue, border edges crossing the middle row, halved: each
+focused pane or panel has a left and a right one) and where the first one
+starts as a share of the width. Usage: highlight.py <png>"""
 import sys
 
 from PIL import Image
@@ -8,11 +9,11 @@ from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 w, h = im.size
 y = h // 2
-edges, inside = 0, False
+edges, inside = [], False
 for x in range(w):
     r, g, b = im.getpixel((x, y))
     accent = b > 150 and b - r > 80 and b - g > 40
     if accent and not inside:
-        edges += 1
+        edges.append(x)
     inside = accent
-print(edges // 2)
+print(len(edges) // 2, round(edges[0] / w, 2) if edges else 0)

@@ -470,6 +470,47 @@ poll 10 test -f "$demo/.hidden2" || fail "H: .hidden was not shown"
 tree_key text:H text:I
 say "I showed the git-ignored build/ (renamed to build2 from its row), H showed .hidden (renamed to .hidden2)"
 
+# --- 6b'. one highlight at a time; the root and its way back; the key list ---
+focus_shot() { # focus_shot <name> tree|nvim: exactly one highlighted, and the right one
+  H shot "$proof/$1.png" >/dev/null
+  read -r count at < <("$py" "$here/highlight.py" "$proof/$1.png")
+  [ "$count" = 1 ] || fail "$1: $count panes look focused"
+  if [ "$2" = tree ]; then awk "BEGIN{exit !($at > 0.7)}" || fail "$1: the focused one is not the tree ($at)"
+  else awk "BEGIN{exit !($at < 0.7)}" || fail "$1: the focused one is not nvim ($at)"; fi
+}
+into_tree; focus_shot 18-focus-tree tree
+tree_key text:q; sleep 0.6; focus_shot 18-focus-q-nvim nvim
+into_tree; tree_key esc; sleep 0.6; focus_shot 18-focus-esc-nvim nvim
+H do pane.go '{"direction":"right"}' >/dev/null; sleep 0.8; focus_shot 18-focus-go-right-tree tree
+H do pane.go '{"direction":"left"}' >/dev/null; sleep 0.8; focus_shot 18-focus-go-left-nvim nvim
+into_tree; tree_key enter; sleep 1; focus_shot 18-focus-open-nvim nvim
+say "one highlight at a time: tree after cmd-shift-e and pane.go right; nvim after q, Esc, pane.go left and opening a file"
+
+open_in_nvim "$demo/src/deep/er/nest/needle.txt"
+into_tree
+tree_key text:h text:. # stand on src/deep/er/nest's folder, make it the root
+sleep 0.8
+shot 19-breadcrumb-after-dot
+tree_key text:g text:r
+poll 5 dialog_open || fail "r: no dialog in the new root"
+tree_key 0:cmd text:found.txt enter
+poll 10 test -f "$demo/src/deep/er/nest/found.txt" || fail ". did not make src/deep/er/nest the root"
+tree_key text:~
+sleep 0.8
+tree_key text:g text:r
+poll 5 dialog_open || fail "r: no dialog after ~"
+tree_key esc
+sleep 0.5
+say ". made src/deep/er/nest the root (its first row was needle.txt, renamed found.txt; breadcrumb shot 19); ~ went back"
+tree_key text:?
+poll 5 dialog_open || fail "? did not open the key list"
+shot 19-key-list
+tree_key text:?
+poll 5 no_overlay || fail "? did not close the key list"
+sleep 0.5
+focus_shot 19-key-list-closed-tree tree
+say "? opened the key list and closed it; the tree has the keyboard again"
+
 # An nvim whose <leader>e opens no explorer keeps its own mapping.
 cat > "$XDG_CONFIG_HOME/nvim/init.lua" <<'LUA'
 vim.keymap.set("n", "<leader>e", function() vim.g.edit_hit = 1 end, { desc = "Edit something" })
