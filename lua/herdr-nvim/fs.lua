@@ -45,18 +45,34 @@ local function buffers_under(path)
   return out
 end
 
--- Point every buffer of `from` (a file, or files inside a folder) at `to`,
--- keeping the windows that show them.
+-- The buffer named exactly `path`, if any.
+local function buffer_named(path)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if norm(vim.api.nvim_buf_get_name(buf)) == path then return buf end
+  end
+end
+
+-- Point every buffer of `from` (a file, or files inside a folder) at `to`.
+-- The buffer itself is renamed, so its windows, unsaved edits, modified flag
+-- and undo stay. A renamed buffer is marked "not edited" (`:w` would then say
+-- E13 and want `:w!`), so it is reloaded from its new name and any unsaved
+-- lines are put back on top: one more undo step, nothing written to disk.
 local function move_buffers(from, to)
   for _, buf in ipairs(buffers_under(from)) do
     local old = norm(vim.api.nvim_buf_get_name(buf))
     local new = to .. old:sub(#from + 1)
-    local nbuf = vim.fn.bufadd(new)
-    vim.bo[nbuf].buflisted = true
-    for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-      vim.api.nvim_win_call(win, function() vim.cmd("buffer " .. nbuf) end)
-    end
-    vim.api.nvim_buf_delete(buf, { force = true })
+    local lines = vim.bo[buf].modified and vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    vim.api.nvim_buf_set_name(buf, new)
+    -- Renaming leaves an unlisted buffer under the old name; nothing is there now.
+    local left = buffer_named(old)
+    if left and left ~= buf then pcall(vim.api.nvim_buf_delete, left, { force = true }) end
+    vim.api.nvim_buf_call(buf, function()
+      vim.cmd("silent keepalt edit!")
+      if lines then
+        vim.o.undolevels = vim.o.undolevels -- its own undo step
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      end
+    end)
   end
 end
 
@@ -120,16 +136,16 @@ function ops.rename(req)
   check_inside(req, from, to)
   if not exists(from) then error("no such file: " .. from) end
   if exists(to) then error("already exists: " .. to) end
+  -- Snacks' own rename swaps in a fresh buffer and force-deletes the old one,
+  -- losing unsaved edits, so the buffers are always moved here; Snacks, when
+  -- it is there, only tells the language servers.
   local s = snacks()
-  if s and vim.fn.isdirectory(from) == 0 then
-    s.rename.rename_file({ from = from, to = to })
-  else
-    lsp_rename(from, to, function()
-      vim.fn.mkdir(vim.fs.dirname(to), "p")
-      if vim.fn.rename(from, to) ~= 0 then error("could not rename " .. from) end
-      move_buffers(from, to)
-    end)
-  end
+  local tell = s and s.rename.on_rename_file or lsp_rename
+  tell(from, to, function()
+    vim.fn.mkdir(vim.fs.dirname(to), "p")
+    if vim.fn.rename(from, to) ~= 0 then error("could not rename " .. from) end
+    move_buffers(from, to)
+  end)
   if not exists(to) then error("could not rename " .. from) end
   return { ok = true, path = to, lsp = true }
 end
