@@ -21,6 +21,17 @@ import { TreeModel, dirname } from "./tree-model.js";
 
 const HINT = "? keys";
 
+// After the app hands the tree the keyboard (`"focus"`), how long the tree
+// makes sure it holds it: checks every ARRIVAL_STEP_MS, at most ARRIVAL_STEPS.
+const ARRIVAL_STEP_MS = 100;
+const ARRIVAL_STEPS = 20;
+
+// Where the app's focus is, as far as a mod can see it.
+function focusKey() {
+  const f = focused();
+  return f ? `${f.space}|${f.tab}|${f.pane}|${f.terminal}` : "";
+}
+
 // The focused tab and its folder. While this tree has the keyboard there is
 // no focused pane: the tab's folder stays what it was.
 function place(previous) {
@@ -45,13 +56,15 @@ export class Tree {
       for (;;) {
         const command = await nextCommand();
         if (command === "focus") {
-          this.handle.focus();
+          // Back from our own dialog, or a press in the tree: the selection
+          // stays; from elsewhere, nvim's file (else the first row).
+          const keep = this.overlayOpen || this.pressing;
+          this.overlayOpen = this.pressing = false;
+          this.takeKeyboard(cx);
           cx.notify();
           this.readTreeKey();
-          // Back from our own dialog, or a press in the tree: the selection
-          // stays; from elsewhere, nvim's file.
-          if (this.overlayOpen || this.pressing) this.overlayOpen = this.pressing = false;
-          else await this.revealCurrent(cx);
+          // Not awaited: the loop stays free for the next "focus".
+          if (!keep) cx.spawn(async (cx) => this.revealCurrent(cx, true));
         } else if (command === "click") {
           // e2e: a press, as GPUI makes it (a press on a tracked element
           // focuses it), then the tree's own mouse-down handler.
@@ -153,13 +166,58 @@ export class Tree {
     });
   }
 
-  async revealCurrent(cx) {
+  // The app gave this tree the keyboard (`pane.go`, cmd-shift-e, the tree
+  // key): take it, and make sure it took. The app draws the tree as focused
+  // from that moment, but the keys reach the tree only while its own handle
+  // has GPUI's focus, and a handover can be lost (reported from the person's app:
+  // highlighted, no keys until a click). So, for this arrival only, the tree
+  // takes the keyboard again while it doesn't hold it, and stops as soon as it
+  // has held it twice in a row, or the person has gone elsewhere: another
+  // pane, tab or space (`focused()` changed), the tab's nvim got the keyboard
+  // (its FocusGained stamp changed), they left with q / Esc / the tree key, or
+  // another "focus" arrived. Never on render, never after it settled.
+  takeKeyboard(cx) {
+    const arrival = (this.arrival = { where: focusKey() });
+    try { this.handle.focus(); } catch {}
+    cx.spawn(async (cx) => {
+      arrival.nvim = await this.nvimFocusStamp();
+      let held = 0;
+      for (let step = 0; step < ARRIVAL_STEPS && this.arrival === arrival; step++) {
+        await cx.sleep(ARRIVAL_STEP_MS);
+        if (this.arrival !== arrival || focusKey() !== arrival.where) break;
+        if ((await this.nvimFocusStamp()) !== arrival.nvim) break;
+        if (this.handle.is_focused()) {
+          if (++held >= 2) break;
+          continue;
+        }
+        held = 0;
+        try { this.handle.focus(); } catch {}
+        cx.notify();
+      }
+      if (this.arrival === arrival) this.arrival = null;
+    });
+  }
+
+  // What the tab's nvim wrote on its last FocusGained (lua/herdr-nvim/app.lua).
+  async nvimFocusStamp() {
+    if (!this.watching) return null;
+    return ((await readTextFile(`${this.watching}.focus`).catch(() => null)) ?? "").trim() || null;
+  }
+
+  // nvim's file; arriving with the keyboard and no file of nvim's to show,
+  // the first row.
+  async revealCurrent(cx, arriving = false) {
     if (!this.place?.cwd) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
     const { file, tab_root } = await current(this.place);
     if (seq !== this.revealSeq) return;
     if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
-    if (file) await this.reveal(file, cx);
+    if (file && inside(file, this.model.root ?? "")) await this.reveal(file, cx);
+    else if (arriving) {
+      this.selected = 0;
+      this.revealing = null;
+      cx.notify();
+    }
   }
 
   // Selects `path`, opening its folders (after listing everything again,
@@ -310,11 +368,13 @@ export class Tree {
   }
 
   hideToNvim() {
+    this.arrival = null;
     const tab = this.place?.tab, p = panelState(layout());
     if (tab && p?.files) hideTreeKeepNvim(p, tab, nvimPanes(tab)[0]);
   }
 
   key(e, rows, cx) {
+    if (!Number.isInteger(this.selected)) this.selected = 0;
     if (this.filter) return this.filterKey(e, rows, cx);
     const plain = !e.modifiers.platform && !e.modifiers.control && !e.modifiers.alt;
     const k = plain && e.key_char && e.key_char.trim() ? e.key_char : e.keystroke;
@@ -323,7 +383,10 @@ export class Tree {
       return cx.notify();
     }
     const row = rows[this.selected];
-    const move = (to) => { this.selected = Math.max(0, Math.min(rows.length - 1, to)); };
+    const move = (to) => {
+      this.revealSeq = (this.revealSeq ?? 0) + 1; // a reveal still on its way doesn't undo the move
+      this.selected = Math.max(0, Math.min(rows.length - 1, to));
+    };
     switch (k) {
       case "down": case "j": this.revealing = null; move(this.selected + 1); break;
       case "up": case "k": this.revealing = null; move(this.selected - 1); break;
@@ -351,7 +414,7 @@ export class Tree {
       case "~": if (this.tabRoot) this.setRoot(this.tabRoot, cx); break;
       case "?": this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); break;
       case "/": this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; break;
-      case "escape": case "q": run("pane.go", { direction: "left" }); break;
+      case "escape": case "q": this.arrival = null; run("pane.go", { direction: "left" }); break;
       default: return;
     }
     cx.stop_propagation();
@@ -457,7 +520,7 @@ export class Tree {
       const at = rows.findIndex((r) => r.abs === this.revealing);
       if (at >= 0) { this.selected = at; this.revealing = null; }
     }
-    this.selected = Math.min(this.selected, Math.max(0, rows.length - 1));
+    this.selected = Number.isInteger(this.selected) ? Math.min(this.selected, Math.max(0, rows.length - 1)) : 0;
     const empty = this.place?.machine ? `This space is on ${this.place.machine}; herdr-nvim runs nvim on this computer.`
       : this.error ?? (this.filter ? (this.filter.query ? "No match" : "Type to find a file") : !this.model.root ? "No folder" : this.model.entries.has(this.model.root) ? "No files" : "Loading files…");
     return v_flex().id("herdr-nvim-files").size_full().min_h(0).rounded(10).overflow_hidden()
@@ -465,7 +528,8 @@ export class Tree {
       // needs it laid out: say when it is.
       .on_size_change(() => setShared("herdr-nvim.tree-laid-out", (shared("herdr-nvim.tree-laid-out") ?? 0) + 1))
       .bg(t.background).border_1().border_color(focusedNow ? t.accent : t.border).text_color(t.foreground).text_size(13)
-      .track_focus(this.handle).on_key_down((e, cx) => this.key(e, rows, cx))
+      // The rows as they are at the press, not as this render saw them.
+      .track_focus(this.handle).on_key_down((e, cx) => this.key(e, this.rows(), cx))
       .on_mouse_down("left", (_e, cx) => this.pressed(cx))
       .child(this.header(t))
       .when(Boolean(this.filter), (el) => el.child(this.filterBar(t)))
