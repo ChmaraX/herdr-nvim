@@ -11,9 +11,10 @@ import { focused, nextCommand, notify, panes, readTextFile, run, setShared, shar
 import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
+import { openKeyHelp } from "./keys-help.js";
 import { TreeModel, dirname } from "./tree-model.js";
 
-const HINT = "/ find · a new · r rename · m move · c copy · d delete · y p yank paste · H I hidden ignored · ⌫ up · . root · o open · q back";
+const HINT = "? keys";
 
 // The focused tab and its folder. While this tree has the keyboard there is
 // no focused pane: the tab's folder stays what it was.
@@ -33,6 +34,7 @@ export class Tree {
     this.selected = 0;
     this.picked = new Set(); // Tab-selected paths
     this.filter = null; // {query, results, seq}
+    this.roots = {}; // tab -> {tabRoot, root}: the root the person chose, per tab
     this.revealed = shared("herdr-nvim.reveal")?.n ?? 0;
     cx.spawn(async (cx) => {
       for (;;) {
@@ -40,18 +42,20 @@ export class Tree {
         if (command === "focus") {
           this.handle.focus();
           cx.notify();
-          await this.revealCurrent(cx);
+          // Back from our own dialog: the selection stays; from elsewhere, nvim's file.
+          if (this.overlayOpen) this.overlayOpen = false;
+          else await this.revealCurrent(cx);
         }
       }
     });
   }
 
-  // Follow the focused tab: its folder (as a real path, so the agent's pane
-  // at /tmp/x and nvim's at /private/tmp/x are one tree), and the file its
-  // nvim shows.
+  // Follow the focused tab. The root is the tab's folder (where the tab's
+  // nvim works, as a real path), or one the person chose with `.` / ⌫ for
+  // this tab; focusing another pane of the tab never moves it.
   follow(cx) {
     const next = place(this.place);
-    const moved = next.tab !== this.place?.tab || next.cwd !== this.place?.cwd || next.machine !== this.place?.machine;
+    const moved = next.tab !== this.place?.tab || next.machine !== this.place?.machine || (!this.rootTab && next.cwd);
     this.place = next;
     if (!moved) return;
     if (next.machine || !next.cwd) {
@@ -59,18 +63,24 @@ export class Tree {
       this.tabRoot = null;
       return this.setRoot(null, cx);
     }
+    this.rootTab = next.tab;
     cx.spawn(async (cx) => {
-      const { real_root } = await current(next);
+      const { tab_root } = await current(next);
       if (this.place?.tab !== next.tab) return;
-      const root = real_root ?? next.cwd;
-      if (root === this.model.root && next.tab === this.rootTab) return;
-      const tabChanged = next.tab !== this.rootTab;
-      this.rootTab = next.tab;
-      this.tabRoot = root;
-      this.setRoot(root, cx);
-      if (tabChanged) this.watchCurrent(next, cx);
-      cx.notify();
+      this.adopt(next.tab, tab_root ?? next.cwd, cx);
+      this.watchCurrent(next, cx);
     });
+  }
+
+  // The tab's folder is `tabRoot`: show the root chosen for this tab, unless
+  // the tab's folder changed since (then the folder itself).
+  adopt(tab, tabRoot, cx) {
+    if (this.rootTab !== tab || (this.shownTab === tab && this.tabRoot === tabRoot)) return;
+    this.shownTab = tab;
+    this.tabRoot = tabRoot;
+    const saved = this.roots[tab];
+    this.setRoot(saved && saved.tabRoot === tabRoot ? saved.root : tabRoot, cx);
+    cx.notify();
   }
 
   // The tab, with its folder as the tree knows it: what operations get.
@@ -79,6 +89,7 @@ export class Tree {
   }
 
   setRoot(root, cx) {
+    if (this.rootTab && root) this.roots[this.rootTab] = { tabRoot: this.tabRoot, root };
     const keep = { hidden: this.model.showHidden, ignored: this.model.showIgnored };
     this.model.reset(root);
     Object.assign(this.model, { showHidden: keep.hidden, showIgnored: keep.ignored });
@@ -123,6 +134,7 @@ export class Tree {
         if (this.rootTab !== where.tab) return;
         const path = (await readTextFile(watch))?.trim();
         if (path && path !== this.current) await this.reveal(path, cx);
+        cx.notify(); // nvim took the keyboard, maybe: draw the focus again
       }
     });
   }
@@ -130,8 +142,9 @@ export class Tree {
   async revealCurrent(cx) {
     if (!this.place?.cwd) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
-    const { file } = await current(this.place);
+    const { file, tab_root } = await current(this.place);
     if (seq !== this.revealSeq) return;
+    if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
     if (file) await this.reveal(file, cx);
   }
 
@@ -164,6 +177,7 @@ export class Tree {
   }
 
   dialog(spec) {
+    this.overlayOpen = true;
     openDialog({ place: this.where(), ...spec });
   }
 
@@ -275,6 +289,8 @@ export class Tree {
       case "u": cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }); break;
       case ".": if (row) this.setRoot(this.dirOf(row), cx); break;
       case "backspace": if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); break;
+      case "~": if (this.tabRoot) this.setRoot(this.tabRoot, cx); break;
+      case "?": this.overlayOpen = true; openKeyHelp(); break;
       case "/": this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; break;
       case "escape": case "q": run("pane.go", { direction: "left" }); break;
       default: return;
@@ -311,11 +327,35 @@ export class Tree {
     cx.notify();
   }
 
+  // "Files", the tab's folder, and while the root is elsewhere the way back:
+  // each step a click (or ~ / ⌫).
   header(t) {
     const badge = (on, label) => div().px(4).rounded(4).text_size(10).text_color(on ? t.foreground : t.dim).bg(on ? t.selected : t.background).child(label);
-    return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(div().font_semibold().child("Files"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.model.root?.split("/").pop() ?? ""))
+    const root = this.model.root, home = this.tabRoot;
+    const crumb = (id, label, path, current) => div().id(id).flex_none().max_w(140).truncate().text_size(12)
+      .text_color(current ? t.foreground : t.accent).when(!current, (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => this.setRoot(path, cx)))
+      .child(label);
+    const crumbs = [];
+    if (root && home && root !== home) {
+      if (inside(root, home)) {
+        crumbs.push(crumb("crumb-home", home.split("/").pop(), home, false));
+        let path = home;
+        for (const part of root.slice(home.length + 1).split("/")) {
+          path = `${path}/${part}`;
+          crumbs.push(div().flex_none().text_size(12).text_color(t.dim).child("/"));
+          crumbs.push(crumb(`crumb-${path}`, part, path, path === root));
+        }
+      } else {
+        crumbs.push(crumb("crumb-root", root, root, true));
+        crumbs.push(crumb("crumb-home", `↩ ${home.split("/").pop()}`, home, false));
+      }
+    }
+    return h_flex().h(42).flex_none().px(14).gap(6).items_center().border_b(1).border_color(t.border)
+      .child(div().flex_none().font_semibold().child("Files"))
+      .child(h_flex().id("crumbs").flex_1().min_w(0).gap(4).items_center().overflow_hidden()
+        .when(!crumbs.length, (el) => el.child(div().truncate().text_size(12).text_color(t.dim).child(root?.split("/").pop() ?? "")))
+        .children(crumbs))
       .when(this.busy, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.muted).spin(900)))
       .child(badge(this.model.showHidden, "H")).child(badge(this.model.showIgnored, "I"));
   }
@@ -348,7 +388,11 @@ export class Tree {
       this.revealed = reveal.n;
       if (reveal.tab === this.place?.tab && reveal.path) cx.spawn(async (cx) => this.reveal(reveal.path, cx, true));
     }
-    const t = theme(), rows = this.rows(), focusedNow = this.handle.is_focused?.() ?? false;
+    // Highlighted while this tree has the keyboard. Nothing tells a mod it
+    // lost it, and the app's focus doesn't change when it goes back to the
+    // same nvim pane, so nvim reports its FocusGained (next to the current
+    // file, which this tree watches): every such wake renders this again.
+    const t = theme(), rows = this.rows(), focusedNow = this.handle.is_focused();
     if (this.revealing && !this.filter) {
       const at = rows.findIndex((r) => r.abs === this.revealing);
       if (at >= 0) { this.selected = at; this.revealing = null; }

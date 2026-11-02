@@ -113,6 +113,15 @@ end
 function M.setup()
   local group = vim.api.nvim_create_augroup("herdr-nvim-app", { clear = true })
   vim.api.nvim_create_autocmd("BufEnter", { group = group, callback = write_current })
+  -- The window gave this nvim the keyboard (the terminal's focus report):
+  -- tell the app's tree, which can't see the keyboard leave it.
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = group,
+    callback = function()
+      local path = vim.env.HERDR_NVIM_CURRENT_FILE
+      if path then pcall(vim.fn.writefile, { tostring(vim.uv.hrtime()) }, path .. ".focus") end
+    end,
+  })
   M.remap_explorer_keys()
   vim.api.nvim_create_autocmd("User", {
     group = group,
