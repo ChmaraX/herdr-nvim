@@ -1,1 +1,0 @@
-{ "place": "none", "title": "nvim: open file from agent output", "overlay": { "kind": "popup", "at": "top", "width": 1, "height": 1, "frame": "none" } }

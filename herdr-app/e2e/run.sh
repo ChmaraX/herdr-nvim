@@ -172,7 +172,7 @@ installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$lo
 echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
 wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
-for m in herdr-nvim herdr-nvim-pick; do H check "$HERDR_APP_HOME/mods/$m" | tee -a "$log"; done
+H check "$HERDR_APP_HOME/mods/herdr-nvim" | tee -a "$log"
 again=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | grep '^layout:' || true)
 echo "$again" | grep -q 'already uses herdr-nvim' || fail "a second install is not a no-op: $again"
 say "second install: $again"

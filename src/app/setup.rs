@@ -67,6 +67,14 @@ fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> R
 }
 
 /// Pure: add `ours` to `keys` where free. Returns (added, conflicts).
+/// Actions earlier herdr-nvim installs bound (the separate picker mod, now
+/// `herdr-nvim.pick`): an install replaces them, an uninstall removes them.
+const RETIRED: &[&str] = &["mod.open:herdr-nvim-pick"];
+
+fn retired(action: &Value) -> bool {
+    action.as_str().is_some_and(|a| RETIRED.contains(&a))
+}
+
 pub(crate) fn merge_keys(keys: &mut Value, ours: &Value) -> (Vec<String>, Vec<String>) {
     let (mut added, mut conflicts) = (Vec::new(), Vec::new());
     for (section, bindings) in ours.as_object().into_iter().flatten() {
@@ -79,14 +87,14 @@ pub(crate) fn merge_keys(keys: &mut Value, ours: &Value) -> (Vec<String>, Vec<St
         let target = keys[section].as_object_mut().expect("just made an object");
         for (key, action) in bindings {
             match target.get(key) {
-                None => {
+                Some(existing) if existing == action => {}
+                Some(existing) if !retired(existing) => conflicts.push(format!(
+                    "{section} {key} is {existing}; herdr-nvim's {action} is not bound (bind it to a key yourself if you want it)"
+                )),
+                _ => {
                     target.insert(key.clone(), action.clone());
                     added.push(format!("{section} {key} → {action}"));
                 }
-                Some(existing) if existing == action => {}
-                Some(existing) => conflicts.push(format!(
-                    "{section} {key} is {existing}; herdr-nvim's {action} is not bound (bind it to a key yourself if you want it)"
-                )),
             }
         }
     }
@@ -101,7 +109,7 @@ pub(crate) fn unmerge_keys(keys: &mut Value, ours: &Value) -> Vec<String> {
             continue;
         };
         for (key, action) in bindings.as_object().into_iter().flatten() {
-            if target.get(key) == Some(action) {
+            if target.get(key) == Some(action) || target.get(key).is_some_and(retired) {
                 target.remove(key);
                 removed.push(format!("{section} {key}"));
             }
@@ -291,7 +299,8 @@ mod tests {
     #[test]
     fn keys_merge_only_into_free_keys_and_unmerge_only_ours() {
         let mut keys = json!({"global": {"cmd-j o": "mod.open:open-opencode", "cmd-t": "tab.new"}});
-        let ours = json!({"global": {"cmd-j e": "mod.open:herdr-nvim", "cmd-j o": "mod.open:herdr-nvim-pick"}});
+        let ours =
+            json!({"global": {"cmd-j e": "mod.open:herdr-nvim", "cmd-j o": "herdr-nvim.pick"}});
         let (added, conflicts) = merge_keys(&mut keys, &ours);
         assert_eq!(added.len(), 1);
         assert_eq!(conflicts.len(), 1);
@@ -302,6 +311,17 @@ mod tests {
             keys,
             json!({"global": {"cmd-j o": "mod.open:open-opencode", "cmd-t": "tab.new"}})
         );
+    }
+
+    #[test]
+    fn the_old_picker_mod_key_is_ours_to_replace_and_remove() {
+        let mut keys = json!({"global": {"cmd-o": "mod.open:herdr-nvim-pick"}});
+        let ours = json!({"global": {"cmd-o": "herdr-nvim.pick"}});
+        let (added, conflicts) = merge_keys(&mut keys, &ours);
+        assert_eq!((added.len(), conflicts.len()), (1, 0));
+        assert_eq!(keys["global"]["cmd-o"], "herdr-nvim.pick");
+        keys["global"]["cmd-o"] = json!("mod.open:herdr-nvim-pick");
+        assert_eq!(unmerge_keys(&mut keys, &ours), ["global cmd-o"]);
     }
 
     fn copy(name: &str, of: &str) -> (String, Value) {

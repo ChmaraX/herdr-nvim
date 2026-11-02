@@ -32,7 +32,7 @@ home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 app_bin=${HERDR_APP_BIN:-}
 panel_width=
 tree=
-mods=(herdr-nvim herdr-nvim-pick)
+mods=(herdr-nvim)
 
 die() { echo "herdr-nvim: $*" >&2; exit 1; }
 
@@ -72,6 +72,14 @@ export HERDR_APP_HOME=$home
 runtime=${XDG_DATA_HOME:-$HOME/.local/share}/herdr-nvim/app
 wrapper=$home/mods/herdr-nvim/bin/herdr-nvim
 
+# The picker was its own mod (herdr-nvim-pick) before it joined herdr-nvim as
+# `herdr-nvim.pick`: drop that folder, when it is that mod.
+retire_pick() {
+  grep -qs '"nvim: open file from agent output"' "$home/mods/herdr-nvim-pick/mod.json" &&
+    rm -rf "${home:?}/mods/herdr-nvim-pick"
+  return 0
+}
+
 if [ "$mode" = uninstall ]; then
   if [ -x "$wrapper" ]; then
     "$wrapper" app-setup uninstall --keys "$here/keys.json"
@@ -79,13 +87,12 @@ if [ "$mode" = uninstall ]; then
   fi
   hc kill herdr-nvim-watch >/dev/null 2>&1 || true
   for m in "${mods[@]}"; do rm -rf "${home:?}/mods/$m"; done
+  retire_pick
   rm -rf "$runtime"
   echo "herdr-nvim: uninstalled from $home"
   exit 0
 fi
 
-cmp -s "$here/mods/herdr-nvim/lib.js" "$here/mods/herdr-nvim-pick/lib.js" ||
-  die "mods/*/lib.js differ: keep both copies identical"
 
 build_log=$(mktemp)
 (cd "$repo" && cargo build --release --quiet 2>"$build_log") || { cat "$build_log" >&2; die "cargo build failed"; }
@@ -109,6 +116,7 @@ for m in "${mods[@]}"; do
   rm -rf "${home:?}/mods/$m"
   mv "$home/mods/.$m.new" "$home/mods/$m"
 done
+retire_pick
 
 mkdir -p "$(dirname "$wrapper")"
 cat > "$wrapper" <<EOF

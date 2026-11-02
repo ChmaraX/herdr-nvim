@@ -1,5 +1,4 @@
-// herdr-nvim's mod helpers. Identical in both mod folders (mods can't import each
-// other); `herdr-app/install.sh` refuses to install copies that differ.
+// herdr-nvim's mod helpers.
 
 import { appHome, exec, focused, notify } from "herdr";
 

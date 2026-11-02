@@ -21,7 +21,8 @@
 // back to that tab leaves the tree hidden until the panel is shown there
 // again (Files, cmd-e, the tree key, cmd-shift-e) or its nvim closes.
 //
-// It also takes `herdr-nvim.reveal` (cmd-shift-e, `<leader>E` in nvim):
+// It also takes `herdr-nvim.pick` (cmd-o: a file from the agent's output,
+// pick.js), `herdr-nvim.reveal` (cmd-shift-e, `<leader>E` in nvim):
 // open the pair if needed, then hand the tree the keyboard (`pane.go` right
 // from the tab's nvim pane, once the tree has been laid out); and
 // `herdr-nvim.toggle` (the tree key in nvim): that, or hide a tree that shows.
@@ -34,6 +35,7 @@
 import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
 import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
+import { pick } from "./pick.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, showFiles, takeKeepNvim } from "./panel.js";
 
 export class Sync {
@@ -43,7 +45,8 @@ export class Sync {
       await treeMode();
       for (;;) {
         const command = await nextCommand();
-        if (command.startsWith("reveal")) await this.reveal(cx);
+        if (command.startsWith("pick")) cx.spawn(async () => pick(place()));
+        else if (command.startsWith("reveal")) await this.reveal(cx);
         else if (command.startsWith("toggle")) await this.toggleTree(cx);
       }
     });
