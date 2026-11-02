@@ -3,7 +3,7 @@
 # to add a mod, so an agent can do the same by hand.
 #
 #   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--panel-width PX] [--tree native|nvim]
-#   herdr-app/install.sh --uninstall [--home DIR] [--app-bin PATH]
+#   herdr-app/install.sh --uninstall [--force] [--home DIR] [--app-bin PATH]
 #
 # The Herdr app must be open on that home (default: $HERDR_APP_HOME, else
 # ~/.config/herdr-app). Install builds herdr-nvim, copies its runtime (binary +
@@ -22,7 +22,8 @@
 # (unless it has unsaved work). Uninstall takes out exactly those edits (keys
 # still bound to herdr-nvim, its layout changes in every personal layout; no
 # layout is deleted or switched), the mods and the runtime, and stops the
-# app's nvims.
+# app's nvims; one with unsaved buffers or pending comments is listed and
+# kept (with its runtime) unless --force.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -32,6 +33,7 @@ home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 app_bin=${HERDR_APP_BIN:-}
 panel_width=
 tree=
+force=
 mods=(herdr-nvim)
 
 die() { echo "herdr-nvim: $*" >&2; exit 1; }
@@ -39,11 +41,12 @@ die() { echo "herdr-nvim: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case $1 in
     --uninstall) mode=uninstall ;;
+    --force) force=1 ;;
     --home) home=$2; shift ;;
     --app-bin) app_bin=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
     --tree) tree=$2; shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -125,7 +128,14 @@ if [ "$mode" = uninstall ]; then
     cp -R "$repo/lua" "$repo/plugin" "$root/"
   fi
   run_root "$root" app-setup uninstall --keys "$here/keys.json"
-  run_root "$root" daemons stop --all --force || true
+  # Unsaved work is never thrown away unasked: those nvims are listed and
+  # kept, with the runtime they run.
+  if ! stopped=$(run_root "$root" daemons stop --all ${force:+--force} 2>&1); then
+    echo "$stopped" >&2
+    echo "herdr-nvim: kept the nvims above; save (:wa) and quit them, or run --uninstall --force to discard their work" >&2
+  elif [ -n "$stopped" ]; then
+    echo "$stopped"
+  fi
   hc kill herdr-nvim-watch >/dev/null 2>&1 || true
   for m in "${mods[@]}"; do rm -rf "${home:?}/mods/$m"; done
   retire_pick
