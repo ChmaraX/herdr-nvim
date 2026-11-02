@@ -114,7 +114,19 @@ run_root() {
     "$root/bin/herdr-nvim" "$@"
 }
 
+# Whether mods/<m> is herdr-nvim's own: the wrapper this script writes is in
+# it. Any other folder of that name is someone else's and is never replaced.
+MARK="# Written by herdr-nvim's herdr-app/install.sh"
+ours() {
+  grep -qsF "$MARK" "$home/mods/$1/bin/herdr-nvim"
+}
+mine_or_absent() {
+  [ ! -e "$home/mods/$1" ] || ours "$1" ||
+    die "$home/mods/$1 is not herdr-nvim's (no bin/herdr-nvim written by this script): move it away first, nothing changed"
+}
+
 if [ "$mode" = uninstall ]; then
+  for m in "${mods[@]}"; do mine_or_absent "$m"; done
   # Through a runtime binary, not the wrapper: a half-replaced mod folder
   # must not keep the layouts and keys from being taken back. No runtime
   # left: this repo's own build.
@@ -144,6 +156,8 @@ if [ "$mode" = uninstall ]; then
   echo "herdr-nvim: uninstalled from $home"
   exit 0
 fi
+
+for m in "${mods[@]}"; do mine_or_absent "$m"; done
 
 build_log=$(mktemp)
 (cd "$repo" && cargo build --release --quiet 2>"$build_log") || { cat "$build_log" >&2; die "cargo build failed"; }
@@ -185,7 +199,7 @@ for m in "${mods[@]}"; do
     mkdir -p "$new/bin"
     cat > "$new/bin/herdr-nvim" <<WRAPPER
 #!/bin/sh
-# Written by herdr-nvim's herdr-app/install.sh; run it again to change this.
+$MARK; run it again to change this.
 export HERDR_NVIM_HOST=app
 export HERDR_NVIM_SELF='$wrapper'
 export HERDR_NVIM_PLUGIN_ROOT='$root'
