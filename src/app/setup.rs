@@ -263,7 +263,9 @@ pub fn setup_cmd() -> Result<()> {
                 .1
                 .iter()
                 .for_each(|line| println!("keys: kept yours: {line}"));
-            install_layout(&home, panel_width(&args)?)
+            install_layout(&home, panel_width(&args)?)?;
+            super::stale::report_after_install();
+            Ok(())
         }
         Some("uninstall") => {
             let mut removed = Vec::new();

@@ -71,7 +71,13 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
 /// Split the whole tab and run the sidebar in the new pane: `pane.split`
 /// accepts any node of the tab, so splitting its root node puts the sidebar
 /// beside all of its panes, full height.
+///
+/// A stale daemon (an older runtime's) is restarted first, or kept with a
+/// notice when it has unsaved work (`stale`).
 pub(crate) fn open(ctx: &Ctx) -> Result<String> {
+    if let Err(error) = super::stale::refresh_on_open(ctx.tab.as_str(), &ctx.cwd) {
+        eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
+    }
     let config = config::load();
     let root = doc::read()?
         .and_then(|doc| doc::root_of(&doc, raw_tab(&ctx.tab)))
@@ -200,6 +206,10 @@ pub fn toggle_cmd() -> Result<()> {
         (Some(terminal), Want::Open) => json!({"terminal": terminal}),
         (None, Want::Close) => json!({}),
     };
+    let mut made = made;
+    if let Some(notice) = super::stale::take_notice() {
+        made["notice"] = json!(notice);
+    }
     println!("{made}");
     Ok(())
 }

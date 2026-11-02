@@ -197,7 +197,11 @@ pub(crate) fn open_cmd() -> Result<()> {
     let mut herdr = AppHost;
     bridge::open_in_sidebar_at(&mut herdr, &ctx, &path.to_string_lossy(), line, col)?;
     let terminal = sidebar::find(&ctx.tab)?.unwrap_or_default();
-    println!("{}", json!({"terminal": terminal}));
+    let mut made = json!({"terminal": terminal});
+    if let Some(notice) = super::stale::take_notice() {
+        made["notice"] = json!(notice);
+    }
+    println!("{made}");
     Ok(())
 }
 

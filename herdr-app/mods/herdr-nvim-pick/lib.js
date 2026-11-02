@@ -17,6 +17,16 @@ export function context() {
   return JSON.stringify({ space: f.space, tab: f.tab, terminal: f.terminal ?? null, cwd: f.cwd ?? null });
 }
 
+// A command's `notice` (e.g. the tab's nvim runs an older herdr-nvim and was
+// kept for its unsaved work) as a warning toast.
+function noticeIn(stdout) {
+  let notice = null;
+  try {
+    notice = JSON.parse(stdout)?.notice;
+  } catch {}
+  if (notice) notify({ title: "herdr-nvim", body: notice, level: "warning", timeout: 15000 });
+}
+
 // Runs `herdr-nvim <command> [args] --ctx <tab>` (the focused tab unless
 // given); resolves with its stdout, or null after a toast saying what went
 // wrong.
@@ -28,7 +38,10 @@ export async function nvim(command, args = [], tab = null) {
   }
   try {
     const r = await exec(bin(), [command, ...args, "--ctx", ctx]);
-    if (r.code === 0) return r.stdout;
+    if (r.code === 0) {
+      noticeIn(r.stdout);
+      return r.stdout;
+    }
     notify({ title: `herdr-nvim ${command} failed`, body: (r.stderr || r.stdout).trim().slice(-400), level: "error" });
   } catch (e) {
     notify({ title: "herdr-nvim is not installed here", body: `${bin()}: ${e}`, level: "error" });

@@ -21,8 +21,9 @@ use crate::{
 };
 
 use super::{
+    plugin_root,
     registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
-    remote_expr,
+    remote_expr, runtime_stamp, STAMP_ENV,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -68,6 +69,8 @@ pub(crate) struct Probe {
     pub comments: Option<u32>,
     /// The daemon's own `$HERDR_TAB_ID`, if it matches its registry key.
     pub tab_id: Option<TabId>,
+    /// The runtime stamp it was started with ("" before stamps existed).
+    pub stamp: String,
 }
 
 /// One registered daemon.
@@ -84,6 +87,8 @@ pub(crate) struct DaemonInfo {
     /// Resident memory of the daemon plus all of its descendants (LSPs, jobs).
     pub rss_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
+    /// It answers but runs an older runtime than the installed one.
+    pub stale: bool,
 }
 
 impl DaemonInfo {
@@ -167,6 +172,7 @@ impl Serialize for DaemonInfo {
             state: DaemonState,
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
+            stale: bool,
         }
         let tab = self.tab.as_ref();
         Row {
@@ -181,6 +187,7 @@ impl Serialize for DaemonInfo {
             state: self.state(),
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
+            stale: self.stale,
         }
         .serialize(serializer)
     }
@@ -189,16 +196,20 @@ impl Serialize for DaemonInfo {
 /// Vimscript returning `"<pid> <unsaved> <comments> <tab id>"` in one round
 /// trip. Comments are only counted if the plugin's comment store is already
 /// loaded, so the probe never loads modules into the daemon.
+pub(crate) const COMMENTS_EXPR: &str =
+    "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
+     if not c then return 0 end local ok, l = pcall(c.list) \
+     return ok and #l or 0 end)()\")";
+
 fn probe_expr() -> String {
-    let comments = "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
-                    if not c then return 0 end local ok, l = pcall(c.list) \
-                    return ok and #l or 0 end)()\")";
-    format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
+    format!(
+        "join([getpid(), {UNSAVED_BUFFERS_EXPR}, {COMMENTS_EXPR}, $HERDR_TAB_ID, ${STAMP_ENV}], ' ')"
+    )
 }
 
 fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
     let out = remote_expr(&socket_path_for_key(key), &probe_expr(), sidebar)?;
-    let mut parts = out.splitn(4, ' ');
+    let mut parts = out.splitn(5, ' ');
     let mut number = || parts.next().and_then(|part| part.parse().ok());
     let pid = number();
     let unsaved = number();
@@ -207,11 +218,13 @@ fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
         .next()
         .map(TabId::new)
         .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
+    let stamp = parts.next().unwrap_or_default().to_owned();
     Some(Probe {
         pid,
         unsaved,
         comments,
         tab_id,
+        stamp,
     })
 }
 
@@ -229,6 +242,7 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
 /// `tabs` (`None` when herdr could not be asked).
 fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
+    let current = plugin_root().ok().and_then(|root| runtime_stamp(&root));
     keys.into_iter()
         .map(|key| {
             let probe = probe(&key, sidebar);
@@ -240,6 +254,10 @@ fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> V
                 (Some(pid), Some(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
+            let stale = match (&probe, &current) {
+                (Some(probe), Some(current)) => probe.stamp != *current,
+                _ => false,
+            };
             DaemonInfo {
                 key,
                 tab,
@@ -247,6 +265,7 @@ fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> V
                 probe,
                 rss_bytes,
                 uptime_secs,
+                stale,
             }
         })
         .collect()
@@ -432,6 +451,9 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
         if let Some(n @ 1..) = daemon.comments() {
             state.push_str(&format!(" · {n} comment(s)"));
         }
+        if daemon.stale {
+            state.push_str(" · stale");
+        }
         rows.push([
             daemon.tab_ref().to_owned(),
             daemon.display_name().unwrap_or_else(dash),
@@ -472,6 +494,12 @@ fn hints(daemons: &[DaemonInfo]) -> String {
         "stop one: herdr-nvim daemons stop {example}   (--force discards unsaved work)\n\
          stop all: herdr-nvim daemons stop --all\n"
     );
+    if daemons.iter().any(|daemon| daemon.stale) {
+        out.push_str(
+            "stale:    runs an older herdr-nvim; reopening its pane (Files or cmd-e, twice) \
+             restarts it unless it has unsaved work\n",
+        );
+    }
     if daemons.iter().any(DaemonInfo::tab_gone) {
         out.push_str("orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)\n");
     }

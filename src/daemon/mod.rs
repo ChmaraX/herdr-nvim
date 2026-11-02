@@ -141,7 +141,7 @@ fn spawn_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if crate::host::current() == crate::host::Host::App {
-        app_daemon(&mut command, tab);
+        app_daemon(&mut command, tab, runtime_stamp(plugin_root));
     }
     detach_command(&mut command);
     let child = command
@@ -163,7 +163,14 @@ fn spawn_daemon(
 ///
 /// It also names its window: the app's pane header shows the terminal title,
 /// which nvim sets from `titlestring` (a user config may still change it).
-fn app_daemon(command: &mut Command, tab: &str) {
+///
+/// And it records which runtime it loaded (`STAMP_ENV`, the install's
+/// `runtime-stamp`), so a later install can tell it runs older Lua.
+fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>) {
+    match stamp {
+        Some(stamp) => command.env(STAMP_ENV, stamp),
+        None => command.env_remove(STAMP_ENV),
+    };
     command
         .env(
             "HERDR_NVIM_CURRENT_FILE",
@@ -179,6 +186,19 @@ fn app_daemon(command: &mut Command, tab: &str) {
             command.env("HERDR_NVIM_SELF", exe);
         }
     }
+}
+
+/// The daemon's record of the runtime it loaded (see `runtime_stamp`).
+pub(crate) const STAMP_ENV: &str = "HERDR_NVIM_RUNTIME_STAMP";
+
+/// The installed runtime's stamp: `<plugin root>/runtime-stamp`, a hash of
+/// the binary and Lua that `herdr-app/install.sh` writes. `None` without one
+/// (a build run from the repo): then no daemon counts as stale.
+pub(crate) fn runtime_stamp(plugin_root: &Path) -> Option<String> {
+    fs::read_to_string(plugin_root.join("runtime-stamp"))
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|stamp| !stamp.is_empty())
 }
 
 /// Detach a child that must survive the pane process which launched it.

@@ -16,6 +16,7 @@ mod session;
 pub(crate) mod settings;
 pub(crate) mod setup;
 pub(crate) mod sidebar;
+pub(crate) mod stale;
 pub(crate) mod tree;
 pub(crate) mod watch;
 

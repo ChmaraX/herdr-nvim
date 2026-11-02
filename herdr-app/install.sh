@@ -17,9 +17,12 @@
 # (default 300, unless the layout file sets a width of its own). --tree writes
 # [app] tree into herdr-nvim's config (native: the native tree beside nvim, the
 # default; nvim: nvim's own explorer inside the nvim pane). Run it again to
-# upgrade in place. Uninstall takes out exactly those edits (keys still bound
-# to herdr-nvim, its layout changes in every personal layout; no layout is
-# deleted or switched), the mods and the runtime, and stops the app's nvims.
+# upgrade in place: tab nvims already running keep running and are reported
+# as stale; each restarts on the new runtime the next time its pair opens
+# (unless it has unsaved work). Uninstall takes out exactly those edits (keys
+# still bound to herdr-nvim, its layout changes in every personal layout; no
+# layout is deleted or switched), the mods and the runtime, and stops the
+# app's nvims.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -40,7 +43,7 @@ while [ $# -gt 0 ]; do
     --app-bin) app_bin=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
     --tree) tree=$2; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -92,6 +95,12 @@ cp "$repo/target/release/herdr-nvim" "$runtime/bin/.herdr-nvim.new"
 mv -f "$runtime/bin/.herdr-nvim.new" "$runtime/bin/herdr-nvim"
 rm -rf "$runtime/lua" "$runtime/plugin"
 cp -R "$repo/lua" "$repo/plugin" "$runtime/"
+# The runtime's stamp: each tab nvim records the one it started with, so one
+# started before this install counts as stale (restarted when its pair next
+# opens, never stopped here).
+(cd "$runtime" && find bin/herdr-nvim lua plugin -type f | LC_ALL=C sort | xargs shasum -a 256 |
+  shasum -a 256 | cut -c1-16) > "$runtime/.runtime-stamp.new"
+mv -f "$runtime/.runtime-stamp.new" "$runtime/runtime-stamp"
 
 # Each mod folder is swapped in whole, so the app never loads half a copy.
 for m in "${mods[@]}"; do
