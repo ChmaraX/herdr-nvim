@@ -327,7 +327,7 @@ mod tests {
     fn on_a_shipped_layout_the_persons_own_copy_is_used_or_one_is_made() {
         assert_eq!(copy_of("main", &[]).unwrap(), None, "none yet: clone");
         let mine = ("mine".to_owned(), json!({"id": "root"}));
-        assert_eq!(copy_of("main", &[mine.clone()]).unwrap(), None);
+        assert_eq!(copy_of("main", std::slice::from_ref(&mine)).unwrap(), None);
         // An older install's clone is the person's copy now.
         let old = copy("main-mods", "main");
         assert_eq!(
@@ -343,7 +343,10 @@ mod tests {
             Some("main-copy"),
             "the app's default name wins"
         );
-        assert_eq!(copy_of("terminals", &[old.clone()]).unwrap(), None);
+        assert_eq!(
+            copy_of("terminals", std::slice::from_ref(&old)).unwrap(),
+            None
+        );
         assert!(
             copy_of("main", &[old, copy("main-2", "main")]).is_err(),
             "several: ask"
