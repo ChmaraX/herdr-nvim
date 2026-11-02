@@ -24,6 +24,8 @@ use std::collections::HashSet;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::node;
+
 pub(crate) const MOD: &str = "herdr-nvim";
 pub(crate) const SLOT: &str = "files";
 pub(crate) const SYNC: &str = "herdr-nvim-sync";
@@ -38,57 +40,18 @@ pub(crate) const SHIPPED_PANEL_PX: f64 = 368.0;
 /// herdr-nvim's default: ~15% of a 2021px window, as the person sized it.
 pub(crate) const DEFAULT_PANEL_PX: u32 = 300;
 
-fn children(node: &Value) -> impl Iterator<Item = &Value> {
-    node.get("children")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-}
-
-/// The chain of nodes from `node` to the node `id`.
-fn path_to<'a>(node: &'a Value, id: &str, trail: &mut Vec<&'a Value>) -> bool {
-    trail.push(node);
-    if node.get("id").and_then(Value::as_str) == Some(id) {
-        return true;
-    }
-    for child in children(node) {
-        if path_to(child, id, trail) {
-            return true;
-        }
-    }
-    trail.pop();
-    false
-}
-
 /// The id of the panel: the parent of the stack holding the slot.
 fn panel_id(layout: &Value) -> Option<String> {
-    let mut trail = Vec::new();
-    if !path_to(layout, SLOT, &mut trail) {
-        return None;
-    }
+    let trail = node::path_to(layout, &|n| node::id(n) == Some(SLOT))?;
     let stack = trail
         .iter()
         .rposition(|n| n.get("type").and_then(Value::as_str) == Some("stack"))?;
-    trail
-        .get(stack.checked_sub(1)?)?
-        .get("id")?
-        .as_str()
-        .map(str::to_owned)
-}
-
-fn find_mut<'a>(node: &'a mut Value, id: &str) -> Option<&'a mut Value> {
-    if node.get("id").and_then(Value::as_str) == Some(id) {
-        return Some(node);
-    }
-    node.get_mut("children")?
-        .as_array_mut()?
-        .iter_mut()
-        .find_map(|child| find_mut(child, id))
+    node::id(trail.get(stack.checked_sub(1)?)?).map(str::to_owned)
 }
 
 /// Every node id in the layout, floating blocks included.
 fn ids(node: &Value, out: &mut HashSet<String>) {
-    if let Some(id) = node.get("id").and_then(Value::as_str) {
+    if let Some(id) = node::id(node) {
         out.insert(id.to_owned());
     }
     for floating in node
@@ -99,24 +62,9 @@ fn ids(node: &Value, out: &mut HashSet<String>) {
     {
         ids(floating, out);
     }
-    for child in children(node) {
+    for child in node::children(node) {
         ids(child, out);
     }
-}
-
-/// The child indices from `node` down to its first `{tab: "active"}` block.
-fn path_to_tab(node: &Value, trail: &mut Vec<usize>) -> bool {
-    if node.pointer("/content/tab").and_then(Value::as_str) == Some("active") {
-        return true;
-    }
-    for (at, child) in children(node).enumerate() {
-        trail.push(at);
-        if path_to_tab(child, trail) {
-            return true;
-        }
-        trail.pop();
-    }
-    false
 }
 
 fn at_path<'a>(mut node: &'a mut Value, path: &[usize]) -> &'a mut Value {
@@ -124,18 +72,6 @@ fn at_path<'a>(mut node: &'a mut Value, path: &[usize]) -> &'a mut Value {
         node = &mut node["children"][at];
     }
     node
-}
-
-/// Remove the node `id` from wherever it is under `node`.
-fn remove_node(node: &mut Value, id: &str) -> Option<Value> {
-    let list = node.get_mut("children")?.as_array_mut()?;
-    if let Some(at) = list
-        .iter()
-        .position(|c| c.get("id").and_then(Value::as_str) == Some(id))
-    {
-        return Some(list.remove(at));
-    }
-    list.iter_mut().find_map(|child| remove_node(child, id))
 }
 
 /// Where a node sits among its siblings: what moves to a wrapping row.
@@ -158,10 +94,10 @@ fn add_panel(layout: &mut Value, panel_width: u32) -> Result<()> {
     if taken.contains(&panel) || taken.contains(&stack) || taken.contains(ROW) {
         bail!("this layout already uses the ids herdr-nvim's side panel needs ({panel}, {stack}, {ROW})");
     }
-    let mut trail = Vec::new();
-    if !path_to_tab(layout, &mut trail) || trail.is_empty() {
+    let is_tab = |n: &Value| n.pointer("/content/tab").and_then(Value::as_str) == Some("active");
+    let Some(trail) = node::index_path(layout, &is_tab).filter(|trail| !trail.is_empty()) else {
         bail!("this layout has no `files` slot and no tab block (`{{\"tab\": \"active\"}}`) to put the side panel beside");
-    }
+    };
     let width = f64::from(panel_width);
     let parent_is_row = at_path(layout, &trail[..trail.len() - 1])
         .get("type")
@@ -200,12 +136,12 @@ fn add_panel(layout: &mut Value, panel_width: u32) -> Result<()> {
 /// wrapped (and nothing else was put in that row since).
 fn remove_panel(layout: &mut Value, added: &Value) {
     if let Some(panel) = added.get("panel").and_then(Value::as_str) {
-        remove_node(layout, panel);
+        node::remove(layout, panel);
     }
     let Some(row_id) = added.get("row").and_then(Value::as_str) else {
         return;
     };
-    let Some(row) = find_mut(layout, row_id) else {
+    let Some(row) = node::find_mut(layout, row_id) else {
         return;
     };
     let Some([only]) = row
@@ -234,11 +170,11 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         bail!("the layout is not an object");
     }
     let before = layout.clone();
-    if find_mut(layout, SLOT).is_none() {
+    if node::find_mut(layout, SLOT).is_none() {
         add_panel(layout, panel_width)?;
     }
     let panel = panel_id(layout);
-    let slot = find_mut(layout, SLOT).context("the `files` slot")?;
+    let slot = node::find_mut(layout, SLOT).context("the `files` slot")?;
     if slot.pointer("/content/mod").and_then(Value::as_str) != Some(MOD) {
         let old = slot.get("content").cloned().unwrap_or(Value::Null);
         slot["content"] = json!({"mod": MOD, "props": {"replaces": old}});
@@ -247,7 +183,7 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         .pointer("/content/props/panel_width")
         .and_then(Value::as_f64);
     let mut was = None;
-    if let Some(node) = panel.as_deref().and_then(|id| find_mut(layout, id)) {
+    if let Some(node) = panel.as_deref().and_then(|id| node::find_mut(layout, id)) {
         let now = px(node);
         let free = now.is_none() || now == Some(SHIPPED_PANEL_PX) || (now.is_some() && now == ours);
         if free && now != Some(f64::from(panel_width)) {
@@ -256,7 +192,7 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         }
     }
     if let Some(was) = was {
-        let props = &mut find_mut(layout, SLOT).expect("found above")["content"]["props"];
+        let props = &mut node::find_mut(layout, SLOT).expect("found above")["content"]["props"];
         if props.get("panel_width_was").is_none() && props.get("added").is_none() {
             props["panel_width_was"] = was;
         }
@@ -286,7 +222,7 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
 pub(crate) fn restore(layout: &mut Value) -> bool {
     let before = layout.clone();
     let panel = panel_id(layout);
-    let props = find_mut(layout, SLOT)
+    let props = node::find_mut(layout, SLOT)
         .filter(|s| s.pointer("/content/mod").and_then(Value::as_str) == Some(MOD))
         .map(|slot| {
             slot.pointer("/content/props")
@@ -297,7 +233,7 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
         if let Some(added) = props.get("added").filter(|a| a.is_object()) {
             remove_panel(layout, added);
         } else {
-            let slot = find_mut(layout, SLOT).expect("found above");
+            let slot = node::find_mut(layout, SLOT).expect("found above");
             slot["content"] = props
                 .get("replaces")
                 .filter(|old| !old.is_null())
@@ -305,7 +241,7 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
                 .unwrap_or_else(|| json!({"mod": SLOT}));
             if let (Some(ours), Some(node)) = (
                 props.get("panel_width").and_then(Value::as_f64),
-                panel.as_deref().and_then(|id| find_mut(layout, id)),
+                panel.as_deref().and_then(|id| node::find_mut(layout, id)),
             ) {
                 if px(node) == Some(ours) {
                     match props.get("panel_width_was").filter(|was| was.is_number()) {

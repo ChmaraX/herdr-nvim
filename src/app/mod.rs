@@ -11,6 +11,7 @@ pub(crate) mod commands;
 mod doc;
 mod host;
 mod layout_patch;
+mod node;
 pub(crate) mod rpc;
 mod session;
 pub(crate) mod settings;

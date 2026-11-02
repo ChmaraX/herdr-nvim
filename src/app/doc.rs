@@ -4,61 +4,84 @@
 //! format), so parsing is defensive: anything unexpected reads as "unknown",
 //! never as "no tabs" (which would reap every daemon).
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{herdr::TabInfo, state::TabId};
 
-use super::{rpc, tab_id};
+use super::{node, rpc, tab_id};
 
-/// The document if the core has one with a `spaces` list.
-pub(crate) fn read() -> anyhow::Result<Option<Value>> {
+/// The document: only what herdr-nvim reads, every other field ignored. A
+/// space without a string `id` or a `tabs` list, or a tab without an `id`,
+/// fails the whole parse (unknown, not fewer tabs).
+#[derive(Debug, Deserialize)]
+pub(crate) struct Doc {
+    pub spaces: Vec<Space>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Space {
+    pub id: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub folder: Option<String>,
+    pub tabs: Vec<Tab>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Tab {
+    pub id: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub folder: Option<String>,
+    /// The tab's split tree (`node`).
+    #[serde(default)]
+    pub root: Value,
+}
+
+/// A name or folder: a string, else nothing (never a failed parse).
+fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+
+/// The document if the core has one in a shape herdr-nvim knows.
+pub(crate) fn read() -> anyhow::Result<Option<Doc>> {
     let result = rpc::call("doc.get", json!({"name": "herdr-app"}))?;
     Ok(parse(&result))
 }
 
 /// Pure: `doc.get`'s result to the document, or `None` when it was never
-/// written (version 0) or has no `spaces` list.
-pub(crate) fn parse(result: &Value) -> Option<Value> {
+/// written (version 0) or isn't in the shape above.
+pub(crate) fn parse(result: &Value) -> Option<Doc> {
     if result.get("version").and_then(Value::as_u64).unwrap_or(0) == 0 {
         return None;
     }
-    let value = result.get("value")?;
-    value.get("spaces")?.as_array()?;
-    Some(value.clone())
+    Doc::deserialize(result.get("value")?).ok()
 }
 
-fn spaces(doc: &Value) -> &[Value] {
-    doc.get("spaces")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-}
-
-fn tabs(space: &Value) -> &[Value] {
-    space
-        .get("tabs")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-}
-
-fn non_empty(value: Option<&Value>) -> Option<String> {
+fn non_empty(value: &Option<String>) -> Option<String> {
     value
-        .and_then(Value::as_str)
+        .as_deref()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 
+/// The tab `tab` (raw app id) and its space.
+pub(crate) fn tab<'a>(doc: &'a Doc, tab: &str) -> Option<(&'a Space, &'a Tab)> {
+    doc.spaces
+        .iter()
+        .find_map(|space| Some((space, space.tabs.iter().find(|t| t.id == tab)?)))
+}
+
 /// Every tab, named as the app shows it: a space nobody named is called after
 /// its folder, a tab nobody named by its position.
-pub(crate) fn tab_infos(doc: &Value) -> Vec<TabInfo> {
+pub(crate) fn tab_infos(doc: &Doc) -> Vec<TabInfo> {
     let mut out = Vec::new();
-    for space in spaces(doc) {
-        let Some(space_id) = space.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let space_label = non_empty(space.get("name")).or_else(|| {
-            non_empty(space.get("folder")).map(|folder| {
+    for space in &doc.spaces {
+        let space_label = non_empty(&space.name).or_else(|| {
+            non_empty(&space.folder).map(|folder| {
                 folder
                     .trim_end_matches('/')
                     .rsplit('/')
@@ -67,14 +90,11 @@ pub(crate) fn tab_infos(doc: &Value) -> Vec<TabInfo> {
                     .to_owned()
             })
         });
-        for (index, tab) in tabs(space).iter().enumerate() {
-            let Some(id) = tab.get("id").and_then(Value::as_str) else {
-                continue;
-            };
+        for (index, t) in space.tabs.iter().enumerate() {
             out.push(TabInfo {
-                tab_id: TabId::new(tab_id(space_id, id)),
+                tab_id: TabId::new(tab_id(&space.id, &t.id)),
                 workspace_label: space_label.clone(),
-                tab_label: non_empty(tab.get("name")),
+                tab_label: non_empty(&t.name),
                 tab_number: Some(index as u64 + 1),
             });
         }
@@ -84,93 +104,52 @@ pub(crate) fn tab_infos(doc: &Value) -> Vec<TabInfo> {
 
 /// The id of the root node of tab `tab` (its raw app id). It starts out as
 /// the tab's id but changes as splits come and go.
-pub(crate) fn root_of(doc: &Value, tab: &str) -> Option<String> {
-    spaces(doc)
-        .iter()
-        .flat_map(|space| tabs(space))
-        .find(|t| t.get("id").and_then(Value::as_str) == Some(tab))?
-        .pointer("/root/id")?
-        .as_str()
-        .map(str::to_owned)
+pub(crate) fn root_of(doc: &Doc, raw: &str) -> Option<String> {
+    node::id(&tab(doc, raw)?.1.root).map(str::to_owned)
 }
 
 /// The space a tab (raw app id) is in.
-pub(crate) fn space_of(doc: &Value, tab: &str) -> Option<String> {
-    spaces(doc)
-        .iter()
-        .find(|space| {
-            tabs(space)
-                .iter()
-                .any(|t| t.get("id").and_then(Value::as_str) == Some(tab))
-        })?
-        .get("id")?
-        .as_str()
-        .map(str::to_owned)
-}
-
-/// The terminals a tab shows, in its tree's order.
-pub(crate) fn terminals_of(doc: &Value, tab: &str) -> Vec<String> {
-    fn collect(node: &Value, out: &mut Vec<String>) {
-        if let Some(t) = node.pointer("/content/terminal").and_then(Value::as_str) {
-            out.push(t.to_owned());
-        }
-        for child in node
-            .get("children")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            collect(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    if let Some(root) = spaces(doc)
-        .iter()
-        .flat_map(|space| tabs(space))
-        .find(|t| t.get("id").and_then(Value::as_str) == Some(tab))
-        .and_then(|t| t.get("root"))
-    {
-        collect(root, &mut out);
-    }
-    out
+pub(crate) fn space_of(doc: &Doc, raw: &str) -> Option<String> {
+    Some(tab(doc, raw)?.0.id.clone())
 }
 
 /// The folder of tab `tab` (raw app id): its own `folder` if the app gives
 /// it one, else its space's.
-pub(crate) fn folder_of(doc: &Value, tab: &str) -> Option<String> {
-    spaces(doc).iter().find_map(|space| {
-        let found = tabs(space)
-            .iter()
-            .find(|t| t.get("id").and_then(Value::as_str) == Some(tab))?;
-        non_empty(found.get("folder")).or_else(|| non_empty(space.get("folder")))
-    })
+pub(crate) fn folder_of(doc: &Doc, raw: &str) -> Option<String> {
+    let (space, t) = tab(doc, raw)?;
+    non_empty(&t.folder).or_else(|| non_empty(&space.folder))
+}
+
+/// The terminals a tab shows, in its tree's order.
+pub(crate) fn terminals_of(doc: &Doc, raw: &str) -> Vec<String> {
+    tab(doc, raw)
+        .map(|(_, t)| {
+            node::walk(&t.root)
+                .filter_map(node::terminal)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The pane (block id) showing `terminal`, and its tab's composite id.
-pub(crate) fn pane_of(doc: &Value, terminal: &str) -> Option<(String, String)> {
-    for space in spaces(doc) {
-        let space_id = space.get("id").and_then(Value::as_str)?;
-        for tab in tabs(space) {
-            let tab_raw = tab.get("id").and_then(Value::as_str)?;
-            if let Some(pane) = tab
-                .get("root")
-                .and_then(|root| find_terminal(root, terminal))
-            {
-                return Some((pane, tab_id(space_id, tab_raw)));
-            }
-        }
-    }
-    None
+pub(crate) fn pane_of(doc: &Doc, terminal: &str) -> Option<(String, String)> {
+    doc.spaces.iter().find_map(|space| {
+        space.tabs.iter().find_map(|t| {
+            let pane = node::walk(&t.root).find(|n| node::terminal(n) == Some(terminal))?;
+            Some((node::id(pane)?.to_owned(), tab_id(&space.id, &t.id)))
+        })
+    })
 }
 
-fn find_terminal(node: &Value, terminal: &str) -> Option<String> {
-    if node.pointer("/content/terminal").and_then(Value::as_str) == Some(terminal) {
-        return node.get("id").and_then(Value::as_str).map(str::to_owned);
-    }
-    node.get("children")?
-        .as_array()?
+/// The terminal the pane (block id) `pane` shows, in any tab.
+pub(crate) fn terminal_of_pane(doc: &Doc, pane: &str) -> Option<String> {
+    doc.spaces
         .iter()
-        .find_map(|child| find_terminal(child, terminal))
+        .flat_map(|space| &space.tabs)
+        .find_map(|t| node::find(&t.root, pane))
+        .and_then(node::terminal)
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -217,11 +196,13 @@ mod tests {
 
     #[test]
     fn the_root_of_a_tab_is_whatever_node_is_on_top_now() {
-        let mut doc = parse(&fixture()).unwrap();
+        let doc = parse(&fixture()).unwrap();
         assert_eq!(root_of(&doc, "tbOne").as_deref(), Some("tbOne"));
         // After a sidebar closes, the split collapses to the remaining child.
-        doc["spaces"][0]["tabs"][1]["root"] =
+        let mut raw = fixture();
+        raw["value"]["spaces"][0]["tabs"][1]["root"] =
             json!({"id": "pAgent", "type": "block", "content": {"terminal": "t5"}});
+        let doc = parse(&raw).unwrap();
         assert_eq!(root_of(&doc, "tbTwo").as_deref(), Some("pAgent"));
         assert_eq!(root_of(&doc, "tbNope"), None);
     }
@@ -236,16 +217,19 @@ mod tests {
         assert_eq!(pane_of(&doc, "t9"), None);
         assert_eq!(space_of(&doc, "tbTwo").as_deref(), Some("spA"));
         assert_eq!(terminals_of(&doc, "tbOne"), ["t1", "t4"]);
+        assert_eq!(terminal_of_pane(&doc, "pRight").as_deref(), Some("t4"));
+        assert_eq!(terminal_of_pane(&doc, "sX"), None);
     }
 
     #[test]
     fn a_tab_without_its_own_folder_has_its_space_folder() {
-        let mut doc = parse(&fixture()).unwrap();
+        let mut raw = fixture();
         assert_eq!(
-            folder_of(&doc, "tbOne").as_deref(),
+            folder_of(&parse(&raw).unwrap(), "tbOne").as_deref(),
             Some("/tmp/herdr-app-nvim/work")
         );
-        doc["spaces"][0]["tabs"][1]["folder"] = json!("/tmp/elsewhere");
+        raw["value"]["spaces"][0]["tabs"][1]["folder"] = json!("/tmp/elsewhere");
+        let doc = parse(&raw).unwrap();
         assert_eq!(folder_of(&doc, "tbTwo").as_deref(), Some("/tmp/elsewhere"));
         assert_eq!(folder_of(&doc, "tbNope"), None);
     }

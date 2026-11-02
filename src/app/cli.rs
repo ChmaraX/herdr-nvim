@@ -127,7 +127,7 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
     let terminal = text("agent").or_else(|| {
         let doc = super::doc::read().ok().flatten()?;
         let pane = pane?;
-        terminal_of_pane(&doc, &pane)
+        super::doc::terminal_of_pane(&doc, &pane)
     });
     Ok(AppCtx {
         space,
@@ -135,27 +135,6 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
         terminal,
         cwd: None,
     })
-}
-
-fn terminal_of_pane(node: &Value, pane: &str) -> Option<String> {
-    if node.get("id").and_then(Value::as_str) == Some(pane) {
-        return node
-            .pointer("/content/terminal")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-    }
-    let children = node
-        .get("children")
-        .or_else(|| node.get("spaces"))
-        .or_else(|| node.get("tabs"));
-    if let Some(found) = children
-        .and_then(Value::as_array)
-        .and_then(|list| list.iter().find_map(|child| terminal_of_pane(child, pane)))
-    {
-        return Some(found);
-    }
-    node.get("root")
-        .and_then(|root| terminal_of_pane(root, pane))
 }
 
 #[cfg(test)]
@@ -189,15 +168,5 @@ mod tests {
         assert_eq!(ctx.terminal.as_deref(), Some("t5"));
         assert_eq!(ctx_from_args(&args(&["toggle"])).unwrap(), None);
         assert!(ctx_from_args(&args(&["toggle", "--ctx", r#"{"space":"","tab":"x"}"#])).is_err());
-    }
-
-    #[test]
-    fn finds_the_terminal_of_a_focused_pane_in_the_document() {
-        let doc = serde_json::json!({"spaces": [{"id": "spA", "tabs": [{"id": "tbB",
-            "root": {"id": "tbB", "type": "row", "children": [
-                {"id": "p1", "type": "block", "content": {"terminal": "t1"}},
-                {"id": "p2", "type": "block", "content": {"mod": "files"}}]}}]}]});
-        assert_eq!(terminal_of_pane(&doc, "p1").as_deref(), Some("t1"));
-        assert_eq!(terminal_of_pane(&doc, "p2"), None);
     }
 }
