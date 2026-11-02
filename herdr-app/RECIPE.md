@@ -34,8 +34,39 @@ file:line context.
   line or selection, `al` list, `as` paste all comments into the agent's
   input, `aS` send them (submitted), `ai` reference `path:line`.
 
+### The tree's keys (LazyVim's Snacks explorer defaults)
+
+The tree takes the keyboard from `pane.go` (the person's pane keys) and from
+`cmd-shift-e`, which opens the pair if needed and selects the file nvim shows.
+In nvim, LazyVim's explorer keys (`<leader>e`, `<leader>E`, `<leader>fe`,
+`<leader>fE`) do the same instead of opening nvim's own explorer.
+
+| Key | Does |
+|---|---|
+| `j`/`k`, ↓/↑, `g`/`G` | move; first/last |
+| `l`, ⏎, → | open the file in the tab's nvim (it takes the keyboard), or open/close the folder |
+| `h`, ← | close the folder (the open one, else the row's) and stand on it |
+| `/` | find: type to fuzzy-search every file under the root (fff); ⏎ opens, Esc returns |
+| `a` | new file in the row's folder (a dialog); end with `/` for a folder; a new file opens in nvim |
+| `r` | rename (a path in the root; nvim's buffers and language servers follow) |
+| Tab | select the row (●) for `m`, `c`, `d`, `y` |
+| `m` | move the selected rows into the row's folder (confirm); with none selected, rename |
+| `c` | copy the selected rows into the row's folder (confirm); with none, copy to a new name |
+| `d` | delete (confirm); to the trash when the person's Snacks says so; their buffers close |
+| `y` / `p` | yank the paths into nvim's register / paste those files into the row's folder |
+| `H` / `I` | show hidden / git-ignored files (start as the person's Snacks explorer has them) |
+| Backspace / `.` | root up a folder / the row's folder becomes the root |
+| `o` | open with the system's app |
+| `Z` / `u` | close every folder / list again |
+| `q`, Esc | back to the tab's nvim (Snacks closes its window; here the pair closes with cmd-e) |
+
 ## How it behaves
 
+- **`tree` setting** (herdr-nvim's config, `[app] tree`, read at each use;
+  `install.sh --tree native|nvim` writes it): `native` (default) is what this
+  recipe describes; `nvim` makes the Files button and `cmd-e` toggle only the
+  tab's nvim pane, with nvim's own explorer opened inside it (the Files panel
+  shows for a moment and is put away), and leaves `<leader>e` as it was.
 - **Files button = `cmd-e`**: in a tab without them, both open together (the
   panel, and the tab's nvim pane with the keyboard); pressing again closes
   both. Closing never stops the tab's nvim: reopening reattaches to the same
@@ -155,8 +186,19 @@ file:line context.
     (`terminal.list`, agents = terminals with a reported status) and for
     sending (`hc send` to submit; paste = a short framed `terminal.attach`
     that types the text, bracketed when the program asked for it).
+- **The tree** (`tree-view.js` keys and drawing, `tree-model.js` folders,
+  `dialog.js` its prompts as a dialog of this mod with props {dialog},
+  `ops.js` its client): `mod.json` `"focusable": true`; `"focus"` from
+  `nextCommand()` focuses it and selects nvim's current file. Every file
+  operation is `exec bin/herdr-nvim fs '<request>'`, done by the tab's nvim
+  (`lua/herdr-nvim/fs.lua`: Snacks' rename/trash/bufdelete when present, the
+  same LSP `willRenameFiles`/`didRenameFiles` steps otherwise), refused
+  outside the tab's folder unless the dialog asked first. nvim writes the
+  file it shows to `$HERDR_NVIM_CURRENT_FILE` on BufEnter; the tree watches
+  that folder. Paths are real paths (`/private/tmp`, not `/tmp`).
 - **Keys** (`keys.json`, merged into `global` only where free):
-  `cmd-e` → `mod.open:herdr-nvim`, `cmd-o` → `mod.open:herdr-nvim-pick`.
+  `cmd-e` → `mod.open:herdr-nvim`, `cmd-o` → `mod.open:herdr-nvim-pick`,
+  `cmd-shift-e` → `herdr-nvim.reveal` (a command the controller takes).
 
 ## Watch out
 
@@ -190,6 +232,10 @@ file:line context.
   typo tolerance, frecency) is the Rust core the TUI plugin shares.
 - macOS was tested; the wrapper and install script are POSIX sh/bash.
 
+- Keys go to the tree only after it has the keyboard: `pane.go` reaches it
+  only once it is laid out (the controller waits for its first size).
+- A dialog closing gives the tree the keyboard back (`"focus"` again).
+
 ## Done when
 
 - `herdr-app check` passes for both mod folders and `herdr-app status` shows
@@ -213,6 +259,15 @@ file:line context.
   the input unsubmitted.
 - `bin/herdr-nvim open --tab <tab> src/notes.md:3:6` with both closed opens
   the pane on line 3, column 6, and the panel with it.
+- `cmd-shift-e` selects nvim's file in the tree with the keyboard there; `r`
+  renames it and nvim's buffer follows; `pane.go` right and `<leader>e` (a
+  LazyVim-like explorer mapping) reach the tree too; an nvim whose
+  `<leader>e` opens no explorer keeps it.
+- `a` makes files and `newdir/` folders; `m` with a Tab selection moves
+  after a confirm; `d` deletes after a confirm and the buffer goes; `/needle`
+  finds a file three folders down; `I` and `H` show `build/` and `.hidden`.
+- `tree = nvim`: `cmd-e` and Files open and close only the nvim pane, with
+  nvim's explorer inside.
 - Closing the tab stops its nvim; closing the space stops the rest and the
   `herdr-nvim-watch` terminal ends.
 - Uninstall: keys removed, the layout's Files is the shipped browser again,
