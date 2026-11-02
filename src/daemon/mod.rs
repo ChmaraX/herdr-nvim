@@ -257,6 +257,11 @@ pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Optio
 /// `remote_expr` that gives up after `timeout`: nvim answers no request while
 /// it waits at a prompt (hit-enter, a confirm), and a click in the app must
 /// not hang on that.
+///
+/// Its stdout is read only after nvim exits, so a reply larger than the pipe
+/// buffer (64 KiB on macOS and Linux) would block nvim's write and run into
+/// the timeout. Every caller asks for a few words (counts, a path, a stamp);
+/// read it on a thread first before asking for anything big.
 pub(crate) fn remote_expr_within(
     socket: &Path,
     expr: &str,
