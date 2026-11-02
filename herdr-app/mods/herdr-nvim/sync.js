@@ -32,7 +32,7 @@
 // the command by a moment).
 
 import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
-import { nvim } from "./lib.js";
+import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, showFiles, takeKeepNvim } from "./panel.js";
 
@@ -70,7 +70,9 @@ export class Sync {
       this.prev = null;
       return;
     }
-    const cur = { tab: f.tab, files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
+    // `at`: the whole tab context, fixed now; actions on `cur` use it after
+    // their awaits, whichever tab is focused by then.
+    const cur = { tab: f.tab, at: place(f), files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
     const prev = this.prev;
     this.prev = cur;
     const native = shared("herdr-nvim.tree") !== "nvim";
@@ -107,18 +109,20 @@ export class Sync {
         cur.files = false;
         state = cur.nvim ? "close" : "open";
       }
-      if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.tab, state);
+      if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state);
       cur.nvim = state === "open";
       this.busy = false;
       cx.notify();
     });
   }
 
-  async toggle(tab, state) {
-    const out = await nvim("toggle", ["--state", state]);
+  // Opens or closes the nvim of the tab `at` (a `place()`), not whichever
+  // tab is focused when the command runs.
+  async toggle(at, state) {
+    const out = await nvim("toggle", ["--state", state], at);
     if (out === null) return null;
     const made = JSON.parse(out || "{}");
-    this.expect = { tab, opened: made.terminal ?? null, closed: made.closed ?? null };
+    this.expect = { tab: at.tab, opened: made.terminal ?? null, closed: made.closed ?? null };
     return made;
   }
 
@@ -137,12 +141,13 @@ export class Sync {
   async reveal(cx) {
     const f = focused(), p = panelState(layout());
     if (!f?.tab || !p || this.busy) return;
+    const at = place(f);
     this.kept.delete(f.tab);
     this.busy = true;
     try {
       const mode = await treeMode();
       let terminal = nvimPanes(f.tab)[0];
-      if (!terminal) terminal = (await this.toggle(f.tab, "open"))?.terminal;
+      if (!terminal) terminal = (await this.toggle(at, "open"))?.terminal;
       if (!terminal) return;
       if (mode === "nvim") return run("pane.focus", { terminal });
       if (!p.files) showFiles(p);

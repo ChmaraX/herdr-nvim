@@ -16,7 +16,7 @@
 
 import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props } from "herdr";
-import { nvim } from "./lib.js";
+import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Dialog } from "./dialog.js";
@@ -31,10 +31,10 @@ export default class HerdrNvim extends View {
     else if (dialog) this.part = new Dialog(cx);
     else if (overlay) {
       cx.spawn(async () => {
-        const p = panelState(layout());
+        const p = panelState(layout()), at = place();
         if (!p || (await treeMode()) === "nvim") {
           if (p?.files) hidePanel(p);
-          await nvim("toggle");
+          await nvim("toggle", [], at);
         } else if (p.files) hidePanel(p);
         else showFiles(p);
         closeOverlay(overlay);

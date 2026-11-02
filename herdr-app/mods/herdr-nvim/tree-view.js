@@ -39,7 +39,7 @@ function place(previous) {
   const space = spaces().find((s) => s.id === f?.space) ?? spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
   const cwd = pane?.cwd || (f?.tab === previous?.tab ? previous?.cwd : null) || f?.cwd || space?.folder || null;
-  return { tab: f?.tab ?? null, cwd, machine: space?.machine ?? null };
+  return { space: space?.id ?? null, tab: f?.tab ?? null, cwd, machine: space?.machine ?? null };
 }
 
 export class Tree {
@@ -112,7 +112,7 @@ export class Tree {
 
   // The tab, with its folder as the tree knows it: what operations get.
   where() {
-    return { tab: this.place?.tab, cwd: this.tabRoot ?? this.model.root };
+    return { space: this.place?.space, tab: this.place?.tab, cwd: this.tabRoot ?? this.model.root };
   }
 
   // Shows `root` and watches it. Each root gets one watch loop, ended by the

@@ -7,8 +7,7 @@ import { bin, nvim } from "./lib.js";
 
 // The tab the tree works for, with its folder: what `--ctx` takes.
 export function tabOf(place) {
-  const f = focused();
-  return { space: f?.space, tab: place.tab, terminal: null, cwd: place.cwd };
+  return { space: place.space ?? focused()?.space, tab: place.tab, terminal: null, cwd: place.cwd };
 }
 
 // Runs one operation; resolves with its JSON answer, or null (a toast said why).

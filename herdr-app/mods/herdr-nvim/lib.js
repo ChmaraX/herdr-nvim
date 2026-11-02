@@ -10,11 +10,16 @@ export function bin() {
   return `${appHome()}/mods/herdr-nvim/bin/herdr-nvim`;
 }
 
-// The focused tab as `herdr-nvim --ctx` takes it, or null without one.
-export function context() {
-  const f = focused();
+// The focused tab as `herdr-nvim --ctx` takes it (parsed), or null without
+// one. Capture it before any await: the person may switch tabs meanwhile.
+export function place(f = focused()) {
   if (!f?.space || !f?.tab) return null;
-  return JSON.stringify({ space: f.space, tab: f.tab, terminal: f.terminal ?? null, cwd: f.cwd ?? null });
+  return { space: f.space, tab: f.tab, terminal: f.terminal ?? null, cwd: f.cwd ?? null };
+}
+
+export function context() {
+  const p = place();
+  return p && JSON.stringify(p);
 }
 
 // A command's `notice` (e.g. the tab's nvim runs an older herdr-nvim and was
