@@ -67,6 +67,8 @@ app_pid=
 cleanup() {
   set +e
   say "cleanup (root $root)"
+  # The app's own log goes with the proof, failed run or not.
+  [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
   for t in $(hc ls --json 2>/dev/null | "$py" -c 'import json,sys; [print(t["address"]) for t in json.load(sys.stdin).get("terminals", [])]'); do
@@ -97,7 +99,9 @@ files_button() { # exactly what the tab bar's Files button runs (mods/tabs/main.
   H do layout.select '{"stack":"panel-body","child":"files"}' >/dev/null
   H do layout.show '{"id":"panel"}' >/dev/null
 }
-focused_pane() { H status | "$py" -c 'import json,sys; print(json.load(sys.stdin)["focused_pane"])'; }
+# jget KEY: the KEY field of the JSON object on stdin.
+jget() { "$py" -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+focused_pane() { H status | jget focused_pane; }
 focus_is() { [ "$(focused_pane)" = "$(pane_of "$1")" ]; }
 pane_of() { # the pane showing a terminal
   H ls | "$py" -c 'import json,sys
@@ -147,12 +151,12 @@ echo 'console.log(1)' >> "$demo/src/greet.js"
 agent=(python3 -u "$here/dummy-agent.py")
 argv=$("$py" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${agent[@]}")
 made=$(H do space.new "{\"name\":\"e2e\",\"folder\":\"$demo\",\"tab\":\"tab A\",\"argv\":$argv}")
-space=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["space"])')
-tab_a=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
-agent_a=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["terminal"])')
+space=$(echo "$made" | jget space)
+tab_a=$(echo "$made" | jget tab)
+agent_a=$(echo "$made" | jget terminal)
 made=$(H do tab.new "{\"name\":\"tab B\",\"space\":\"$space\",\"folder\":\"$demo\",\"argv\":$argv}")
-tab_b=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
-agent_b=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["terminal"])')
+tab_b=$(echo "$made" | jget tab)
+agent_b=$(echo "$made" | jget terminal)
 poll 20 sh -c "hc read $agent_a | grep -q 'notes.md:3'" || fail "agent A did not start"
 say "space $space: tab A $tab_a (agent $agent_a), tab B $tab_b (agent $agent_b)"
 # Agent A's pi session log, as pi writes it (after the agent started): it read
@@ -163,7 +167,7 @@ say "agent A's pi session log: read package.json, edited src/notes.md"
 # --- install --------------------------------------------------------------
 layouts=$HERDR_APP_HOME/layouts
 layouts_now() { (cd "$layouts" && ls -- *.json | sort | tr '\n' ' '); }
-shown_layout() { H status | "$py" -c 'import json,sys; print(json.load(sys.stdin)["layout"])'; }
+shown_layout() { H status | jget layout; }
 shown_is() { [ "$(shown_layout)" = "$1" ]; }
 ldiff() { "$py" "$here/layout_diff.py" "$@" | tee -a "$log"; } # ldiff BEFORE AFTER --expect JSON | --same BEFORE AFTER
 no_change='{"changed": {}, "added": [], "removed": []}'
@@ -199,7 +203,7 @@ say "orphan daemon pid $orphan_pid (tab that never existed)"
 
 # --- 1. Files button in tab A: the tree and the tab's nvim, together -------
 probe() { "$py" "$here/probe.py" "$app_bin"; }
-panel_is() { [ "$(probe | "$py" -c 'import json,sys; print(json.load(sys.stdin)["panel"])')" = "$1" ]; }
+panel_is() { [ "$(probe | jget panel)" = "$1" ]; }
 no_explorer() { # no file explorer window of nvim's own (netrw, snacks, nvim-tree, neo-tree, oil)
   ! nvim_eval "$1" 'join(map(nvim_list_wins(), {_,w -> getbufvar(winbufnr(w), "&filetype")}), ",")' |
     grep -Eq 'netrw|snacks_picker_list|NvimTree|neo-tree|oil|minifiles'
@@ -214,7 +218,7 @@ poll 15 sh -c "ls $root/run/app/*${tab_a:0:12}.sock" || fail "no daemon for tab 
 sock_a=$(sock_of "$space" "$tab_a")
 pid_a=$(daemon_pid "$sock_a")
 poll 10 focus_is "$sidebar_a" || fail "focus is not on the new nvim pane"
-width=$(probe | "$py" -c 'import json,sys; print(json.load(sys.stdin)["width"])')
+width=$(probe | jget width)
 [ "$width" = 300 ] || fail "the panel is $width px wide, not the default 300"
 no_explorer "$sock_a" || fail "nvim opened a file explorer of its own"
 H status | grep -q '"errors": \[\]' || fail "the mods report errors: $(H status)"
@@ -256,7 +260,7 @@ H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
 poll 10 panel_is files || fail "switching back to tab B did not bring its panel back"
 sidebar_of "$tab_a" && fail "a tab switch opened an nvim pane in tab A"
 say "tab switches: the panel follows each tab's nvim pane (A: closed, B: open), no pane opened by looking"
-space2=$(H do space.new "{\"name\":\"other\",\"folder\":\"$root/work\"}" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["space"])')
+space2=$(H do space.new "{\"name\":\"other\",\"folder\":\"$root/work\"}" | jget space)
 poll 10 panel_is hidden || fail "a new space without an nvim pane kept the panel open"
 H do space.select "{\"id\":\"$space\"}" >/dev/null
 poll 10 panel_is files || fail "back in the first space, tab B's panel did not come back"
@@ -777,8 +781,8 @@ grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim" ] || fail "uninstall left the mod"
 say "uninstall: main-copy kept and shown, back to main's content; keys and mods gone"
 made=$(H do space.new "{\"name\":\"after\",\"folder\":\"$demo\"}")
-space_c=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["space"])')
-tab_c=$(echo "$made" | "$py" -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+space_c=$(echo "$made" | jget space)
+tab_c=$(echo "$made" | jget tab)
 files_button
 sleep 1.5
 shot 20-uninstalled-stock-files
