@@ -57,10 +57,22 @@ function M.settings(run)
   return (ok and type(decoded) == "table") and decoded or {}
 end
 
--- "native" or "nvim", asked at the moment it matters (a key press), so a
--- changed setting applies without restarting nvim.
+-- "native" or "nvim", read at the moment it matters (a key press), so a
+-- changed setting applies without restarting nvim. `app-config` runs again
+-- only when the config file changed (its size and mtime), not on every press.
+local cached -- {stamp, tree, config}
+
+local function config_stamp(path)
+  local st = path and (vim.uv or vim.loop).fs_stat(path)
+  return st and ("%d:%d:%d"):format(st.size, st.mtime.sec, st.mtime.nsec) or "none"
+end
+
 function M.tree_mode(run)
-  return M.settings(run).tree or "native"
+  if cached and not run and config_stamp(cached.config) == cached.stamp then return cached.tree end
+  local settings = M.settings(run)
+  cached = { tree = settings.tree or "native", config = settings.config }
+  cached.stamp = config_stamp(settings.config)
+  return cached.tree
 end
 
 -- Whether a mapping is one of ours.

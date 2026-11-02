@@ -3,7 +3,7 @@
 // place that knows the request shapes (lua/herdr-nvim/fs.lua, `request`) and
 // where a path may go.
 
-import { exec, focused, notify, setShared, shared, window } from "herdr";
+import { exec, focused, notify, readTextFile, setShared, shared, window } from "herdr";
 import { bin, nvim } from "./lib.js";
 
 // The tab the tree works for, with its folder: what `--ctx` takes.
@@ -58,12 +58,20 @@ export async function current(place) {
   return out === null ? { file: null, watch: null } : JSON.parse(out);
 }
 
-// herdr-nvim's `tree` setting ("native" or "nvim"), read from its config at
-// the moment it matters and shared with every copy of the mod
-// ("herdr-nvim.tree"), so a change applies without reinstalling.
+// herdr-nvim's `tree` setting ("native" or "nvim"), read at the moment it
+// matters and shared with every copy of the mod ("herdr-nvim.tree"), so a
+// change applies without reinstalling. `app-config` runs again only when the
+// config file's text changed (read, not run), not on every action.
+let config = null; // {path, text, tree}
+
 export async function treeMode() {
+  const text = config?.path ? await readTextFile(config.path).catch(() => null) : undefined;
+  if (config && text === config.text) return config.tree;
   const r = await exec(bin(), ["app-config"]).catch(() => null);
-  const tree = r?.code === 0 ? JSON.parse(r.stdout).tree : "native";
+  const out = r?.code === 0 ? JSON.parse(r.stdout) : {};
+  const tree = out.tree ?? "native";
+  const path = out.config ?? null;
+  config = r?.code === 0 ? { path, tree, text: path ? await readTextFile(path).catch(() => null) : undefined } : null;
   if (shared("herdr-nvim.tree") !== tree) setShared("herdr-nvim.tree", tree);
   return tree;
 }
