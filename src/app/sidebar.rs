@@ -193,14 +193,10 @@ pub(crate) enum Want {
 
 /// Pure: the `--state` argument.
 pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
-    match args
-        .iter()
-        .position(|arg| arg == "--state")
-        .map(|at| args.get(at + 1).map(String::as_str))
-    {
+    match cli::flag(args, "--state")? {
         None => Ok(Want::Flip),
-        Some(Some("open")) => Ok(Want::Open),
-        Some(Some("close")) => Ok(Want::Close),
+        Some("open") => Ok(Want::Open),
+        Some("close") => Ok(Want::Close),
         Some(other) => anyhow::bail!("--state is open or close, not {other:?}"),
     }
 }
@@ -245,10 +241,7 @@ pub(crate) fn identity() -> Result<(TabId, String, PathBuf)> {
     let tab = host::tab_of(&facts).context("this terminal is in no Herdr app tab")?;
     label(&me, raw_tab(&tab))?;
     let args: Vec<String> = env::args().collect();
-    let cwd = args
-        .iter()
-        .position(|arg| arg == "--cwd")
-        .and_then(|at| args.get(at + 1))
+    let cwd = cli::flag(&args, "--cwd")?
         .map(PathBuf::from)
         .or_else(|| host::cwd_of(&facts))
         .context("no folder for the sidebar")?;

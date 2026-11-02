@@ -224,21 +224,16 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
 }
 
 fn keys_file(args: &[String]) -> Result<Value> {
-    let path = args
-        .iter()
-        .position(|arg| arg == "--keys")
-        .and_then(|at| args.get(at + 1))
-        .context("--keys <keys.json> is required")?;
+    let path = cli::flag(args, "--keys")?.context("--keys <keys.json> is required")?;
     serde_json::from_str(&fs::read_to_string(path)?)
         .with_context(|| format!("{path}: invalid JSON"))
 }
 
 /// `--panel-width N` (logical px), else herdr-nvim's default.
 fn panel_width(args: &[String]) -> Result<u32> {
-    match args.iter().position(|arg| arg == "--panel-width") {
+    match cli::flag(args, "--panel-width")? {
         None => Ok(DEFAULT_PANEL_PX),
-        Some(at) => args
-            .get(at + 1)
+        Some(width) => Some(width)
             .and_then(|w| w.parse::<u32>().ok())
             .filter(|w| (120..=1200).contains(w))
             .context("--panel-width takes a width in px between 120 and 1200"),

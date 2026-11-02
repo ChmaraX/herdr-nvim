@@ -75,12 +75,35 @@ pub(crate) struct AppCtx {
     pub cwd: Option<String>,
 }
 
+/// Pure: the value after `name` (`--tab`) in `args`: `None` without the
+/// flag, an error when nothing follows it.
+pub(crate) fn flag<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>> {
+    match args.iter().position(|arg| arg == name) {
+        None => Ok(None),
+        Some(at) => args
+            .get(at + 1)
+            .map(|value| Some(value.as_str()))
+            .with_context(|| format!("{name} needs a value")),
+    }
+}
+
+/// Pure: the first argument that is neither a flag nor the value of one of
+/// `flags_with_values`.
+pub(crate) fn positional<'a>(args: &'a [String], flags_with_values: &[&str]) -> Option<&'a str> {
+    args.iter()
+        .enumerate()
+        .find(|(i, arg)| {
+            !arg.starts_with("--")
+                && (*i == 0 || !flags_with_values.contains(&args[i - 1].as_str()))
+        })
+        .map(|(_, arg)| arg.as_str())
+}
+
 /// Pure: the value after `--ctx` in `args`, parsed.
 pub(crate) fn ctx_from_args(args: &[String]) -> Result<Option<AppCtx>> {
-    let Some(at) = args.iter().position(|arg| arg == "--ctx") else {
+    let Some(raw) = flag(args, "--ctx")? else {
         return Ok(None);
     };
-    let raw = args.get(at + 1).context("--ctx needs a JSON value")?;
     let ctx: AppCtx = serde_json::from_str(raw).context("--ctx: invalid JSON")?;
     if ctx.space.is_empty() || ctx.tab.is_empty() {
         bail!("--ctx needs space and tab");
@@ -141,6 +164,16 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn flags_and_the_positional_argument() {
+        let list = args(&["--tab", "tb1", "src/a.rs:3", "--space", "spA"]);
+        assert_eq!(flag(&list, "--space").unwrap(), Some("spA"));
+        assert_eq!(flag(&list, "--ctx").unwrap(), None);
+        assert!(flag(&args(&["--tab"]), "--tab").is_err());
+        assert_eq!(positional(&list, &["--tab", "--space"]), Some("src/a.rs:3"));
+        assert_eq!(positional(&args(&["--tab", "tb1"]), &["--tab"]), None);
     }
 
     #[test]

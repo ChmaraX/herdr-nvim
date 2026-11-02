@@ -23,13 +23,6 @@ use super::{cli, raw_tab, sidebar};
 
 const NVIM_WAIT: Duration = Duration::from_secs(10);
 
-fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|arg| arg == flag)
-        .and_then(|at| args.get(at + 1))
-        .map(String::as_str)
-}
-
 /// `herdr-nvim fs '<request>' --ctx <tab>`.
 pub fn fs_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
@@ -60,8 +53,8 @@ pub fn fs_cmd() -> Result<()> {
 /// to `root`, best first.
 pub fn find_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
-    let root = value_of(&args, "--root").context("--root is required")?;
-    let query = value_of(&args, "--query").unwrap_or_default();
+    let root = cli::flag(&args, "--root")?.context("--root is required")?;
+    let query = cli::flag(&args, "--query")?.unwrap_or_default();
     let index = crate::fff::FffIndex::open(root, config::load().picker.frecency)
         .context("cannot index that folder")?;
     let prefix = format!("{}/", root.trim_end_matches('/'));

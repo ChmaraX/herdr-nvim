@@ -119,26 +119,11 @@ pub(crate) fn split_location(text: &str) -> (String, Option<u32>, Option<u32>) {
 /// against the tab's folder. Prints `{"terminal": "<sidebar>"}`.
 pub(crate) fn open_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
-    let value = |flag: &str| {
-        args.iter()
-            .position(|arg| arg == flag)
-            .and_then(|at| args.get(at + 1))
-            .cloned()
-    };
-    let flags_with_values = ["--tab", "--space", "--ctx"];
-    let target = args
-        .iter()
-        .enumerate()
-        .filter(|(i, arg)| {
-            !arg.starts_with("--")
-                && (*i == 0 || !flags_with_values.contains(&args[i - 1].as_str()))
-        })
-        .map(|(_, arg)| arg.clone())
-        .next()
+    let target = cli::positional(&args, &["--tab", "--space", "--ctx"])
         .context("usage: herdr-nvim open [--tab <tab> [--space <space>]] <file>[:line[:col]]")?;
-    let app_ctx = match value("--tab") {
+    let app_ctx = match cli::flag(&args, "--tab")?.map(str::to_owned) {
         Some(tab) => {
-            let space = match value("--space") {
+            let space = match cli::flag(&args, "--space")?.map(str::to_owned) {
                 Some(space) => space,
                 None => super::doc::read()?
                     .and_then(|doc| super::doc::space_of(&doc, &tab))
@@ -154,7 +139,7 @@ pub(crate) fn open_cmd() -> Result<()> {
         None => cli::read_ctx(&args)?,
     };
     let ctx = sidebar::ctx_for_tab(&app_ctx)?;
-    let (path, line, col) = split_location(&target);
+    let (path, line, col) = split_location(target);
     let path = crate::pathkey::absolute(&path, &ctx.cwd);
     if !path.is_file() {
         bail!("no such file: {}", path.display());
