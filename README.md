@@ -72,8 +72,9 @@ herdr-nvim also runs in the new Herdr app (herdr-app 0.1.11+, herdr-core
 0.1.16+) as a mod, from this same repo and the same Rust/Lua core. The
 app's **Files** button (or `cmd-e`) opens a native file tree and, beside it,
 the tab's own nvim in a full-height pane; pressing it again closes both.
-Picking a file in the tree opens it in that nvim; `cmd-shift-e` (or LazyVim's
-`<leader>e` in nvim) puts the keyboard in the tree, which has LazyVim's
+Picking a file in the tree opens it in that nvim; `cmd-shift-e` puts the
+keyboard in the tree, and `<leader>e` (in nvim or in the tree) shows and
+hides the tree like LazyVim's explorer, nvim staying open. The tree has LazyVim's
 explorer keys (find, new, rename, move, copy, delete, …), done by the tab's
 nvim so buffers and language servers follow. `cmd-o` lists the files the
 tab's agent read and edited (from its pi or Claude Code session log), then

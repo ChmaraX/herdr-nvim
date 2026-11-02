@@ -401,13 +401,14 @@ poll 10 nvim_on fromgo.txt || fail "the new file did not open in nvim"
 say "pane.go right: into the tree on hello.js; a made src/fromgo.txt (next to it) and nvim opened it"
 
 H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null
-tree_key esc backslash 14 # \e: LazyVim's explorer key, in nvim
+tree_key esc backslash text:fe # \fe: LazyVim's explorer key, in nvim
 tree_key text:c
-poll 5 dialog_open || fail "<leader>e did not focus the tree"
+poll 5 dialog_open || fail "<leader>fe did not focus the tree"
 tree_key 0:cmd text:copied.txt enter
 poll 10 test -f "$demo/src/copied.txt" || fail "c: no copy"
-[ "$(nvim_eval "$sock_a" 'get(g:, "explorer_opened", 0)')" = 0 ] || fail "<leader>e still opened nvim's explorer"
-say "<leader>e (an 'Explorer Snacks' mapping) in nvim: the tree took the keyboard on fromgo.txt, not nvim's explorer; c copied it to src/copied.txt"
+[ "$(nvim_eval "$sock_a" 'get(g:, "explorer_opened", 0)')" = 0 ] || fail "<leader>fe still opened nvim's explorer"
+nvim_eval "$sock_a" 'maparg("<leader>e","n",0,1).desc' | grep -q '^herdr-nvim: Files, show/hide' || fail "the explorer's <leader>e was not taken over"
+say "<leader>fe (an 'Explorer Snacks' mapping) in nvim: the tree took the keyboard on fromgo.txt, not nvim's explorer; c copied it to src/copied.txt; <leader>e became the tree key"
 sleep 0.5
 shot 12-leader-e-tree-copied
 
@@ -477,7 +478,9 @@ focus_shot() { # focus_shot <name> tree|nvim: exactly one highlighted, and the r
   H shot "$proof/$1.png" >/dev/null
   read -r count at < <("$py" "$here/highlight.py" "$proof/$1.png")
   [ "$count" = 1 ] || fail "$1: $count panes look focused"
+  # With the panel hidden (wide), nvim starts at ~0.63.
   if [ "$2" = tree ]; then awk "BEGIN{exit !($at > 0.62)}" || fail "$1: the focused one is not the tree ($at)"
+  elif [ "$2" = wide ]; then awk "BEGIN{exit !($at > 0.55 && $at < 0.7)}" || fail "$1: the focused one is not the wide nvim ($at)"
   else awk "BEGIN{exit !($at > 0.38 && $at < 0.62)}" || fail "$1: the focused one is not nvim ($at)"; fi
 }
 into_tree; focus_shot 18-focus-tree tree
@@ -487,6 +490,17 @@ H do pane.go '{"direction":"right"}' >/dev/null; sleep 0.8; focus_shot 18-focus-
 H do pane.go '{"direction":"left"}' >/dev/null; sleep 0.8; focus_shot 18-focus-go-left-nvim nvim
 into_tree; tree_key enter; sleep 1; focus_shot 18-focus-open-nvim nvim
 say "one highlight at a time: tree after cmd-shift-e and pane.go right; nvim after q, Esc, pane.go left and opening a file"
+# A click into the tree while nvim has the keyboard. Posted mouse events don't
+# reach the app: herdr-nvim.click runs the tree's own mouse-down handler,
+# after focusing the tree as GPUI does on a press.
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8; focus_shot 18-focus-before-click-nvim nvim
+H do herdr-nvim.click >/dev/null; sleep 1; focus_shot 18-focus-click-tree tree
+tree_key text:?
+poll 5 dialog_open || fail "after the click the tree does not have the keyboard"
+tree_key esc; poll 5 no_overlay || fail "the key list did not close"
+sleep 0.5; focus_shot 18-focus-click-list-closed-tree tree
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8; focus_shot 18-focus-click-back-nvim nvim
+say "a click into the tree (its mouse-down handler): only the tree highlighted, and it has the keyboard; back to nvim: only nvim"
 
 open_in_nvim "$demo/src/deep/er/nest/needle.txt"
 into_tree
@@ -526,6 +540,98 @@ sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
 poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'maparg(\"<leader>e\",\"n\",0,1).desc' | grep -qx 'Edit something'" ||
   fail "a <leader>e that opens no explorer was taken over"
 say "an nvim whose <leader>e is 'Edit something' keeps it"
+
+# --- 6b''. the tree key: <leader>e shows and hides the tree, nvim stays -------
+pair_off() { poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'"; }
+restart_pair() { # close the pair, stop tab A's nvim, open the pair: nvim reads its config again
+  keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+  "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
+  keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
+  sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
+  poll 10 test -S "$sock_a" || fail "no daemon socket"
+}
+leader_e_desc() { nvim_eval "$sock_a" 'get(maparg("<leader>e","n",0,1), "desc", "")'; }
+leader_e_is() { [ "$(leader_e_desc)" = "$1" ]; }
+# A plain nvim: no plugins, nothing on <leader>e. herdr-nvim maps it.
+: > "$XDG_CONFIG_HOME/nvim/init.lua"
+restart_pair
+poll 10 leader_e_is "herdr-nvim: Files, show/hide" || fail "a free <leader>e was not mapped: $(leader_e_desc)"
+say "plain nvim: <leader>e was free, herdr-nvim mapped it ($(leader_e_desc))"
+echo leader > "$demo/src/leader.txt"
+open_in_nvim "$demo/src/leader.txt"
+poll 10 nvim_on leader.txt || fail "nvim did not open leader.txt"
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
+tree_key esc backslash 14 # \e with the tree showing: hidden, nvim stays and keeps the keyboard
+poll 10 panel_is hidden || fail "<leader>e did not hide the tree"
+sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "<leader>e closed nvim with the tree"
+focus_is "$sidebar_a" || fail "<leader>e: nvim does not have the keyboard"
+focus_shot 21-leader-e-hid-tree wide
+tree_key esc backslash 14 # \e with the tree hidden: shown, focused on nvim's file
+poll 10 panel_is files || fail "<leader>e did not show the tree"
+sleep 1; focus_shot 21-leader-e-shows-tree tree
+tree_key text:r; poll 5 dialog_open || fail "<leader>e: the tree did not take the keyboard"
+tree_key 0:cmd text:src/leader2.txt enter
+poll 10 test -f "$demo/src/leader2.txt" || fail "<leader>e: the tree was not on leader.txt (nvim's file)"
+sleep 0.8
+tree_key backslash 14 # the same keys in the tree: hidden, nvim stays and gets the keyboard
+poll 10 panel_is hidden || fail "\\ e in the tree did not hide it"
+sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "\\ e in the tree closed nvim"
+focus_is "$sidebar_a" || fail "\\ e in the tree: nvim does not have the keyboard"
+focus_shot 21-tree-leader-e-back-to-nvim wide
+say "<leader>e: hid the tree (nvim kept the keyboard), showed it on nvim's file (r renamed leader.txt), and \\ e in the tree hid it again, nvim focused"
+# Files and cmd-e from "nvim open, tree hidden": show the tree; again: close both.
+files_button
+poll 10 panel_is files || fail "Files did not show the tree"
+sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "Files closed nvim"
+H do layout.hide '{"id":"panel"}' >/dev/null # the Files button again
+pair_off || fail "Files again did not close nvim"
+panel_is hidden || fail "Files again left the panel"
+keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+sidebar_a=$(sidebar_of "$tab_a")
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
+tree_key esc backslash 14; poll 10 panel_is hidden || fail "<leader>e did not hide the tree"
+sleep 1; keys 14:cmd
+poll 10 panel_is files || fail "cmd-e did not show the tree"
+sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "cmd-e closed nvim"
+keys 14:cmd; pair_off || fail "cmd-e again did not close nvim"
+panel_is hidden || fail "cmd-e again left the panel"
+say "nvim open, tree hidden: Files and cmd-e each showed the tree (nvim kept), and pressed again closed both"
+# Switching back to a tab whose tree <leader>e hid: it stays hidden.
+keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+sidebar_a=$(sidebar_of "$tab_a")
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
+tree_key esc backslash 14; poll 10 panel_is hidden || fail "<leader>e did not hide the tree"
+H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
+files_button; poll 15 sidebar_of "$tab_b" || fail "Files in tab B did not open its nvim"
+H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
+sleep 1.5; panel_is hidden || fail "back in tab A, the tree <leader>e hid came back"
+sidebar_of "$tab_a" >/dev/null || fail "tab A lost its nvim"
+shot 21-switch-back-tree-stays-hidden
+H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
+poll 10 panel_is files || fail "tab B (tree shown) did not show the panel"
+H do layout.hide '{"id":"panel"}' >/dev/null # close B's pair again
+poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_b | grep -q '\"live\"'" || fail "Files did not close tab B's nvim"
+H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
+sleep 1.5; panel_is hidden || fail "tab A's tree came back"
+files_button; poll 10 panel_is files || fail "Files did not show tab A's tree"
+say "tab A's tree, hidden by <leader>e, stayed hidden when coming back from tab B (twice); Files showed it again"
+# tree_key = "": nothing mapped (the config's other settings kept).
+config_toml=$XDG_CONFIG_HOME/herdr-nvim/config.toml
+mkdir -p "${config_toml%/*}"; touch "$config_toml"; cp "$config_toml" "$root/config.toml.saved"
+"$py" - "$config_toml" <<'EOF'
+import sys
+path = sys.argv[1]
+lines = open(path).read().splitlines()
+if "[app]" in lines: lines.insert(lines.index("[app]") + 1, 'tree_key = ""')
+else: lines += ["[app]", 'tree_key = ""']
+open(path, "w").write("\n".join(lines) + "\n")
+EOF
+"$wrapper" app-config | grep -q '"tree_key":""' || fail "tree_key = \"\" not read: $("$wrapper" app-config)"
+restart_pair
+sleep 2; leader_e_is "" || fail "tree_key = \"\": <leader>e is mapped ($(leader_e_desc))"
+grep -qx '{"tree_key":\[\]}' "$(nvim_eval "$sock_a" '$HERDR_NVIM_CURRENT_FILE').keys" || fail "tree_key = \"\": the tree still has a key"
+cp "$root/config.toml.saved" "$config_toml"
+say "tree_key = \"\": <leader>e left unmapped, and the tree has no tree key"
 
 # --- 6c. tree = "nvim": cmd-e and Files open only nvim, with its explorer ---
 keys 14:cmd

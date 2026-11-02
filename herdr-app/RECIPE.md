@@ -36,10 +36,26 @@ file:line context.
 
 ### The tree's keys (LazyVim's Snacks explorer defaults)
 
-The tree takes the keyboard from `pane.go` (the person's pane keys) and from
-`cmd-shift-e`, which opens the pair if needed and selects the file nvim shows.
-In nvim, LazyVim's explorer keys (`<leader>e`, `<leader>E`, `<leader>fe`,
-`<leader>fE`) do the same instead of opening nvim's own explorer.
+The tree takes the keyboard from `pane.go` (the person's pane keys), from a
+click, and from `cmd-shift-e`, which opens the pair if needed and selects the
+file nvim shows. In nvim, LazyVim's `<leader>E`, `<leader>fe` and `<leader>fE`
+do the same instead of opening nvim's own explorer.
+
+**The tree key** (`[app] tree_key`, default `<leader>e`) toggles the tree
+like LazyVim's explorer:
+
+| Where | the tree key |
+|---|---|
+| nvim, tree hidden | shows the tree and puts the keyboard there, on nvim's file |
+| nvim, tree showing | hides the tree; nvim stays open with the keyboard |
+| the tree | hides the tree and gives nvim the keyboard (the same keys, with nvim's leader: `space` `e` in LazyVim) |
+
+Which nvim gets it (with `tree = "native"`; read when nvim starts): a key
+that opens a known explorer (Snacks, neo-tree, nvim-tree) is taken over; a
+free key (plain nvim) is mapped; a key mapped to anything else, or one that
+starts or ends a longer mapping, is left alone. `tree_key = ""` maps
+nothing, and any lhs works (`"<C-n>"`, `"<leader>t"`). `cmd-e` and the Files
+button still open and close both together.
 
 | Key | Does |
 |---|---|
@@ -59,6 +75,8 @@ In nvim, LazyVim's explorer keys (`<leader>e`, `<leader>E`, `<leader>fe`,
 | `o` | open with the system's app |
 | `Z` / `u` | close every folder / list again |
 | `q`, Esc | back to the tab's nvim (Snacks closes its window; here the pair closes with cmd-e) |
+| the tree key (`space` `e`) | hide the tree, back to nvim (nvim stays) |
+| `~` / `?` | root: back to the tab's folder / every key, in a list |
 
 ## How it behaves
 
@@ -67,12 +85,19 @@ In nvim, LazyVim's explorer keys (`<leader>e`, `<leader>E`, `<leader>fe`,
   recipe describes; `nvim` makes the Files button and `cmd-e` toggle only the
   tab's nvim pane, with nvim's own explorer opened inside it (the Files panel
   shows for a moment and is put away), and leaves `<leader>e` as it was.
+- **`tree_key` setting** (`[app] tree_key = "<leader>e"`, the default; any
+  nvim lhs, or `""` for none): the key above. nvim reads it when it starts:
+  after a change, close the pair and stop the tab's nvim
+  (`bin/herdr-nvim daemons stop <space:tab>`), or open a new tab.
 - **Files button = `cmd-e`**: in a tab without them, both open together (the
   panel, and the tab's nvim pane with the keyboard); pressing again closes
   both. Closing never stops the tab's nvim: reopening reattaches to the same
-  process, same buffer and cursor.
+  process, same buffer and cursor. With nvim open and the tree hidden (by the
+  tree key), they show the tree; pressed again, they close both.
 - **Switching tabs or spaces**: the panel follows the tab you land on. A tab
-  whose nvim pane is open shows the panel with it; a tab without one shows
+  whose nvim pane is open shows the panel with it, unless the tree key hid
+  the tree in that tab (it stays hidden until the panel is shown there again,
+  or that nvim closes); a tab without one shows
   no panel. Looking at a tab never opens an nvim in it: nvim panes are per
   tab, the panel is per window. Switching the panel to Changes leaves the nvim
   pane open (Changes can open files in it); Files brings the tree back.
@@ -260,9 +285,15 @@ In nvim, LazyVim's explorer keys (`<leader>e`, `<leader>E`, `<leader>fe`,
 - `bin/herdr-nvim open --tab <tab> src/notes.md:3:6` with both closed opens
   the pane on line 3, column 6, and the panel with it.
 - `cmd-shift-e` selects nvim's file in the tree with the keyboard there; `r`
-  renames it and nvim's buffer follows; `pane.go` right and `<leader>e` (a
-  LazyVim-like explorer mapping) reach the tree too; an nvim whose
-  `<leader>e` opens no explorer keeps it.
+  renames it and nvim's buffer follows; `pane.go` right and a click
+  (`herdr-nvim.click`, the tree's mouse-down handler) reach the tree too,
+  with one pane highlighted; an nvim whose `<leader>e` opens no explorer
+  keeps it.
+- `<leader>e` in a plain nvim (mapped, as it was free): hides the tree with
+  nvim kept and focused, shows it on nvim's file, and the same keys in the
+  tree hide it; Files and `cmd-e` then show the tree, and again close both;
+  back in that tab from another, the hidden tree stays hidden;
+  `tree_key = ""` maps nothing.
 - `a` makes files and `newdir/` folders; `m` with a Tab selection moves
   after a confirm; `d` deletes after a confirm and the buffer goes; `/needle`
   finds a file three folders down; `I` and `H` show `build/` and `.hidden`.
