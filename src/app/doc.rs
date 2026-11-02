@@ -135,6 +135,17 @@ pub(crate) fn terminals_of(doc: &Value, tab: &str) -> Vec<String> {
     out
 }
 
+/// The folder of tab `tab` (raw app id): its own `folder` if the app gives
+/// it one, else its space's.
+pub(crate) fn folder_of(doc: &Value, tab: &str) -> Option<String> {
+    spaces(doc).iter().find_map(|space| {
+        let found = tabs(space)
+            .iter()
+            .find(|t| t.get("id").and_then(Value::as_str) == Some(tab))?;
+        non_empty(found.get("folder")).or_else(|| non_empty(space.get("folder")))
+    })
+}
+
 /// The pane (block id) showing `terminal`, and its tab's composite id.
 pub(crate) fn pane_of(doc: &Value, terminal: &str) -> Option<(String, String)> {
     for space in spaces(doc) {
@@ -225,5 +236,17 @@ mod tests {
         assert_eq!(pane_of(&doc, "t9"), None);
         assert_eq!(space_of(&doc, "tbTwo").as_deref(), Some("spA"));
         assert_eq!(terminals_of(&doc, "tbOne"), ["t1", "t4"]);
+    }
+
+    #[test]
+    fn a_tab_without_its_own_folder_has_its_space_folder() {
+        let mut doc = parse(&fixture()).unwrap();
+        assert_eq!(
+            folder_of(&doc, "tbOne").as_deref(),
+            Some("/tmp/herdr-app-nvim/work")
+        );
+        doc["spaces"][0]["tabs"][1]["folder"] = json!("/tmp/elsewhere");
+        assert_eq!(folder_of(&doc, "tbTwo").as_deref(), Some("/tmp/elsewhere"));
+        assert_eq!(folder_of(&doc, "tbNope"), None);
     }
 }

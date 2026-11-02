@@ -128,17 +128,28 @@ pub(crate) fn ensure_open(ctx: &Ctx) -> Result<String> {
 }
 
 /// The TUI `Ctx` for an app invocation: the folder is the one the mod saw,
-/// else the focused terminal's, else the space's.
+/// else the focused terminal's, else the tab's (or its space's) in the app's
+/// layout document. Never this process's own folder: the app's is often `/`.
 pub(crate) fn ctx(app: &AppCtx) -> Result<Ctx> {
     let cwd = match &app.cwd {
         Some(cwd) if !cwd.is_empty() => PathBuf::from(cwd),
-        _ => app
+        _ => match app
             .terminal
             .as_deref()
             .and_then(|t| host::terminal(t).ok())
             .and_then(|facts| host::cwd_of(&facts))
-            .or_else(|| env::current_dir().ok())
-            .context("no folder for the sidebar")?,
+        {
+            Some(cwd) => cwd,
+            None => doc::read()?
+                .and_then(|doc| doc::folder_of(&doc, &app.tab))
+                .map(PathBuf::from)
+                .with_context(|| {
+                    format!(
+                        "no folder for tab {}: no focused terminal, and neither the tab nor its space has a folder",
+                        app.tab
+                    )
+                })?,
+        },
     };
     Ok(Ctx {
         workspace: app.space.clone(),
