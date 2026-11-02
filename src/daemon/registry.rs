@@ -21,11 +21,15 @@ use crate::{
     state::{self, tab_key},
 };
 
-use super::{nvim_cmd, remote_expr};
+use super::{nvim_cmd, remote_expr_within};
 
 /// How long `send_quit` waits for a daemon to go away after asking it to quit.
 const QUIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const QUIT_POLL_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a daemon gets to say whether it has unsaved work: one waiting at
+/// a prompt (hit-enter, a confirm) answers nothing, and a stop (on the app's
+/// toggle path, the reaper) must not hang on it.
+const ASK_WITHIN: Duration = Duration::from_secs(2);
 
 /// Directory that registers every running daemon, one entry per tab.
 ///
@@ -157,10 +161,46 @@ pub(crate) const UNSAVED_BUFFERS_EXPR: &str =
 
 /// Stop each daemon in `keys`, in order. Best effort: one failing does not
 /// spare the rest. Returns every key with its own outcome, in input order.
+///
+/// A daemon that doesn't answer (at a prompt) is kept: nothing tells what it
+/// holds, and unknown work is never discarded.
 pub(crate) fn stop_keys(keys: &[String], sidebar: &Sidebar) -> Vec<(String, Result<()>)> {
     keys.iter()
-        .map(|key| (key.clone(), stop_tab_key(key, sidebar)))
+        .map(|key| (key.clone(), stop_tab_key(key, sidebar, IfSilent::Keep)))
         .collect()
+}
+
+/// What a stop does with a daemon that doesn't answer the unsaved-work check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IfSilent {
+    /// Keep it (an error says so): what it holds is unknown.
+    Keep,
+    /// Quit it anyway (`qa!` goes in as input, so it works at a prompt): the
+    /// caller knows it holds nothing (a probe just counted no unsaved work),
+    /// or the person forced it.
+    Quit,
+}
+
+/// `stop_keys`, with what to do with each one that doesn't answer.
+pub(crate) fn stop_keys_with(
+    keys: &[(String, IfSilent)],
+    sidebar: &Sidebar,
+) -> Vec<(String, Result<()>)> {
+    keys.iter()
+        .map(|(key, silent)| (key.clone(), stop_tab_key(key, sidebar, *silent)))
+        .collect()
+}
+
+/// Whether a process listens on the daemon's socket (it may still not answer).
+fn listening(socket: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(socket).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        socket.exists()
+    }
 }
 
 /// `Ok` if every stop in `results` succeeded, else one error naming each
@@ -188,16 +228,23 @@ pub(crate) fn all_stopped(results: Vec<(String, Result<()>)>) -> Result<()> {
 /// already gone is a no-op beyond the file cleanup. A daemon that does not
 /// quit keeps its registry entry and state, so it stays listable and
 /// reachable, and is reported as an error.
-fn stop_tab_key(key: &str, sidebar: &Sidebar) -> Result<()> {
+fn stop_tab_key(key: &str, sidebar: &Sidebar, if_silent: IfSilent) -> Result<()> {
     let socket = socket_path_for_key(key);
-    // Doubles as the liveness probe: `None` means nothing is listening.
-    if let Some(unsaved) = remote_expr(&socket, UNSAVED_BUFFERS_EXPR, sidebar) {
-        if unsaved != "0" {
-            eprintln!(
-                "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
-            );
+    match remote_expr_within(&socket, UNSAVED_BUFFERS_EXPR, sidebar, ASK_WITHIN) {
+        Some(unsaved) => {
+            if unsaved != "0" {
+                eprintln!(
+                    "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
+                );
+            }
+            send_quit(&socket, sidebar)?;
         }
-        send_quit(&socket, sidebar)?;
+        // Nothing listens: only its records are left.
+        None if !listening(&socket) => {}
+        None if if_silent == IfSilent::Quit => send_quit(&socket, sidebar)?,
+        None => bail!(
+            "tab {key}'s nvim does not answer (waiting at a prompt?); kept, since what it holds is unknown"
+        ),
     }
     // `key` is a filename component, already sanitized, so it goes through
     // `state::remove_key` rather than `state::remove` -- that avoids
@@ -221,7 +268,7 @@ fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
         .status()
         .with_context(|| format!("failed to run nvim --remote-send for {}", socket.display()))?;
     let deadline = Instant::now() + QUIT_POLL_TIMEOUT;
-    while remote_expr(socket, "1", sidebar).is_some() {
+    while listening(socket) {
         if Instant::now() >= deadline {
             bail!(
                 "nvim daemon at {} still running {}s after qa!",
@@ -325,6 +372,30 @@ mod tests {
         let keys = ["wA_t1", "wA_t2", "wAB_t1"].map(str::to_owned);
         assert_eq!(orphans(&keys, &[live("wA:t1"), live("wAB:t1")]), ["wA_t2"]);
         assert_eq!(orphans(&keys, &[]), keys);
+    }
+
+    // A daemon waiting at a prompt answers no request: what it holds is
+    // unknown, so a plain stop (the reaper's) keeps it, and doesn't hang.
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_that_does_not_answer_is_kept_not_waited_for() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let key = tab_key("wSilent:t1");
+        let socket = socket_path_for_key(&key);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        // Accepts connections and never answers, as nvim at a prompt.
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let started = Instant::now();
+        let results = stop_keys(std::slice::from_ref(&key), &Sidebar::default());
+        assert!(started.elapsed() < Duration::from_secs(10), "bounded");
+        let error = results[0].1.as_ref().unwrap_err().to_string();
+        assert!(error.contains("does not answer"), "{error}");
+        assert!(socket.exists(), "kept");
+        drop(listener);
     }
 
     // Issue #34's leak: a daemon that ignores `qa!` must not be forgotten.

@@ -22,7 +22,9 @@ use crate::{
 
 use super::{
     plugin_root,
-    registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
+    registry::{
+        daemon_keys, orphans, socket_path_for_key, stop_keys_with, IfSilent, UNSAVED_BUFFERS_EXPR,
+    },
     remote_expr_within, runtime_stamp, STAMP_ENV,
 };
 
@@ -346,8 +348,21 @@ pub(crate) fn stop(
             doomed.push(daemon);
         }
     }
-    let keys: Vec<String> = doomed.iter().map(|daemon| daemon.key.clone()).collect();
-    for (daemon, (_, result)) in doomed.iter().zip(stop_keys(&keys, sidebar)) {
+    // One that stops answering now may still be quit if the probe just found
+    // it clean, or the person forced it; else it is kept (`IfSilent`).
+    let keys: Vec<(String, IfSilent)> = doomed
+        .iter()
+        .map(|daemon| {
+            let clean = daemon.unsaved() == Some(0) && daemon.comments() == Some(0);
+            let silent = if force || clean {
+                IfSilent::Quit
+            } else {
+                IfSilent::Keep
+            };
+            (daemon.key.clone(), silent)
+        })
+        .collect();
+    for (daemon, (_, result)) in doomed.iter().zip(stop_keys_with(&keys, sidebar)) {
         match (result, daemon.rss_bytes) {
             (Ok(()), Some(rss)) => outcome.stopped.push(format!(
                 "stopped {} (freed {})",
