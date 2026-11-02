@@ -1,5 +1,6 @@
 // The tree's key list (`?` in the tree): a dialog of this mod with props
-// {help: true}, grouped like Snacks' help. ?, Esc or q closes it, and the tree
+// {help: true}, grouped like Snacks' help, in two columns (Navigate | Files,
+// View) so it fits a short window. ?, Esc or q closes it, and the tree
 // gets the keyboard back ("focus").
 
 import { div } from "gpui-kit";
@@ -21,7 +22,7 @@ export const GROUPS = [
 ];
 
 export function openKeyHelp() {
-  openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 520, props: { help: true } });
+  openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 780, props: { help: true } });
 }
 
 export class KeyHelp {
@@ -45,6 +46,8 @@ export class KeyHelp {
       .w_full().p(18).gap(6).bg(t.popover).text_size(12.5)
       .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child("Files keys"))
         .child(div().text_size(11).text_color(t.dim).child("? / Esc")))
-      .children(GROUPS.map(group));
+      .child(h_flex().items_start().gap(28)
+        .child(v_flex().flex_1().gap(6).children(GROUPS.slice(0, 1).map(group)))
+        .child(v_flex().flex_1().gap(6).children(GROUPS.slice(1).map(group))));
   }
 }

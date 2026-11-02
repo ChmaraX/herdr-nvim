@@ -472,11 +472,13 @@ say "I showed the git-ignored build/ (renamed to build2 from its row), H showed 
 
 # --- 6b'. one highlight at a time; the root and its way back; the key list ---
 focus_shot() { # focus_shot <name> tree|nvim: exactly one highlighted, and the right one
+  # In the 1280-wide window the agent pane starts at ~0.26 of the width, nvim
+  # at ~0.49 and the 368 px panel (the tree) at ~0.71.
   H shot "$proof/$1.png" >/dev/null
   read -r count at < <("$py" "$here/highlight.py" "$proof/$1.png")
   [ "$count" = 1 ] || fail "$1: $count panes look focused"
-  if [ "$2" = tree ]; then awk "BEGIN{exit !($at > 0.7)}" || fail "$1: the focused one is not the tree ($at)"
-  else awk "BEGIN{exit !($at < 0.7)}" || fail "$1: the focused one is not nvim ($at)"; fi
+  if [ "$2" = tree ]; then awk "BEGIN{exit !($at > 0.62)}" || fail "$1: the focused one is not the tree ($at)"
+  else awk "BEGIN{exit !($at > 0.38 && $at < 0.62)}" || fail "$1: the focused one is not nvim ($at)"; fi
 }
 into_tree; focus_shot 18-focus-tree tree
 tree_key text:q; sleep 0.6; focus_shot 18-focus-q-nvim nvim
