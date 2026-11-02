@@ -115,8 +115,13 @@ export class Tree {
     return { tab: this.place?.tab, cwd: this.tabRoot ?? this.model.root };
   }
 
+  // Shows `root` and watches it. Each root gets one watch loop, ended by the
+  // next setRoot (`rootGen`); the same root again (two tabs on one repo, or
+  // back to a tab) keeps the loop, the listing and the selection.
   setRoot(root, cx) {
     if (this.rootTab && root) this.roots[this.rootTab] = { tabRoot: this.tabRoot, root };
+    if (root && root === this.model.root && !this.error) return;
+    const gen = (this.rootGen = (this.rootGen ?? 0) + 1);
     const keep = { hidden: this.model.showHidden, ignored: this.model.showIgnored };
     this.model.reset(root);
     Object.assign(this.model, { showHidden: keep.hidden, showIgnored: keep.ignored });
@@ -129,14 +134,14 @@ export class Tree {
       try {
         await this.model.reload();
         cx.notify();
-        while (this.model.root === root) {
+        while (this.rootGen === gen) {
           await watchFolder(root);
-          if (this.model.root !== root) return;
+          if (this.rootGen !== gen) return;
           await this.model.reload();
           cx.notify();
         }
       } catch (e) {
-        if (this.model.root === root) { this.error = String(e); cx.notify(); }
+        if (this.rootGen === gen) { this.error = String(e); cx.notify(); }
       }
     });
     if (!this.defaults) {
@@ -150,17 +155,20 @@ export class Tree {
   }
 
   // The file the tab's nvim shows: selected (and its folders opened) whenever
-  // it changes, without taking the keyboard.
+  // it changes, without taking the keyboard. One loop at a time: the next
+  // call ends this one (`currentGen`).
   watchCurrent(where, cx) {
+    const gen = (this.currentGen = (this.currentGen ?? 0) + 1);
     cx.spawn(async (cx) => {
       const { file, watch } = await current(where);
+      if (this.currentGen !== gen) return;
       this.watching = watch;
       this.readTreeKey();
       if (file) await this.reveal(file, cx);
       if (!watch) return;
-      while (this.rootTab === where.tab) {
+      while (this.currentGen === gen) {
         await watchFolder(dirname(watch));
-        if (this.rootTab !== where.tab) return;
+        if (this.currentGen !== gen) return;
         const path = (await readTextFile(watch))?.trim();
         if (path && path !== this.current) await this.reveal(path, cx);
         cx.notify(); // nvim took the keyboard, maybe: draw the focus again
