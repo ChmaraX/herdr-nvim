@@ -664,7 +664,9 @@ pid_a=$(daemon_pid "$sock_a") # tab A's daemon now (6b/6c restarted it)
 alive "$pid_a" || fail "tab A has no daemon after the tree checks"
 
 # --- 6d. stale nvims: an install leaves them, reopening restarts the clean ones -
-stamp_file=$XDG_DATA_HOME/herdr-nvim/app/runtime-stamp
+# The runtime the wrapper runs (install.sh puts each in its own folder).
+stamp_file=$(sed -n "s/^export HERDR_NVIM_PLUGIN_ROOT='\(.*\)'$/\1/p" "$wrapper")/runtime-stamp
+[ -f "$stamp_file" ] || fail "the wrapper's runtime has no stamp ($stamp_file)"
 real_stamp=$(cat "$stamp_file")
 stamp_of() { nvim_eval "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP'; }
 [ "$(stamp_of)" = "$real_stamp" ] || fail "tab A's nvim did not record the runtime stamp ($(stamp_of) vs $real_stamp)"
