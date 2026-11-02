@@ -509,6 +509,8 @@ keys 14:cmd
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "tree=nvim: cmd-e did not close nvim"
 say "tree=nvim: Files and cmd-e toggle the nvim pane alone; the panel never stays"
 "$wrapper" app-setup tree native | tee -a "$log"
+pid_a=$(daemon_pid "$sock_a") # tab A's daemon now (6b/6c restarted it)
+alive "$pid_a" || fail "tab A has no daemon after the tree checks"
 
 # --- 7. closing tab B stops its daemon ----------------------------------------
 H do tab.close "{\"id\":\"$tab_b\",\"confirmed\":true}" >/dev/null
