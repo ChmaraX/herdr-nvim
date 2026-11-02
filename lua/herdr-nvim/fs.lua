@@ -27,11 +27,26 @@ local function under(path, dir)
   return path == dir or path:sub(1, #dir + 1) == dir .. "/"
 end
 
+-- Where `path` really is, symlinks resolved: a folder all the way, else its
+-- deepest existing folder, with the rest appended (a file, or one still to
+-- be made; a link itself is the link, not what it points to).
+local function real(path)
+  if vim.fn.isdirectory(path) == 1 then return uv.fs_realpath(path) or path end
+  local dir, rest = vim.fs.dirname(path), { vim.fs.basename(path) }
+  while not uv.fs_realpath(dir) and dir ~= vim.fs.dirname(dir) do
+    table.insert(rest, 1, vim.fs.basename(dir))
+    dir = vim.fs.dirname(dir)
+  end
+  return ((uv.fs_realpath(dir) or dir) .. "/" .. table.concat(rest, "/")):gsub("//+", "/")
+end
+
+-- Every path inside the root, as the file system resolves them (a symlink in
+-- the root to elsewhere is elsewhere), unless the person confirmed.
 local function check_inside(req, ...)
   if req.outside then return end
-  local root = norm(req.root or error("no root"))
+  local root = real(norm(req.root or error("no root")))
   for _, path in ipairs({ ... }) do
-    if not under(norm(path), root) then error(("%s is outside %s"):format(path, root)) end
+    if not under(real(norm(path)), root) then error(("%s is outside %s"):format(path, root)) end
   end
 end
 
