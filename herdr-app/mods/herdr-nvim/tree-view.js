@@ -18,7 +18,7 @@ import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
 // The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
 // with LazyVim's leader.
 const TREE_KEY = ["space", "e"];
-import { TreeModel, dirname } from "./tree-model.js";
+import { GIT_EVERY_MS, TreeModel, dirname } from "./tree-model.js";
 
 const HINT = "? keys";
 
@@ -26,6 +26,9 @@ const HINT = "? keys";
 // makes sure it holds it: checks every ARRIVAL_STEP_MS, at most ARRIVAL_STEPS.
 const ARRIVAL_STEP_MS = 100;
 const ARRIVAL_STEPS = 20;
+
+// `/` finds once typing pauses this long, one search at a time.
+const FIND_PAUSE_MS = 120;
 
 // Where the app's focus is, as far as a mod can see it.
 function focusKey() {
@@ -136,10 +139,20 @@ export class Tree {
         await this.model.reload();
         cx.notify();
         while (this.rootGen === gen) {
-          await watchFolder(root);
+          const changed = await watchFolder(root);
           if (this.rootGen !== gen) return;
-          await this.model.reload();
+          const { marks } = await this.model.reloadChanged(changed);
           cx.notify();
+          if (marks === "later" && !this.marksDue) {
+            this.marksDue = true;
+            cx.spawn(async (cx) => {
+              await cx.sleep(GIT_EVERY_MS);
+              this.marksDue = false;
+              if (this.rootGen !== gen) return;
+              await this.model.refreshMarks();
+              cx.notify();
+            });
+          }
         }
       } catch (e) {
         if (this.rootGen === gen) { this.error = String(e); cx.notify(); }
@@ -252,7 +265,7 @@ export class Tree {
   }
 
   rows() {
-    if (this.filter) return this.filter.results.map((rel) => ({ name: rel, abs: `${this.model.root}/${rel}`, dir: false, depth: 0 }));
+    if (this.filter) return this.filter.results.map((rel) => ({ name: rel, abs: `${this.filter.root}/${rel}`, dir: false, depth: 0 }));
     return this.model.rows();
   }
 
@@ -435,7 +448,7 @@ export class Tree {
       rootUp: (_row, _rows, cx) => { if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); },
       rootHome: (_row, _rows, cx) => { if (this.tabRoot) this.setRoot(this.tabRoot, cx); },
       help: () => { this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); },
-      find: () => { this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; },
+      find: () => { this.filter = { query: "", results: [], seq: 0, root: this.findRoot() }; this.selected = 0; },
       leave: () => { this.arrival = null; run("pane.go", { direction: "left" }); },
     };
   }
@@ -455,17 +468,36 @@ export class Tree {
       if (k === "backspace") f.query = f.query.slice(0, -1);
       else if (e.key_char && !e.modifiers.platform && !e.modifiers.control) f.query += e.key_char;
       else return;
-      const seq = ++f.seq, root = this.model.root, query = f.query;
+      const seq = ++f.seq;
       cx.spawn(async (cx) => {
-        const results = query ? await findFiles(root, query) : [];
-        if (this.filter !== f || f.seq !== seq) return;
-        f.results = results;
-        this.selected = 0;
-        cx.notify();
+        await cx.sleep(FIND_PAUSE_MS);
+        if (this.filter === f && f.seq === seq) await this.runFind(f, cx);
       });
     }
     cx.stop_propagation();
     cx.notify();
+  }
+
+  // Where `/` searches: the root, but never above the tab's folder (⌫ may
+  // have climbed to $HOME or /, a whole-disk index).
+  findRoot() {
+    const root = this.model.root, home = this.tabRoot;
+    return home && !inside(root, home) && inside(home, root) ? home : root;
+  }
+
+  // One search at a time: keys typed while one runs make one more, for the
+  // latest query, when it ends; only the latest query's results show.
+  async runFind(f, cx) {
+    if (f.busy) { f.again = true; return; }
+    f.busy = true;
+    do {
+      f.again = false;
+      const query = f.query;
+      const results = query ? await findFiles(f.root, query) : [];
+      if (this.filter !== f) return;
+      if (!f.again) { f.results = results; this.selected = 0; cx.notify(); }
+    } while (f.again);
+    f.busy = false;
   }
 
   // "Files", the tab's folder, and while the root is elsewhere the way back:

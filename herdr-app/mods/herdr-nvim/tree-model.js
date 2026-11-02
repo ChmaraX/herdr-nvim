@@ -8,6 +8,10 @@ import { gitMarks, ignoredIn, listFolder } from "./tree.js";
 
 export const ROWS = 3000;
 
+// `git status` runs at most this often for file events (a build or an agent
+// writing files is a lot of them).
+export const GIT_EVERY_MS = 2000;
+
 export function dirname(path) {
   return path.replace(/\/[^/]*$/, "") || "/";
 }
@@ -21,6 +25,7 @@ export class TreeModel {
 
   reset(root) {
     this.root = root;
+    this.marksAt = 0;
     this.entries = new Map(); // folder -> [{name, dir}]
     this.ignored = new Map(); // folder -> Set of ignored names
     this.open = new Set();
@@ -40,8 +45,34 @@ export class TreeModel {
   async reload() {
     const root = this.root;
     for (const folder of [root, ...this.open]) await this.load(folder).catch(() => {});
+    await this.refreshMarks();
+  }
+
+  async refreshMarks() {
+    const root = this.root;
+    this.marksAt = Date.now();
     const marks = await gitMarks(root);
     if (this.root === root) this.marks = marks;
+  }
+
+  // After a watch batch (absolute paths; one that holds the root means
+  // everything): lists again only the folders on screen a changed path is in
+  // (or is), so events inside closed folders list nothing. Git marks follow
+  // unless they ran less than GIT_EVERY_MS ago: then the result says "later"
+  // and the caller runs refreshMarks once that time is up.
+  async reloadChanged(changed) {
+    const root = this.root;
+    if (!changed?.length || changed.includes(root)) {
+      await this.reload();
+      return { marks: "done" };
+    }
+    const listed = new Set([root, ...this.open]);
+    const touched = new Set();
+    for (const path of changed) for (const folder of [dirname(path), path]) if (listed.has(folder)) touched.add(folder);
+    for (const folder of touched) await this.load(folder).catch(() => {});
+    if (Date.now() - this.marksAt < GIT_EVERY_MS) return { marks: "later" };
+    await this.refreshMarks();
+    return { marks: "done" };
   }
 
   shown(folder, entry) {
