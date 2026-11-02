@@ -740,6 +740,54 @@ go_left; focus_shot 24-fresh-cmd-j-h-after-click nvim
 keys 38:cmd text:l; sleep 0.8; focus_shot 24-fresh-cmd-j-l-tree tree
 go_left; focus_shot 24-fresh-cmd-j-h-after-cmd-j-l nvim
 say "fresh nvim ($pid_fresh): cmd-j h from the tree (after cmd-shift-e, a click, cmd-j l) left one highlight, nvim's"
+# The selection stays where the person left it: j off nvim's file, out with
+# cmd-j h, back with cmd-j l, and r renames that row, not nvim's file.
+printf 'a\n' > "$demo/src/zz-a.txt"; printf 'b\n' > "$demo/src/zz-b.txt"
+open_in_nvim "$demo/src/zz-a.txt"; poll 10 nvim_on zz-a.txt || fail "nvim did not open zz-a.txt"
+into_tree; sleep 0.5
+tree_key text:j # zz-b.txt, the row after nvim's file
+go_left; focus_shot 26-selection-left-with-cmd-j-h nvim
+keys 38:cmd text:l; sleep 0.8; focus_shot 26-selection-back-with-cmd-j-l tree
+tree_key text:r
+poll 5 dialog_open || fail "back in the tree: r opened no rename dialog"
+tree_key 0:cmd text:src/zz-renamed.txt enter
+poll 10 test -f "$demo/src/zz-renamed.txt" || fail "r after cmd-j h / cmd-j l renamed nothing"
+[ "$(cat "$demo/src/zz-renamed.txt")" = b ] || fail "r renamed $(cat "$demo/src/zz-renamed.txt") instead of the j row (zz-b.txt)"
+[ -f "$demo/src/zz-a.txt" ] || fail "r renamed nvim's file, not the row the person left the selection on"
+say "the selection stayed on zz-b.txt through cmd-j h and cmd-j l; r renamed that row (nvim's zz-a.txt untouched)"
+# A rename keeps unsaved edits: the buffer itself is renamed, still modified.
+open_in_nvim "$demo/src/zz-a.txt"; poll 10 nvim_on zz-a.txt || fail "nvim did not open zz-a.txt"
+nvim_eval "$sock_a" 'setline(1, "unsaved edit")' >/dev/null
+into_tree; sleep 0.5
+tree_key text:r
+poll 5 dialog_open || fail "r: no rename dialog on nvim's file"
+tree_key 0:cmd text:src/zz-dirty.txt enter
+poll 10 nvim_on zz-dirty.txt || fail "nvim's buffer did not follow the rename of a modified file"
+[ "$(nvim_eval "$sock_a" '&modified . ":" . getline(1)')" = "1:unsaved edit" ] ||
+  fail "the rename lost the unsaved edit ($(nvim_eval "$sock_a" '&modified . ":" . getline(1)'))"
+[ "$(cat "$demo/src/zz-dirty.txt")" = a ] || fail "the rename wrote the unsaved edit to disk"
+nvim_eval "$sock_a" 'execute("silent write")' >/dev/null
+[ "$(cat "$demo/src/zz-dirty.txt")" = "unsaved edit" ] || fail "a plain :w after the rename did not write"
+say "r on a modified buffer: renamed to zz-dirty.txt, still modified with its edit, nothing written until :w (which works)"
+tree_key text:q
+# Nothing outside the tab's folder through a symlink in it.
+mkdir -p "$root/outside"; ln -s "$root/outside" "$demo/link"
+out=$("$wrapper" fs "{\"op\":\"create\",\"path\":\"$demo/link/escape.txt\"}" --ctx "$ctx_a" 2>&1 || true)
+echo "$out" | grep -q 'outside' || fail "create through a symlink to outside the tab's folder was not refused: $out"
+[ ! -e "$root/outside/escape.txt" ] || fail "a file was made outside the tab's folder through a symlink"
+rm "$demo/link"
+say "fs: a create through a symlink in the tab's folder to elsewhere is refused (outside)"
+# No focused terminal and no folder from the mod: the tab's folder from the
+# app's document, never this process's own folder.
+"$wrapper" daemons stop "$space:$tab_b" --force >/dev/null
+(cd / && "$wrapper" toggle --state open --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null) ||
+  fail "toggle with only a space and a tab failed"
+sock_b=$(sock_of "$space" "$tab_b"); poll 10 test -S "$sock_b" || fail "no daemon for tab B"
+poll 10 sh -c "[ \"\$(nvim --headless --server $sock_b --remote-expr 'getcwd()' 2>/dev/null)\" = '$real_demo' ]" ||
+  fail "tab B's nvim did not start in the tab's folder ($(nvim_eval "$sock_b" 'getcwd()'))"
+pid_b=$(daemon_pid "$sock_b")
+(cd / && "$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null)
+say "toggle with no terminal and no folder, run from /: tab B's nvim ($pid_b) started in the tab's folder"
 H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
 tree_key "text: e" # space e in nvim, tree showing: hidden, nvim stays focused
 poll 10 panel_is hidden || fail "space e did not hide the tree"
@@ -773,7 +821,22 @@ poll 15 sh -c "! hc ls --json | grep -q herdr-nvim-watch" || fail "the watcher k
 say "closed the space: daemon $pid_a stopped, watcher ended"
 
 # --- 9. uninstall --------------------------------------------------------------
-"$repo/herdr-app/install.sh" --uninstall --app-bin "$app_bin" 2>&1 | tee -a "$log"
+# A tab nvim with unsaved work is listed and kept (with its runtime).
+made=$(H do space.new "{\"name\":\"dirty\",\"folder\":\"$demo\"}")
+space_d=$(echo "$made" | jget space); tab_d=$(echo "$made" | jget tab)
+"$wrapper" toggle --state open --ctx "{\"space\":\"$space_d\",\"tab\":\"$tab_d\"}" >/dev/null || fail "no nvim in the dirty space"
+sock_d=$(sock_of "$space_d" "$tab_d"); poll 10 test -S "$sock_d" || fail "no daemon in the dirty space"
+pid_d=$(daemon_pid "$sock_d")
+nvim_eval "$sock_d" 'execute("enew") . setline(1, "unsaved")' >/dev/null
+runtime_d=$(sed -n "s/^export HERDR_NVIM_PLUGIN_ROOT='\(.*\)'$/\1/p" "$wrapper")
+uninstalled=$("$repo/herdr-app/install.sh" --uninstall --app-bin "$app_bin" 2>&1 | tee -a "$log")
+echo "$uninstalled" | grep -q 'not stopping .*1 unsaved buffer' || fail "uninstall did not list the nvim with unsaved work"
+alive "$pid_d" || fail "uninstall stopped an nvim with unsaved work without --force"
+[ -x "$runtime_d/bin/herdr-nvim" ] || fail "uninstall removed the runtime a kept nvim runs"
+say "uninstall: listed and kept the nvim with an unsaved buffer ($pid_d), and its runtime"
+nvim --headless --server "$sock_d" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
+poll 10 sh -c "! kill -0 $pid_d" || fail "the kept nvim did not quit"
+H do space.close "{\"id\":\"$space_d\",\"confirmed\":true}" >/dev/null
 [ "$(layouts_now)" = "$layouts_installed" ] || fail "uninstall deleted or added a layout: $(layouts_now)"
 shown_is main-copy || fail "uninstall switched the layout away from main-copy"
 ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$no_change" || fail "main-copy is not back to main"

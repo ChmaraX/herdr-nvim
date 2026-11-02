@@ -517,7 +517,11 @@ export class Tree {
     const reveal = shared("herdr-nvim.reveal");
     if (reveal && reveal.n !== this.revealed) {
       this.revealed = reveal.n;
-      if (reveal.tab === this.place?.tab && reveal.path) cx.spawn(async (cx) => this.reveal(reveal.path, cx, true));
+      // A path (a dialog's result) is shown after listing again; none
+      // (cmd-shift-e, <leader>E, the tree key) is nvim's current file.
+      if (reveal.tab === this.place?.tab) {
+        cx.spawn(async (cx) => (reveal.path ? this.reveal(reveal.path, cx, true) : this.revealCurrent(cx, true)));
+      }
     }
     // Highlighted while this tree has the keyboard. Nothing tells a mod it
     // lost it, and the app's focus doesn't change when it goes back to the

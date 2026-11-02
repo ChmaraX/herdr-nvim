@@ -32,7 +32,7 @@
 // app's terminal list shows its result, the result is assumed (the list lags
 // the command by a moment).
 
-import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
+import { focused, layout, nextCommand, run, setShared, shared, spaces } from "herdr";
 import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { pick } from "./pick.js";
@@ -154,6 +154,9 @@ export class Sync {
       if (!terminal) terminal = (await this.toggle(at, "open"))?.terminal;
       if (!terminal) return;
       if (mode === "nvim") return run("pane.focus", { terminal });
+      // On nvim's file, on purpose: the tree otherwise keeps the selection
+      // where the person left it (a path of null: nvim's current file).
+      setShared("herdr-nvim.reveal", { tab: f.tab, path: null, n: (shared("herdr-nvim.reveal")?.n ?? 0) + 1 });
       if (!p.files) showFiles(p);
       this.prev = { tab: f.tab, files: true, other: false, nvim: true };
       this.pendingFocus = { terminal, since: shared("herdr-nvim.tree-laid-out") ?? 0, shown: p.files };
