@@ -8,8 +8,9 @@
 //! - `app-current --ctx <tab>`: the file the tab's nvim shows, the file that
 //!   nvim rewrites whenever that changes (for the tree to watch), and the
 //!   tab folder's real path (nvim's names for files in it).
-//! - `app-reveal`: from inside the tab's nvim (`<leader>e`): focus the tree on
-//!   the current file.
+//! - `app-reveal [--toggle]`: from inside the tab's nvim: focus the tree on
+//!   the current file (`<leader>E`, `<leader>fe`); with `--toggle` (the tree
+//!   key, `<leader>e`), hide the tree instead when it shows, keeping nvim.
 
 use std::{env, time::Duration};
 
@@ -118,11 +119,37 @@ pub fn current_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim app-reveal`, run by the tab's nvim (it knows its tab from
-/// `HERDR_TAB_ID`): the controller mod opens the Files panel if needed and
-/// gives the tree the keyboard on the current file.
+/// `herdr-nvim app-reveal [--toggle]`, run by the tab's nvim (it knows its
+/// tab from `HERDR_TAB_ID`): the controller mod opens the Files panel if
+/// needed and gives the tree the keyboard on the current file. With
+/// `--toggle`, a tree already showing is hidden instead and nvim stays.
 pub fn reveal_cmd() -> Result<()> {
+    let args: Vec<String> = env::args().skip(2).collect();
     let tab = env::var("HERDR_TAB_ID").context("app-reveal runs inside a herdr-nvim nvim")?;
-    cli::app_do(&format!("herdr-nvim.reveal:{}", raw_tab(&tab)), &json!({}))?;
+    cli::app_do(&reveal_command(&args, raw_tab(&tab)), &json!({}))?;
     Ok(())
+}
+
+/// Pure: the controller mod's command for `app-reveal <args>` in a tab.
+pub(crate) fn reveal_command(args: &[String], tab: &str) -> String {
+    let verb = if args.iter().any(|a| a == "--toggle") {
+        "toggle"
+    } else {
+        "reveal"
+    };
+    format!("herdr-nvim.{verb}:{tab}")
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::reveal_command;
+
+    #[test]
+    fn reveal_or_toggle() {
+        assert_eq!(reveal_command(&[], "tb1"), "herdr-nvim.reveal:tb1");
+        assert_eq!(
+            reveal_command(&["--toggle".to_owned()], "tb1"),
+            "herdr-nvim.toggle:tb1"
+        );
+    }
 }

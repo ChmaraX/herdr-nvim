@@ -4,7 +4,8 @@
 //!
 //! ```toml
 //! [app]
-//! tree = "native"   # or "nvim"
+//! tree = "native"        # or "nvim"
+//! tree_key = "<leader>e"  # shows/hides the native tree; "" for none
 //! ```
 //!
 //! Everything reads it at the moment it acts (the mods through
@@ -24,6 +25,7 @@ pub fn app_config_cmd() -> Result<()> {
         "{}",
         json!({
             "tree": config.app.tree.as_str(),
+            "tree_key": config.app.tree_key,
             "config": config::config_path().map(|p| p.to_string_lossy().into_owned()),
         })
     );
@@ -111,10 +113,29 @@ mod tests {
     }
 
     #[test]
+    fn tree_key_defaults_to_leader_e_and_can_be_off() {
+        let parse = |text: &str| {
+            toml::from_str::<crate::config::Config>(text)
+                .unwrap()
+                .app
+                .tree_key
+        };
+        assert_eq!(parse(""), "<leader>e");
+        assert_eq!(parse("[app]\ntree = \"native\"\n"), "<leader>e");
+        assert_eq!(parse("[app]\ntree_key = \"\"\n"), "");
+        assert_eq!(parse("[app]\ntree_key = \"<C-n>\"\n"), "<C-n>");
+        assert_eq!(
+            with_tree("[app]\ntree_key = \"\"\n", TreeMode::Nvim),
+            "[app]\ntree_key = \"\"\ntree = \"nvim\"\n"
+        );
+    }
+
+    #[test]
     fn the_written_file_parses_back() {
         let text = with_tree("[picker]\nmax_files = 9\n", TreeMode::Nvim);
         let parsed: crate::config::Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.app.tree, TreeMode::Nvim);
+        assert_eq!(parsed.app.tree_key, "<leader>e");
         assert_eq!(parsed.picker.max_files, 9);
     }
 }

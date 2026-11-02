@@ -29,13 +29,31 @@ pub struct Config {
 }
 
 /// The Herdr desktop app's settings (`[app]`; the TUI plugin ignores them).
-#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct App {
     /// Which file tree goes with the tab's nvim: herdr-nvim's native tree in
     /// the Files panel (`native`), or nvim's own explorer inside the nvim
     /// pane (`nvim`). Read at every use, so a change applies at once.
     #[serde(default)]
     pub tree: TreeMode,
+    /// The key (an nvim lhs) that shows and hides the native tree, in the
+    /// tab's nvim and in the tree itself; `""` maps none. nvim reads it when
+    /// it starts.
+    #[serde(default = "default_tree_key")]
+    pub tree_key: String,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            tree: TreeMode::default(),
+            tree_key: default_tree_key(),
+        }
+    }
+}
+
+fn default_tree_key() -> String {
+    "<leader>e".to_owned()
 }
 
 #[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
