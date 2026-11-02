@@ -42,11 +42,7 @@ impl HostOps for App {
     }
 
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened> {
-        let pane = super::sidebar::ensure_open(ctx)?;
-        Ok(Opened {
-            pane,
-            notice: super::stale::take_notice(),
-        })
+        super::sidebar::ensure_open(ctx)
     }
 
     fn focus(&self, pane: &str) {

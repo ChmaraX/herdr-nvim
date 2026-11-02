@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::{
     config::{self, SidebarPosition},
+    host::Opened,
     maneuver::Ctx,
     state::TabId,
 };
@@ -74,10 +75,12 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
 ///
 /// A stale daemon (an older runtime's) is restarted first, or kept with a
 /// notice when it has unsaved work (`stale`).
-pub(crate) fn open(ctx: &Ctx) -> Result<String> {
-    if let Err(error) = super::stale::refresh_on_open(ctx.tab.as_str(), &ctx.cwd) {
-        eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
-    }
+pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
+    let notice =
+        super::stale::refresh_on_open(ctx.tab.as_str(), &ctx.cwd).unwrap_or_else(|error| {
+            eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
+            None
+        });
     let config = config::load();
     let root = doc::read()?
         .and_then(|doc| doc::root_of(&doc, raw_tab(&ctx.tab)))
@@ -108,7 +111,10 @@ pub(crate) fn open(ctx: &Ctx) -> Result<String> {
     // The sidebar labels itself too; doing it here as well means a toggle
     // right after this one already finds it.
     label(&terminal, raw_tab(&ctx.tab))?;
-    Ok(terminal)
+    Ok(Opened {
+        pane: terminal,
+        notice,
+    })
 }
 
 fn label(terminal: &str, tab: &str) -> Result<()> {
@@ -120,9 +126,12 @@ fn label(terminal: &str, tab: &str) -> Result<()> {
 }
 
 /// The tab's sidebar, opened if it isn't.
-pub(crate) fn ensure_open(ctx: &Ctx) -> Result<String> {
+pub(crate) fn ensure_open(ctx: &Ctx) -> Result<Opened> {
     match find(&ctx.tab)? {
-        Some(terminal) => Ok(terminal),
+        Some(terminal) => Ok(Opened {
+            pane: terminal,
+            notice: None,
+        }),
         None => open(ctx),
     }
 }
@@ -213,14 +222,16 @@ pub fn toggle_cmd() -> Result<()> {
             close(&terminal)?;
             json!({"closed": terminal})
         }
-        (None, Want::Flip | Want::Open) => json!({"terminal": open(&ctx)?}),
+        (None, Want::Flip | Want::Open) => {
+            let opened = open(&ctx)?;
+            match opened.notice {
+                Some(notice) => json!({"terminal": opened.pane, "notice": notice}),
+                None => json!({"terminal": opened.pane}),
+            }
+        }
         (Some(terminal), Want::Open) => json!({"terminal": terminal}),
         (None, Want::Close) => json!({}),
     };
-    let mut made = made;
-    if let Some(notice) = super::stale::take_notice() {
-        made["notice"] = json!(notice);
-    }
     println!("{made}");
     Ok(())
 }

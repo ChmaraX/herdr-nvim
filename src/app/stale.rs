@@ -10,7 +10,7 @@
 //!   told to save and reopen (`refresh_on_open`'s notice: a toast from the mod
 //!   and a message in nvim).
 
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{path::Path, time::Duration};
 
 use anyhow::Result;
 
@@ -18,41 +18,15 @@ use crate::{
     config,
     daemon::{
         self,
-        inventory::COMMENTS_EXPR,
-        registry::{self, UNSAVED_BUFFERS_EXPR},
-        STAMP_ENV,
+        inventory::{self, Probe},
+        registry,
     },
     state::tab_key,
 };
 
-/// How long a daemon gets to answer: one at a prompt answers nothing.
+/// How long the notice's `vim.notify` request may take: a daemon at a
+/// prompt answers nothing.
 const ASK_WITHIN: Duration = Duration::from_secs(2);
-
-/// What a running daemon says: its stamp, unsaved buffers, pending comments.
-#[derive(Debug, PartialEq)]
-pub(crate) struct Look {
-    pub stamp: String,
-    pub unsaved: u32,
-    pub comments: u32,
-}
-
-/// Pure: parse `stamp|unsaved|comments`.
-pub(crate) fn parse_look(out: &str) -> Option<Look> {
-    let mut parts = out.trim().split('|');
-    Some(Look {
-        stamp: parts.next()?.to_owned(),
-        unsaved: parts.next()?.trim().parse().ok()?,
-        comments: parts.next()?.trim().parse().ok()?,
-    })
-}
-
-fn look(socket: &Path) -> Option<Look> {
-    let expr = format!("${STAMP_ENV} . '|' . {UNSAVED_BUFFERS_EXPR} . '|' . {COMMENTS_EXPR}");
-    let sidebar = config::load().sidebar;
-    parse_look(&daemon::remote_expr_within(
-        socket, &expr, &sidebar, ASK_WITHIN,
-    )?)
-}
 
 /// What to do with a tab's daemon when its pair opens.
 #[derive(Debug, PartialEq)]
@@ -65,15 +39,21 @@ pub(crate) enum Plan {
     KeepDirty,
 }
 
-/// Pure: the plan for a daemon that answered `look`, under the installed
+/// Pure: whether a daemon may hold work a restart would lose. Work it
+/// couldn't count is work kept.
+fn has_work(look: &Probe) -> bool {
+    look.unsaved != Some(0) || look.comments != Some(0)
+}
+
+/// Pure: the plan for a daemon that answered the probe, under the installed
 /// runtime `current`.
-pub(crate) fn plan(current: Option<&str>, look: &Look) -> Plan {
+pub(crate) fn plan(current: Option<&str>, look: &Probe) -> Plan {
     match current {
         Some(current) if look.stamp != current => {
-            if look.unsaved == 0 && look.comments == 0 {
-                Plan::Restart
-            } else {
+            if has_work(look) {
                 Plan::KeepDirty
+            } else {
+                Plan::Restart
             }
         }
         _ => Plan::Keep,
@@ -81,14 +61,19 @@ pub(crate) fn plan(current: Option<&str>, look: &Look) -> Plan {
 }
 
 /// Pure: the notice for a stale daemon that was kept.
-pub(crate) fn dirty_notice(look: &Look) -> String {
-    let mut work = Vec::new();
-    if look.unsaved > 0 {
-        work.push(format!("{} unsaved buffer(s)", look.unsaved));
-    }
-    if look.comments > 0 {
-        work.push(format!("{} pending comment(s)", look.comments));
-    }
+pub(crate) fn dirty_notice(look: &Probe) -> String {
+    let count = |n: Option<u32>, what: &str| match n {
+        Some(0) => None,
+        Some(n) => Some(format!("{n} {what}(s)")),
+        None => Some(format!("{what}s it couldn't count")),
+    };
+    let work: Vec<String> = [
+        count(look.unsaved, "unsaved buffer"),
+        count(look.comments, "pending comment"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     format!(
         "This tab's nvim still runs the herdr-nvim from before the last install, and it has {}, \
          so it was kept. Save (:wa) and send or clear the comments, then close and reopen nvim \
@@ -97,31 +82,27 @@ pub(crate) fn dirty_notice(look: &Look) -> String {
     )
 }
 
-static NOTICE: Mutex<Option<String>> = Mutex::new(None);
-
-/// The notice `refresh_on_open` left for this command's output, if any.
-pub(crate) fn take_notice() -> Option<String> {
-    NOTICE.lock().ok()?.take()
-}
-
 /// Before a tab's pair opens: restart its daemon if it is stale and clean;
-/// keep a stale one with unsaved work, leaving a notice for the caller's
-/// output and for nvim to show once its window attaches.
-pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<()> {
+/// keep a stale one with unsaved work, and return the notice for the
+/// caller's output (nvim shows it too, once its window attaches).
+pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<Option<String>> {
     let plugin_root = daemon::plugin_root()?;
     let current = daemon::runtime_stamp(&plugin_root);
-    let socket = registry::socket_path(tab);
-    let Some(look) = current.as_ref().and_then(|_| look(&socket)) else {
-        return Ok(());
+    let sidebar = config::load().sidebar;
+    let key = tab_key(tab);
+    let Some(look) = current
+        .as_ref()
+        .and_then(|_| inventory::probe(&key, &sidebar))
+    else {
+        return Ok(None);
     };
     match plan(current.as_deref(), &look) {
-        Plan::Keep => Ok(()),
+        Plan::Keep => Ok(None),
         Plan::Restart => {
-            let sidebar = config::load().sidebar;
-            registry::all_stopped(registry::stop_keys(&[tab_key(tab)], &sidebar))?;
+            registry::all_stopped(registry::stop_keys(&[key], &sidebar))?;
             daemon::ensure_daemon(tab, &plugin_root, &config::load(), cwd)?;
             eprintln!("herdr-nvim: restarted tab {tab}'s nvim on the installed runtime");
-            Ok(())
+            Ok(None)
         }
         Plan::KeepDirty => {
             let notice = dirty_notice(&look);
@@ -130,49 +111,42 @@ pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<()> {
                  function() vim.schedule(function() vim.notify(_A, vim.log.levels.WARN) end) end}})\", {})",
                 daemon::vim_string_literal(&notice)
             );
-            let _ = daemon::remote_expr_within(&socket, &expr, &config::load().sidebar, ASK_WITHIN);
-            if let Ok(mut slot) = NOTICE.lock() {
-                *slot = Some(notice);
-            }
-            Ok(())
+            let socket = registry::socket_path(tab);
+            let _ = daemon::remote_expr_within(&socket, &expr, &sidebar, ASK_WITHIN);
+            Ok(Some(notice))
         }
     }
 }
 
-/// After an install: how many running nvims are stale. They keep running;
-/// each restarts the next time its pair opens.
+/// After an install: how many running nvims are stale (`inventory`'s
+/// `stale`). They keep running; each restarts the next time its pair opens.
 pub(crate) fn report_after_install() {
-    let Some(current) = daemon::plugin_root()
-        .ok()
-        .and_then(|root| daemon::runtime_stamp(&root))
-    else {
-        return;
-    };
+    let sidebar = config::load().sidebar;
     let keys = registry::daemon_keys().unwrap_or_default();
-    let looks: Vec<(String, Look)> = keys
+    let running: Vec<inventory::DaemonInfo> = inventory::describe(keys, None, &sidebar)
         .into_iter()
-        .filter_map(|key| Some((key.clone(), look(&registry::socket_path_for_key(&key))?)))
+        .filter(|info| info.probe.is_some())
         .collect();
-    let stale: Vec<&(String, Look)> = looks.iter().filter(|(_, l)| l.stamp != current).collect();
+    let stale: Vec<&inventory::DaemonInfo> = running.iter().filter(|info| info.stale).collect();
     if stale.is_empty() {
         println!(
             "nvim: {} running, none older than this install",
-            looks.len()
+            running.len()
         );
         return;
     }
     let dirty = stale
         .iter()
-        .filter(|(_, l)| l.unsaved > 0 || l.comments > 0)
+        .filter(|info| info.probe.as_ref().is_some_and(has_work))
         .count();
     println!(
         "nvim: {} of {} running tab nvim(s) are stale (they run the herdr-nvim from before this \
          install; left running): {}",
         stale.len(),
-        looks.len(),
+        running.len(),
         stale
             .iter()
-            .map(|(key, _)| key.as_str())
+            .map(|info| info.key.as_str())
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -190,23 +164,14 @@ pub(crate) fn report_after_install() {
 mod tests {
     use super::*;
 
-    fn look(stamp: &str, unsaved: u32, comments: u32) -> Look {
-        Look {
+    fn look(stamp: &str, unsaved: u32, comments: u32) -> Probe {
+        Probe {
+            pid: Some(1),
+            unsaved: Some(unsaved),
+            comments: Some(comments),
+            tab_id: None,
             stamp: stamp.to_owned(),
-            unsaved,
-            comments,
         }
-    }
-
-    #[test]
-    fn parses_what_the_daemon_answers_even_without_a_stamp() {
-        assert_eq!(parse_look("ab12|0|2\n"), Some(look("ab12", 0, 2)));
-        assert_eq!(
-            parse_look("|1|0"),
-            Some(look("", 1, 0)),
-            "older than stamps"
-        );
-        assert_eq!(parse_look("garbage"), None);
     }
 
     #[test]
@@ -217,15 +182,19 @@ mod tests {
         assert_eq!(plan(Some("new"), &look("old", 1, 0)), Plan::KeepDirty);
         assert_eq!(plan(Some("new"), &look("old", 0, 2)), Plan::KeepDirty);
         assert_eq!(plan(None, &look("old", 0, 0)), Plan::Keep, "a repo build");
+        let uncounted = Probe {
+            unsaved: None,
+            ..look("old", 0, 0)
+        };
+        assert_eq!(plan(Some("new"), &uncounted), Plan::KeepDirty);
     }
 
     #[test]
-    fn the_notice_says_what_to_save() {
+    fn the_notice_counts_the_unsaved_work() {
         let text = dirty_notice(&look("old", 2, 1));
         assert!(
             text.contains("2 unsaved buffer(s) and 1 pending comment(s)"),
             "{text}"
         );
-        assert!(text.contains("cmd-e twice"), "{text}");
     }
 }

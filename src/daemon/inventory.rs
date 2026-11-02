@@ -9,7 +9,7 @@
 //! through `herdr api snapshot`, and measured with one OS process-table
 //! snapshot. Stopping goes through the shared `registry::stop_keys`.
 
-use std::{collections::HashMap, env, process::Command};
+use std::{collections::HashMap, env, process::Command, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use serde::{Serialize, Serializer};
@@ -23,7 +23,7 @@ use crate::{
 use super::{
     plugin_root,
     registry::{daemon_keys, orphans, socket_path_for_key, stop_keys, UNSAVED_BUFFERS_EXPR},
-    remote_expr, runtime_stamp, STAMP_ENV,
+    remote_expr_within, runtime_stamp, STAMP_ENV,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -207,8 +207,18 @@ fn probe_expr() -> String {
     )
 }
 
-fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
-    let out = remote_expr(&socket_path_for_key(key), &probe_expr(), sidebar)?;
+/// How long a daemon gets to answer the probe: one waiting at a prompt
+/// (hit-enter, a confirm) answers nothing, and `daemons` must not hang on it.
+const PROBE_WITHIN: Duration = Duration::from_secs(2);
+
+/// Ask the daemon for `key` what it is: `None` when it doesn't answer.
+pub(crate) fn probe(key: &str, sidebar: &Sidebar) -> Option<Probe> {
+    let out = remote_expr_within(
+        &socket_path_for_key(key),
+        &probe_expr(),
+        sidebar,
+        PROBE_WITHIN,
+    )?;
     let mut parts = out.splitn(5, ' ');
     let mut number = || parts.next().and_then(|part| part.parse().ok());
     let pid = number();
@@ -240,7 +250,11 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
 
 /// Probe and measure the daemons for `keys`, naming them from herdr's live
 /// `tabs` (`None` when herdr could not be asked).
-fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
+pub(crate) fn describe(
+    keys: Vec<String>,
+    tabs: Option<&[TabInfo]>,
+    sidebar: &Sidebar,
+) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
     let current = plugin_root().ok().and_then(|root| runtime_stamp(&root));
     keys.into_iter()
