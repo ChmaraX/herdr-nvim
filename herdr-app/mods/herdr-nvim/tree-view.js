@@ -7,12 +7,16 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { focused, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
+import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
 import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
-import { goToTree, nvimPanes } from "./panel.js";
+import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
+
+// The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
+// with LazyVim's leader.
+const TREE_KEY = ["space", "e"];
 import { TreeModel, dirname } from "./tree-model.js";
 
 const HINT = "? keys";
@@ -43,6 +47,7 @@ export class Tree {
         if (command === "focus") {
           this.handle.focus();
           cx.notify();
+          this.readTreeKey();
           // Back from our own dialog, or a press in the tree: the selection
           // stays; from elsewhere, nvim's file.
           if (this.overlayOpen || this.pressing) this.overlayOpen = this.pressing = false;
@@ -134,6 +139,8 @@ export class Tree {
   watchCurrent(where, cx) {
     cx.spawn(async (cx) => {
       const { file, watch } = await current(where);
+      this.watching = watch;
+      this.readTreeKey();
       if (file) await this.reveal(file, cx);
       if (!watch) return;
       while (this.rootTab === where.tab) {
@@ -279,10 +286,42 @@ export class Tree {
     cx.notify();
   }
 
+  // The tree key's presses, as the tab's nvim wrote them (with its leader)
+  // next to the file the tree watches.
+  async readTreeKey() {
+    const text = this.watching ? await readTextFile(`${this.watching}.keys`).catch(() => null) : null;
+    let keys = null;
+    try { keys = text ? JSON.parse(text).tree_key : null; } catch { keys = null; }
+    this.treeKey = Array.isArray(keys) ? keys : TREE_KEY;
+  }
+
+  // Whether `k` is part of the tree key (a sequence, like space then e);
+  // the whole of it hides the tree and gives nvim the keyboard, nvim staying.
+  treeKeyPress(k) {
+    const want = this.treeKey ?? TREE_KEY;
+    const prefix = (seq) => seq.length <= want.length && seq.every((x, i) => x === want[i]);
+    let seq = [...(this.pending ?? []), k];
+    if (!prefix(seq)) seq = [k];
+    this.pending = null;
+    if (!want.length || !prefix(seq)) return false;
+    if (seq.length < want.length) this.pending = seq;
+    else this.hideToNvim();
+    return true;
+  }
+
+  hideToNvim() {
+    const tab = this.place?.tab, p = panelState(layout());
+    if (tab && p?.files) hideTreeKeepNvim(p, tab, nvimPanes(tab)[0]);
+  }
+
   key(e, rows, cx) {
     if (this.filter) return this.filterKey(e, rows, cx);
     const plain = !e.modifiers.platform && !e.modifiers.control && !e.modifiers.alt;
     const k = plain && e.key_char && e.key_char.trim() ? e.key_char : e.keystroke;
+    if (this.treeKeyPress(k)) {
+      cx.stop_propagation();
+      return cx.notify();
+    }
     const row = rows[this.selected];
     const move = (to) => { this.selected = Math.max(0, Math.min(rows.length - 1, to)); };
     switch (k) {
@@ -310,7 +349,7 @@ export class Tree {
       case ".": if (row) this.setRoot(this.dirOf(row), cx); break;
       case "backspace": if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); break;
       case "~": if (this.tabRoot) this.setRoot(this.tabRoot, cx); break;
-      case "?": this.overlayOpen = true; openKeyHelp(); break;
+      case "?": this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); break;
       case "/": this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; break;
       case "escape": case "q": run("pane.go", { direction: "left" }); break;
       default: return;

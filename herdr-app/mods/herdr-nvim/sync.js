@@ -15,9 +15,16 @@
 // With `tree = "nvim"` the panel never stays: the Files button's show is
 // turned into "open (or close) the tab's nvim, with nvim's own explorer".
 //
-// It also takes `herdr-nvim.reveal` (cmd-shift-e, and `<leader>e` in nvim):
+// The tree key (`<leader>e` in nvim, the same keys in the tree) is the one
+// exception to "nvim follows the panel": it hides the tree and keeps nvim
+// (an intent the hide carries, panel.js), and the tab remembers it: coming
+// back to that tab leaves the tree hidden until the panel is shown there
+// again (Files, cmd-e, the tree key, cmd-shift-e) or its nvim closes.
+//
+// It also takes `herdr-nvim.reveal` (cmd-shift-e, `<leader>E` in nvim):
 // open the pair if needed, then hand the tree the keyboard (`pane.go` right
-// from the tab's nvim pane, once the tree has been laid out).
+// from the tab's nvim pane, once the tree has been laid out); and
+// `herdr-nvim.toggle` (the tree key in nvim): that, or hide a tree that shows.
 //
 // Each action makes the other side agree, so the next look finds nothing to
 // do: no loops. While an action runs nothing else is decided, and until the
@@ -27,15 +34,17 @@
 import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
 import { nvim } from "./lib.js";
 import { treeMode } from "./ops.js";
-import { goToTree, hidePanel, nvimPanes, panelState, showFiles } from "./panel.js";
+import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, showFiles, takeKeepNvim } from "./panel.js";
 
 export class Sync {
   constructor(cx) {
+    this.kept = new Set(); // tabs whose tree the tree key hid, nvim kept
     cx.spawn(async (cx) => {
       await treeMode();
       for (;;) {
         const command = await nextCommand();
         if (command.startsWith("reveal")) await this.reveal(cx);
+        else if (command.startsWith("toggle")) await this.toggleTree(cx);
       }
     });
   }
@@ -65,16 +74,25 @@ export class Sync {
     const prev = this.prev;
     this.prev = cur;
     const native = shared("herdr-nvim.tree") !== "nvim";
+    const kept = this.kept.has(cur.tab);
     const followTab = () => {
-      if (native && cur.nvim && !cur.files && !cur.other) showFiles(p);
-      else if (cur.files && (!cur.nvim || !native)) hidePanel(p);
+      if (native && cur.nvim && !cur.files && !cur.other && !kept) showFiles(p);
+      else if (cur.files && (!cur.nvim || !native || kept)) {
+        hidePanel(p);
+        cur.files = false; // our own hide: nothing for the next look to follow
+      }
     };
     if (!prev || prev.tab !== cur.tab) followTab();
     else if (prev.files !== cur.files) {
       const local = !spaces().find((s) => s.id === f.space)?.machine;
-      if (cur.files && local) this.act(cur, p, cx);
+      if (cur.files) this.kept.delete(cur.tab);
+      if (!cur.files && takeKeepNvim(cur.tab)) this.kept.add(cur.tab);
+      else if (cur.files && local) this.act(cur, p, cx);
       else if (!cur.files && !cur.other && cur.nvim && native) this.act(cur, p, cx);
-    } else if (prev.nvim !== cur.nvim) followTab();
+    } else if (prev.nvim !== cur.nvim) {
+      if (!cur.nvim) this.kept.delete(cur.tab);
+      followTab();
+    }
   }
 
   // The panel opened or closed: open or close the tab's nvim to match. With
@@ -104,10 +122,22 @@ export class Sync {
     return made;
   }
 
-  // cmd-shift-e / `<leader>e`: the tree, on the file nvim shows.
+  // The tree key in nvim: hide the tree when it shows (nvim stays and keeps
+  // the keyboard), else reveal.
+  async toggleTree(cx) {
+    if ((await treeMode()) === "nvim") return;
+    const f = focused(), p = panelState(layout());
+    if (!f?.tab || !p || this.busy) return;
+    if (!p.files) return this.reveal(cx);
+    hideTreeKeepNvim(p, f.tab, nvimPanes(f.tab)[0]);
+    cx.notify();
+  }
+
+  // cmd-shift-e / `<leader>E`: the tree, on the file nvim shows.
   async reveal(cx) {
     const f = focused(), p = panelState(layout());
     if (!f?.tab || !p || this.busy) return;
+    this.kept.delete(f.tab);
     this.busy = true;
     try {
       const mode = await treeMode();

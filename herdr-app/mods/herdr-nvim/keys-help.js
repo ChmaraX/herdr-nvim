@@ -21,8 +21,20 @@ export const GROUPS = [
   ["View", [["H", "hidden files"], ["I", "git-ignored files"], ["Z", "close every folder"], ["u", "list again"], ["?", "this list"]]],
 ];
 
-export function openKeyHelp() {
-  openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 780, props: { help: true } });
+// The tree key's presses as the list shows them: ["space", "e"] -> "space e".
+export function keyLabel(presses) {
+  return presses?.length ? presses.join(" ") : null;
+}
+
+export function openKeyHelp(treeKey) {
+  openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 780, props: { help: true, treeKey: keyLabel(treeKey) } });
+}
+
+// The groups, with the tree key (herdr-nvim's `[app] tree_key`) when it has one.
+export function groups(treeKey) {
+  if (!treeKey) return GROUPS;
+  const [nav, ...rest] = GROUPS;
+  return [[nav[0], [...nav[1], [treeKey, "hide the tree, back to nvim (in nvim: show it)"]]], ...rest];
 }
 
 export class KeyHelp {
@@ -32,7 +44,7 @@ export class KeyHelp {
   }
 
   render() {
-    const t = theme();
+    const t = theme(), shown = groups(props()?.treeKey);
     const close = () => closeOverlay(props().overlay);
     const group = ([title, keys]) => v_flex().gap(4)
       .child(div().pt(6).text_size(11).font_semibold().text_color(t.dim).child(title.toUpperCase()))
@@ -47,7 +59,7 @@ export class KeyHelp {
       .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child("Files keys"))
         .child(div().text_size(11).text_color(t.dim).child("? / Esc")))
       .child(h_flex().items_start().gap(28)
-        .child(v_flex().flex_1().gap(6).children(GROUPS.slice(0, 1).map(group)))
-        .child(v_flex().flex_1().gap(6).children(GROUPS.slice(1).map(group))));
+        .child(v_flex().flex_1().gap(6).children(shown.slice(0, 1).map(group)))
+        .child(v_flex().flex_1().gap(6).children(shown.slice(1).map(group))));
   }
 }

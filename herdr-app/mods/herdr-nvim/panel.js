@@ -1,7 +1,7 @@
 // The side panel that holds herdr-nvim's tree, as `layout()` describes it, and
 // the commands the tab bar's Files button runs on it (mods/tabs/main.js).
 
-import { focused, run, terminals } from "herdr";
+import { focused, run, setShared, shared, terminals } from "herdr";
 
 // The nodes from the root to the tree's block (the `files` slot), or null.
 function slotPath(node, trail = []) {
@@ -54,4 +54,26 @@ export function nvimPanes(tab) {
 export function goToTree(terminal) {
   if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
   run("pane.go", { direction: "right" });
+}
+
+// The tree key (nvim's `<leader>e`, or the same keys in the tree) hides the
+// tree but keeps the tab's nvim, while every other way of closing the panel
+// closes nvim with it. It says so first: this intent, for the controller
+// (sync.js) to find on the very hide that follows, for that tab, and consume.
+const KEEP_NVIM = "herdr-nvim.keep-nvim";
+// shared() is persisted: an intent whose hide never came must not outlive it.
+const KEEP_FOR_MS = 10000;
+
+export function hideTreeKeepNvim(p, tab, terminal) {
+  setShared(KEEP_NVIM, { tab, at: Date.now() });
+  hidePanel(p);
+  if (terminal) run("pane.focus", { terminal });
+}
+
+// On a hide in `tab`: whether it was the tree key's. Consumes the intent.
+export function takeKeepNvim(tab) {
+  const keep = shared(KEEP_NVIM);
+  if (!keep) return false;
+  setShared(KEEP_NVIM, null);
+  return keep.tab === tab && Date.now() - keep.at < KEEP_FOR_MS;
 }
