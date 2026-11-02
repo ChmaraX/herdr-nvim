@@ -24,16 +24,32 @@ use serde_json::Value;
 
 use crate::herdr::AgentSession;
 
-/// Which session layout the terminal's agent uses: `pi` or `claude`.
-pub(crate) fn agent_kind(facts: &Value) -> Option<&'static str> {
+/// The agents whose session logs herdr-nvim reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentKind {
+    Pi,
+    Claude,
+}
+
+impl AgentKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pi => "pi",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+/// Which session layout the terminal's agent uses.
+pub(crate) fn agent_kind(facts: &Value) -> Option<AgentKind> {
     let reported = facts.pointer("/status/app").and_then(Value::as_str);
     let program = facts.pointer("/foreground/name").and_then(Value::as_str);
     [reported, program].into_iter().flatten().find_map(|name| {
         let name = name.to_ascii_lowercase();
         if name.contains("claude") {
-            Some("claude")
+            Some(AgentKind::Claude)
         } else if name == "pi" || name.starts_with("pi-") || name.starts_with("pi ") {
-            Some("pi")
+            Some(AgentKind::Pi)
         } else {
             None
         }
@@ -144,11 +160,11 @@ pub(crate) fn find(facts: &Value) -> Option<AgentSession> {
     }
     cwds.dedup();
     let dirs: Vec<PathBuf> = match kind {
-        "pi" => {
+        AgentKind::Pi => {
             let sessions = root("PI_CODING_AGENT_DIR", ".pi/agent")?.join("sessions");
             cwds.iter().map(|c| sessions.join(pi_slug(c))).collect()
         }
-        _ => {
+        AgentKind::Claude => {
             let projects = root("CLAUDE_CONFIG_DIR", ".claude")?.join("projects");
             cwds.iter()
                 .flat_map(|c| claude_slugs(c))
@@ -159,7 +175,7 @@ pub(crate) fn find(facts: &Value) -> Option<AgentSession> {
     let logs = dirs.iter().flat_map(|dir| logs_in(dir)).collect();
     let path = newest_since(logs, since)?;
     Some(AgentSession {
-        agent: kind.to_owned(),
+        agent: kind.as_str().to_owned(),
         kind: "path".to_owned(),
         value: path.to_string_lossy().into_owned(),
     })
@@ -186,14 +202,17 @@ mod tests {
 
     #[test]
     fn the_agent_is_known_by_its_report_or_its_program() {
-        assert_eq!(agent_kind(&json!({"status": {"app": "pi"}})), Some("pi"));
+        assert_eq!(
+            agent_kind(&json!({"status": {"app": "pi"}})),
+            Some(AgentKind::Pi)
+        );
         assert_eq!(
             agent_kind(&json!({"status": {"app": "claude-code"}})),
-            Some("claude")
+            Some(AgentKind::Claude)
         );
         assert_eq!(
             agent_kind(&json!({"foreground": {"name": "claude"}})),
-            Some("claude")
+            Some(AgentKind::Claude)
         );
         assert_eq!(agent_kind(&json!({"foreground": {"name": "pip"}})), None);
         assert_eq!(agent_kind(&json!({"status": {"app": "codex"}})), None);
