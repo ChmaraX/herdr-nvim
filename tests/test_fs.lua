@@ -1,0 +1,82 @@
+-- The native tree's file operations, done by nvim (lua/herdr-nvim/fs.lua).
+-- Headless nvim without Snacks: herdr-nvim's own rename/delete path.
+local fs = require("herdr-nvim.fs")
+
+local function tmpdir()
+  local dir = vim.fn.resolve(vim.fn.tempname())
+  vim.fn.mkdir(dir .. "/src", "p")
+  vim.fn.writefile({ "hello" }, dir .. "/src/a.txt")
+  return dir
+end
+
+local function run(req)
+  return vim.json.decode(fs.run(vim.json.encode(req)))
+end
+
+T.test("fs: create makes a folder, or a file opened in nvim", function()
+  local root = tmpdir()
+  T.eq(run({ op = "create", root = root, path = root .. "/src/new/", dir = true }).ok, true)
+  T.eq(vim.fn.isdirectory(root .. "/src/new"), 1)
+  T.eq(run({ op = "create", root = root, path = root .. "/src/new/b.lua" }).ok, true)
+  T.eq(vim.fn.filereadable(root .. "/src/new/b.lua"), 1)
+  T.eq(vim.fn.expand("%:t"), "b.lua")
+  T.ok(run({ op = "create", root = root, path = root .. "/src/a.txt" }).error:find("already exists"))
+end)
+
+T.test("fs: rename moves the open buffer with the file", function()
+  local root = tmpdir()
+  vim.cmd.edit(root .. "/src/a.txt")
+  local r = run({ op = "rename", root = root, path = root .. "/src/a.txt", to = root .. "/src/deep/b.txt" })
+  T.eq(r.ok, true)
+  T.eq(vim.fn.filereadable(root .. "/src/deep/b.txt"), 1)
+  T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 0)
+  T.eq(vim.fn.expand("%:p"), root .. "/src/deep/b.txt")
+  T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
+end)
+
+T.test("fs: renaming a folder moves the buffers inside it", function()
+  local root = tmpdir()
+  vim.cmd.edit(root .. "/src/a.txt")
+  T.eq(run({ op = "rename", root = root, path = root .. "/src", to = root .. "/lib" }).ok, true)
+  T.eq(vim.fn.expand("%:p"), root .. "/lib/a.txt")
+end)
+
+T.test("fs: move and copy into a folder, copy to a name", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/dest", "p")
+  T.eq(run({ op = "copy", root = root, path = root .. "/src/a.txt", to = root .. "/src/c.txt" }).ok, true)
+  T.eq(vim.fn.readfile(root .. "/src/c.txt"), { "hello" })
+  T.eq(run({ op = "copy_into", root = root, paths = { root .. "/src/a.txt" }, dir = root .. "/dest" }).ok, true)
+  T.eq(vim.fn.filereadable(root .. "/dest/a.txt"), 1)
+  T.eq(run({ op = "move", root = root, paths = { root .. "/src/c.txt" }, dir = root .. "/dest" }).ok, true)
+  T.eq(vim.fn.filereadable(root .. "/dest/c.txt"), 1)
+  T.eq(vim.fn.filereadable(root .. "/src/c.txt"), 0)
+end)
+
+T.test("fs: delete removes the file and wipes its buffer", function()
+  local root = tmpdir()
+  local file = root .. "/src/a.txt"
+  vim.cmd.edit(file)
+  vim.cmd.enew()
+  T.ok(vim.fn.bufnr(file) > 0)
+  T.eq(run({ op = "delete", root = root, paths = { root .. "/src" } }).ok, true)
+  T.eq(vim.fn.isdirectory(root .. "/src"), 0)
+  T.eq(vim.fn.bufnr(file), -1)
+end)
+
+T.test("fs: yank then paste copies through nvim's register", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/dest", "p")
+  T.eq(run({ op = "yank", root = root, paths = { root .. "/src/a.txt" } }).count, 1)
+  T.eq(run({ op = "paste", root = root, dir = root .. "/dest" }).ok, true)
+  T.eq(vim.fn.filereadable(root .. "/dest/a.txt"), 1)
+end)
+
+T.test("fs: nothing outside the tab's folder without the person's yes", function()
+  local root = tmpdir()
+  local other = tmpdir()
+  local r = run({ op = "copy", root = root, path = root .. "/src/a.txt", to = other .. "/x.txt" })
+  T.ok(r.error and r.error:find("outside"))
+  T.eq(vim.fn.filereadable(other .. "/x.txt"), 0)
+  T.eq(run({ op = "copy", root = root, outside = true, path = root .. "/src/a.txt", to = other .. "/x.txt" }).ok, true)
+end)

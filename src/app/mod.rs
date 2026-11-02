@@ -13,8 +13,10 @@ mod host;
 mod layout_patch;
 pub(crate) mod rpc;
 mod session;
+pub(crate) mod settings;
 pub(crate) mod setup;
 pub(crate) mod sidebar;
+pub(crate) mod tree;
 pub(crate) mod watch;
 
 pub use host::AppHost;

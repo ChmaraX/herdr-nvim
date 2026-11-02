@@ -44,9 +44,14 @@ fn main() {
         "app-watch" => run(app::watch::app_watch_cmd),
         "app-setup" => run(app::setup::setup_cmd),
         "open" => run(app::commands::open_cmd),
+        "fs" => run(app::tree::fs_cmd),
+        "app-find" => run(app::tree::find_cmd),
+        "app-current" => run(app::tree::current_cmd),
+        "app-reveal" => run(app::tree::reveal_cmd),
+        "app-config" => run(app::settings::app_config_cmd),
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-config>"
             );
             2
         }

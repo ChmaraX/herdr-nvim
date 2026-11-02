@@ -141,7 +141,7 @@ fn spawn_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if crate::host::current() == crate::host::Host::App {
-        app_daemon(&mut command);
+        app_daemon(&mut command, tab);
     }
     detach_command(&mut command);
     let child = command
@@ -163,8 +163,12 @@ fn spawn_daemon(
 ///
 /// It also names its window: the app's pane header shows the terminal title,
 /// which nvim sets from `titlestring` (a user config may still change it).
-fn app_daemon(command: &mut Command) {
+fn app_daemon(command: &mut Command, tab: &str) {
     command
+        .env(
+            "HERDR_NVIM_CURRENT_FILE",
+            crate::state::current_file_path(tab),
+        )
         .arg("--cmd")
         .arg("set title titlestring=nvim\\ ·\\ %t")
         .env("HERDR_NVIM_HOST", "app")
@@ -232,9 +236,47 @@ pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Optio
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// `remote_expr` that gives up after `timeout`: nvim answers no request while
+/// it waits at a prompt (hit-enter, a confirm), and a click in the app must
+/// not hang on that.
+pub(crate) fn remote_expr_within(
+    socket: &Path,
+    expr: &str,
+    sidebar: &Sidebar,
+    timeout: Duration,
+) -> Option<String> {
+    let mut child = nvim_cmd(sidebar)
+        .arg("--headless")
+        .arg("--server")
+        .arg(socket)
+        .arg("--remote-expr")
+        .arg(expr)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+                return status.success().then(|| out.trim().to_owned());
+            }
+            Ok(None) if Instant::now() < deadline => sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// Quote `s` as a Vimscript single-quoted string, where a literal quote is
 /// represented by two consecutive quotes.
-fn vim_string_literal(s: &str) -> String {
+pub(crate) fn vim_string_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
@@ -286,6 +328,14 @@ pub fn sidebar_cmd() -> Result<()> {
     refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
     if app {
         crate::app::watch::ensure_running();
+        if env::args().any(|arg| arg == "--explore") {
+            // nvim's own explorer, once this window is attached (UIEnter).
+            let _ = remote_expr(
+                &socket,
+                "luaeval(\"require('herdr-nvim.app').explore_on_ui()\")",
+                &config.sidebar,
+            );
+        }
     }
 
     attach_remote_ui(&socket, &config.sidebar)

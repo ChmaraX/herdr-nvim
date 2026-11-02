@@ -76,12 +76,16 @@ pub(crate) fn open(ctx: &Ctx) -> Result<String> {
     let root = doc::read()?
         .and_then(|doc| doc::root_of(&doc, raw_tab(&ctx.tab)))
         .with_context(|| format!("tab {} is not in the app's layout", raw_tab(&ctx.tab)))?;
-    let argv = json!([
-        cli::self_command()?.to_string_lossy(),
-        "sidebar",
-        "--cwd",
-        ctx.cwd.to_string_lossy(),
-    ]);
+    let mut argv = vec![
+        cli::self_command()?.to_string_lossy().into_owned(),
+        "sidebar".to_owned(),
+        "--cwd".to_owned(),
+        ctx.cwd.to_string_lossy().into_owned(),
+    ];
+    // `tree = "nvim"`: nvim's own explorer is the tree, open it with nvim.
+    if config.app.tree == crate::config::TreeMode::Nvim {
+        argv.push("--explore".to_owned());
+    }
     let made = cli::app_do(
         "pane.split",
         &json!({

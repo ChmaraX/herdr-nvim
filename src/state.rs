@@ -130,6 +130,14 @@ pub(crate) fn finisher_log() -> std::process::Stdio {
         .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from)
 }
 
+/// Where a Herdr app tab's nvim writes the file it shows (`app.lua`), for the
+/// native tree to follow: `<state dir>/app-current/<tab key>.path`.
+pub(crate) fn current_file_path(tab: &str) -> PathBuf {
+    state_dir()
+        .join("app-current")
+        .join(format!("{}.path", tab_key(tab)))
+}
+
 fn path_for_key(key: &str) -> PathBuf {
     state_dir().join(format!("{key}.json"))
 }
