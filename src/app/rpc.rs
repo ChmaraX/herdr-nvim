@@ -34,24 +34,33 @@ pub(crate) struct Rpc {
     stdin: ChildStdin,
     reader: BufReader<ChildStdout>,
     next_id: u64,
+    /// The connection itself failed (not a call the core refused).
+    broken: bool,
+}
+
+/// A running `hc connect`, its stdin and its stdout.
+fn spawn_connect() -> Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
+    let mut child = hc()
+        .arg("connect")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("cannot run `hc connect`: is herdr-core installed?")?;
+    let stdin = child.stdin.take().context("hc connect: no stdin")?;
+    let reader = BufReader::new(child.stdout.take().context("hc connect: no stdout")?);
+    Ok((child, stdin, reader))
 }
 
 impl Rpc {
     pub(crate) fn connect() -> Result<Self> {
-        let mut child = hc()
-            .arg("connect")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("cannot run `hc connect`: is herdr-core installed?")?;
-        let stdin = child.stdin.take().context("hc connect: no stdin")?;
-        let reader = BufReader::new(child.stdout.take().context("hc connect: no stdout")?);
+        let (child, stdin, reader) = spawn_connect()?;
         let mut rpc = Self {
             child,
             stdin,
             reader,
             next_id: 1,
+            broken: false,
         };
         rpc.call("hello", json!({}))?;
         Ok(rpc)
@@ -61,12 +70,19 @@ impl Rpc {
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{request}").with_context(|| format!("{method}: core gone"))?;
-        self.stdin.flush()?;
+        let sent = writeln!(self.stdin, "{request}").and_then(|()| self.stdin.flush());
+        if let Err(error) = sent {
+            self.broken = true;
+            return Err(error).with_context(|| format!("{method}: herdr-core is gone"));
+        }
         loop {
             let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
-                bail!("{method}: herdr-core closed the connection");
+            match self.reader.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    self.broken = true;
+                    bail!("{method}: herdr-core closed the connection");
+                }
+                Ok(_) => {}
             }
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
@@ -101,9 +117,28 @@ fn reply(method: &str, message: Value) -> Result<Value> {
     Ok(message.get("result").cloned().unwrap_or(Value::Null))
 }
 
-/// One call on a fresh connection.
+thread_local! {
+    /// This command's connection: one `hc connect` for all its calls (a
+    /// toggle makes several). It ends with the process (its stdin closes).
+    static CONNECTION: std::cell::RefCell<Option<Rpc>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One call on this command's connection, made on first use (and again
+/// once if the core dropped it).
 pub(crate) fn call(method: &str, params: Value) -> Result<Value> {
-    Rpc::connect()?.call(method, params)
+    CONNECTION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(rpc) = slot.as_mut() {
+            match rpc.call(method, params.clone()) {
+                // A call the core refused is its answer; a broken line is
+                // made again.
+                Err(_) if rpc.broken => *slot = None,
+                result => return result,
+            }
+        }
+        let rpc = slot.insert(Rpc::connect()?);
+        rpc.call(method, params)
+    })
 }
 
 const HEADER: usize = 9;
@@ -168,16 +203,8 @@ pub(crate) fn paste(terminal: &str, text: &str) -> Result<()> {
     let cols = facts.get("cols").and_then(Value::as_u64).unwrap_or(80);
     let rows = facts.get("rows").and_then(Value::as_u64).unwrap_or(24);
 
-    let mut child = hc()
-        .arg("connect")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("cannot run `hc connect`")?;
+    let (mut child, mut stdin, mut reader) = spawn_connect()?;
     let result = (|| -> Result<()> {
-        let mut stdin = child.stdin.take().context("hc connect: no stdin")?;
-        let mut reader = BufReader::new(child.stdout.take().context("hc connect: no stdout")?);
         stdin.write_all(
             b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"framed\":true}}\n",
         )?;
