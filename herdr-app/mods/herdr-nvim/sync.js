@@ -36,6 +36,7 @@ import { focused, layout, nextCommand, run, shared, spaces } from "herdr";
 import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { pick } from "./pick.js";
+import { wanted } from "./sync-rule.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, showFiles, takeKeepNvim } from "./panel.js";
 
 export class Sync {
@@ -70,6 +71,8 @@ export class Sync {
     return seen.length > 0;
   }
 
+  // Each render: what the tab looks like now, what that change asks for
+  // (`wanted`), then make it so.
   look(cx) {
     this.focusTree();
     if (this.busy) return;
@@ -83,26 +86,19 @@ export class Sync {
     const cur = { tab: f.tab, at: place(f), files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
     const prev = this.prev;
     this.prev = cur;
-    const native = shared("herdr-nvim.tree") !== "nvim";
-    const kept = this.kept.has(cur.tab);
-    const followTab = () => {
-      if (native && cur.nvim && !cur.files && !cur.other && !kept) showFiles(p);
-      else if (cur.files && (!cur.nvim || !native || kept)) {
-        hidePanel(p);
-        cur.files = false; // our own hide: nothing for the next look to follow
-      }
-    };
-    if (!prev || prev.tab !== cur.tab) followTab();
-    else if (prev.files !== cur.files) {
-      const local = !spaces().find((s) => s.id === f.space)?.machine;
-      if (cur.files) this.kept.delete(cur.tab);
-      if (!cur.files && takeKeepNvim(cur.tab)) this.kept.add(cur.tab);
-      else if (cur.files && local) this.act(cur, p, cx);
-      else if (!cur.files && !cur.other && cur.nvim && native) this.act(cur, p, cx);
-    } else if (prev.nvim !== cur.nvim) {
-      if (!cur.nvim) this.kept.delete(cur.tab);
-      followTab();
-    }
+    const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && takeKeepNvim(cur.tab);
+    const want = wanted(cur, prev, {
+      native: shared("herdr-nvim.tree") !== "nvim",
+      local: !spaces().find((s) => s.id === f.space)?.machine,
+      kept: this.kept.has(cur.tab),
+      hidByTreeKey,
+    });
+    if (want.kept === true) this.kept.add(cur.tab);
+    if (want.kept === false) this.kept.delete(cur.tab);
+    // Our own show or hide: nothing for the next look to follow.
+    if (want.panel === "show") { showFiles(p); cur.files = true; }
+    if (want.panel === "hide") { hidePanel(p); cur.files = false; }
+    if (want.nvim) this.act(cur, p, cx);
   }
 
   // The panel opened or closed: open or close the tab's nvim to match. With
