@@ -182,25 +182,22 @@ function ops.copy(req)
   return { ok = true, path = to }
 end
 
--- {paths, dir}: move each into `dir` (a rename each, language servers told).
-function ops.move(req)
-  local moved = {}
+-- Runs `op` ({root, outside, path, to}) for each of `req.paths`, to the same
+-- name in `req.dir`; the paths it made.
+local function each_into(req, op)
+  local done = {}
   for _, path in ipairs(req.paths or {}) do
     local to = norm(req.dir) .. "/" .. vim.fn.fnamemodify(norm(path), ":t")
-    table.insert(moved, ops.rename({ root = req.root, outside = req.outside, path = path, to = to }).path)
+    table.insert(done, op({ root = req.root, outside = req.outside, path = path, to = to }).path)
   end
-  return { ok = true, paths = moved }
+  return { ok = true, paths = done }
 end
 
+-- {paths, dir}: move each into `dir` (a rename each, language servers told).
+function ops.move(req) return each_into(req, ops.rename) end
+
 -- {paths, dir}: copy each into `dir`.
-function ops.copy_into(req)
-  local copied = {}
-  for _, path in ipairs(req.paths or {}) do
-    local to = norm(req.dir) .. "/" .. vim.fn.fnamemodify(norm(path), ":t")
-    table.insert(copied, ops.copy({ root = req.root, outside = req.outside, path = path, to = to }).path)
-  end
-  return { ok = true, paths = copied }
-end
+function ops.copy_into(req) return each_into(req, ops.copy) end
 
 -- {paths}: to the trash when the person's Snacks says so, else deleted; their
 -- buffers go too.
