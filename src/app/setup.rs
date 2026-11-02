@@ -1,16 +1,19 @@
 //! `herdr-nvim app-setup install|uninstall --keys <keys.json> [--panel-width N]`: the two edits
 //! the Herdr app install makes outside the mod folders, and undoes.
 //!
-//! * **Layout** (`layout_patch`): the shown layout's `files` slot gets the
-//!   `herdr-nvim` tree, a floating `herdr-nvim-sync` controller is added and
-//!   the panel narrowed to `--panel-width` (default 300). Herdr's own layouts
-//!   can't be edited, so a shipped one is cloned first (`<name>-mods`, shared
-//!   with other mods that patch other slots the same way); a personal one is
-//!   patched in place. Every write re-reads the file and replaces it whole only
-//!   if nobody changed it meanwhile. Uninstall takes it all out and drops a
-//!   clone that no longer differs from the layout it was cloned from.
+//! * **Layout** (`layout_patch`, RECIPE.md "Layout changes"): the person's one
+//!   personal layout, the one on screen, gets herdr-nvim's tree in its `files`
+//!   slot (or the standard side panel when it has none), the floating
+//!   `herdr-nvim-sync` controller and the panel width. Herdr's own layouts
+//!   can't be edited: on one, the person's existing personal copy of it is
+//!   used (`<name>-copy`, else the only one cloned from it), else it is cloned
+//!   once with the app's default (`layout.clone {name}` → `<name>-copy`).
+//!   Every write re-reads the file and replaces it whole only if nobody changed
+//!   it meanwhile. Uninstall takes herdr-nvim's own edits out of every
+//!   personal layout and never deletes or switches a layout.
 //! * **Keys**: the mod's `keys.json` entries are added where the key is free;
-//!   a key already bound to something else is left alone and reported.
+//!   a key the person already uses for something else is left alone and
+//!   reported (AGENTS.md: ask before replacing one).
 
 use std::{
     env, fs,
@@ -82,7 +85,7 @@ pub(crate) fn merge_keys(keys: &mut Value, ours: &Value) -> (Vec<String>, Vec<St
                 }
                 Some(existing) if existing == action => {}
                 Some(existing) => conflicts.push(format!(
-                    "{section} {key} is {existing}; bind {action} yourself if you want it"
+                    "{section} {key} is {existing}; herdr-nvim's {action} is not bound (bind it to a key yourself if you want it)"
                 )),
             }
         }
@@ -119,18 +122,73 @@ fn shown_layout() -> Result<String> {
         .context("herdr-app status names no layout")
 }
 
+/// The person's own layouts: every `layouts/*.json` Herdr doesn't ship.
+fn personal_layouts(home: &Path) -> Vec<(String, Value)> {
+    let mut found: Vec<(String, Value)> = fs::read_dir(home.join("layouts"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            let layout = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            Some((name, layout))
+        })
+        .filter(|(name, _)| !shipped(home, name))
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+/// Pure: which personal layout to install into while Herdr's own `shown`
+/// is on screen. `Ok(Some(name))`: the person's copy of it (`<shown>-copy`,
+/// else the only one cloned from it, e.g. an older install's `<shown>-mods`);
+/// `Ok(None)`: none yet, clone it.
+pub(crate) fn copy_of(shown: &str, personal: &[(String, Value)]) -> Result<Option<String>> {
+    let default = format!("{shown}-copy");
+    let copies: Vec<&str> = personal
+        .iter()
+        .filter(|(_, l)| l.pointer("/cloned_from/name").and_then(Value::as_str) == Some(shown))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if copies.contains(&default.as_str()) {
+        return Ok(Some(default));
+    }
+    match copies.as_slice() {
+        [one] => Ok(Some((*one).to_owned())),
+        [] if personal.iter().any(|(name, _)| *name == default) => bail!(
+            "{default} exists but is not a copy of {shown}: switch to the personal layout you \
+             want herdr-nvim in (ctrl-shift-l) and run the install again"
+        ),
+        [] => Ok(None),
+        several => bail!(
+            "you have several personal copies of {shown} ({}): switch to the one you want \
+             herdr-nvim in (ctrl-shift-l) and run the install again",
+            several.join(", ")
+        ),
+    }
+}
+
 fn install_layout(home: &Path, panel_width: u32) -> Result<()> {
     let shown = shown_layout()?;
     let target = if shipped(home, &shown) {
-        let clone = env::var("HERDR_NVIM_LAYOUT_AS").unwrap_or_else(|_| format!("{shown}-mods"));
-        if layout_path(home, &clone).exists() {
-            cli::app_do("layout.switch", &json!({"name": clone}))?;
-            println!("layout: switched to {clone} (already a personal copy of {shown})");
-        } else {
-            cli::app_do("layout.clone", &json!({"name": shown, "as": clone}))?;
-            println!("layout: cloned {shown} as {clone} (Herdr's own layouts can't be edited)");
+        match copy_of(&shown, &personal_layouts(home))? {
+            Some(copy) => {
+                cli::app_do("layout.switch", &json!({"name": copy}))?;
+                println!("layout: switched to {copy}, your personal copy of {shown} (Herdr's own layouts can't be edited)");
+                copy
+            }
+            None => {
+                cli::app_do("layout.clone", &json!({"name": shown}))?;
+                let copy = format!("{shown}-copy");
+                if !layout_path(home, &copy).exists() {
+                    bail!("layout.clone {shown} made no {copy}");
+                }
+                println!("layout: cloned {shown} as {copy}, your personal layout from now on (Herdr's own layouts can't be edited)");
+                copy
+            }
         }
-        clone
     } else {
         shown
     };
@@ -144,42 +202,15 @@ fn install_layout(home: &Path, panel_width: u32) -> Result<()> {
     Ok(())
 }
 
+/// Take herdr-nvim's edits out of every personal layout. Layouts themselves
+/// stay, and so does the one on screen.
 fn uninstall_layouts(home: &Path) -> Result<()> {
-    let shown = shown_layout().ok();
-    let Ok(entries) = fs::read_dir(home.join("layouts")) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") || shipped(home, &name) {
-            continue;
+    for (name, _) in personal_layouts(home) {
+        if edit_json(&layout_path(home, &name), &mut |layout| {
+            Ok(layout_patch::restore(layout))
+        })? {
+            println!("layout: {name}: herdr-nvim's edits taken out (Files is what it was before)");
         }
-        if edit_json(&path, &mut |layout| Ok(layout_patch::restore(layout)))? {
-            println!("layout: {name}: Files is the shipped Files browser again");
-        }
-        let layout: Value = serde_json::from_slice(&fs::read(&path)?)?;
-        let Some(origin) = layout.pointer("/cloned_from/name").and_then(Value::as_str) else {
-            continue;
-        };
-        let origin_layout = fs::read(layout_path(home, origin))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-        if !name.ends_with("-mods")
-            || !origin_layout.is_some_and(|o| layout_patch::same_as_origin(&layout, &o))
-        {
-            continue;
-        }
-        if shown.as_deref() == Some(name.as_str()) {
-            cli::app_do("layout.switch", &json!({"name": origin}))?;
-        }
-        fs::remove_file(&path)?;
-        let _ = fs::remove_file(home.join("layouts/.state").join(format!("{name}.json")));
-        println!("layout: removed {name}, back to {origin}");
     }
     Ok(())
 }
@@ -231,7 +262,7 @@ pub fn setup_cmd() -> Result<()> {
             report
                 .1
                 .iter()
-                .for_each(|line| println!("keys: kept {line}"));
+                .for_each(|line| println!("keys: kept yours: {line}"));
             install_layout(&home, panel_width(&args)?)
         }
         Some("uninstall") => {
@@ -268,6 +299,44 @@ mod tests {
         assert_eq!(
             keys,
             json!({"global": {"cmd-j o": "mod.open:open-opencode", "cmd-t": "tab.new"}})
+        );
+    }
+
+    fn copy(name: &str, of: &str) -> (String, Value) {
+        (
+            name.to_owned(),
+            json!({"cloned_from": {"name": of, "version": "0.1.12"}}),
+        )
+    }
+
+    #[test]
+    fn on_a_shipped_layout_the_persons_own_copy_is_used_or_one_is_made() {
+        assert_eq!(copy_of("main", &[]).unwrap(), None, "none yet: clone");
+        let mine = ("mine".to_owned(), json!({"id": "root"}));
+        assert_eq!(copy_of("main", &[mine.clone()]).unwrap(), None);
+        // An older install's clone is the person's copy now.
+        let old = copy("main-mods", "main");
+        assert_eq!(
+            copy_of("main", &[old.clone(), mine.clone()])
+                .unwrap()
+                .as_deref(),
+            Some("main-mods")
+        );
+        assert_eq!(
+            copy_of("main", &[old.clone(), copy("main-copy", "main")])
+                .unwrap()
+                .as_deref(),
+            Some("main-copy"),
+            "the app's default name wins"
+        );
+        assert_eq!(copy_of("terminals", &[old.clone()]).unwrap(), None);
+        assert!(
+            copy_of("main", &[old, copy("main-2", "main")]).is_err(),
+            "several: ask"
+        );
+        assert!(
+            copy_of("main", &[("main-copy".to_owned(), json!({}))]).is_err(),
+            "the default name is taken by something else"
         );
     }
 }

@@ -1,8 +1,11 @@
-//! The two nodes the Herdr app install puts into a layout, and takes out:
+//! herdr-nvim's whole layout footprint (RECIPE.md, "Layout changes"), put
+//! into any personal layout and taken out again:
 //!
 //! * the `files` slot (the side panel's Files browser, shown by the tab bar's
 //!   Files button) shows the `herdr-nvim` tree; its old content is kept in
-//!   the block's `props.replaces`;
+//!   the block's `props.replaces`. A layout without a `files` slot gets the
+//!   standard side panel (`panel` column → `panel-body` stack → `files`
+//!   block) right of its tab block, recorded in `props.added`;
 //! * an empty floating block, `herdr-nvim-sync`, the controller that keeps the
 //!   Files panel and the tab's nvim pane together. A hidden block's mod is not
 //!   rendered, so the slot can't see the panel close; a floating block that
@@ -14,18 +17,33 @@
 //! replaced in the slot's props for the uninstall.
 //!
 //! Everything else in the layout, including another mod's patch of the
-//! `changes` slot, is left as it is.
+//! `changes` slot, is left as it is, in its order.
 
-use anyhow::{Context, Result};
+use std::collections::HashSet;
+
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 pub(crate) const MOD: &str = "herdr-nvim";
 pub(crate) const SLOT: &str = "files";
 pub(crate) const SYNC: &str = "herdr-nvim-sync";
+/// The ids of the standard side panel (Herdr's `main`; the tab bar's Files
+/// button names them), used when a layout has no `files` slot of its own.
+const PANEL: &str = "panel";
+const PANEL_BODY: &str = "panel-body";
+/// The row the tab block is wrapped in when its parent is not a row.
+const ROW: &str = "herdr-nvim-row";
 /// The panel width Herdr 0.1.11 ships in `main` (logical px).
 pub(crate) const SHIPPED_PANEL_PX: f64 = 368.0;
 /// herdr-nvim's default: ~15% of a 2021px window, as the person sized it.
 pub(crate) const DEFAULT_PANEL_PX: u32 = 300;
+
+fn children(node: &Value) -> impl Iterator<Item = &Value> {
+    node.get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+}
 
 /// The chain of nodes from `node` to the node `id`.
 fn path_to<'a>(node: &'a Value, id: &str, trail: &mut Vec<&'a Value>) -> bool {
@@ -33,12 +51,7 @@ fn path_to<'a>(node: &'a Value, id: &str, trail: &mut Vec<&'a Value>) -> bool {
     if node.get("id").and_then(Value::as_str) == Some(id) {
         return true;
     }
-    for child in node
-        .get("children")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for child in children(node) {
         if path_to(child, id, trail) {
             return true;
         }
@@ -73,16 +86,159 @@ fn find_mut<'a>(node: &'a mut Value, id: &str) -> Option<&'a mut Value> {
         .find_map(|child| find_mut(child, id))
 }
 
+/// Every node id in the layout, floating blocks included.
+fn ids(node: &Value, out: &mut HashSet<String>) {
+    if let Some(id) = node.get("id").and_then(Value::as_str) {
+        out.insert(id.to_owned());
+    }
+    for floating in node
+        .get("floating")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        ids(floating, out);
+    }
+    for child in children(node) {
+        ids(child, out);
+    }
+}
+
+/// The child indices from `node` down to its first `{tab: "active"}` block.
+fn path_to_tab(node: &Value, trail: &mut Vec<usize>) -> bool {
+    if node.pointer("/content/tab").and_then(Value::as_str) == Some("active") {
+        return true;
+    }
+    for (at, child) in children(node).enumerate() {
+        trail.push(at);
+        if path_to_tab(child, trail) {
+            return true;
+        }
+        trail.pop();
+    }
+    false
+}
+
+fn at_path<'a>(mut node: &'a mut Value, path: &[usize]) -> &'a mut Value {
+    for &at in path {
+        node = &mut node["children"][at];
+    }
+    node
+}
+
+/// Remove the node `id` from wherever it is under `node`.
+fn remove_node(node: &mut Value, id: &str) -> Option<Value> {
+    let list = node.get_mut("children")?.as_array_mut()?;
+    if let Some(at) = list
+        .iter()
+        .position(|c| c.get("id").and_then(Value::as_str) == Some(id))
+    {
+        return Some(list.remove(at));
+    }
+    list.iter_mut().find_map(|child| remove_node(child, id))
+}
+
+/// Where a node sits among its siblings: what moves to a wrapping row.
+const PLACE: [&str; 3] = ["size", "min", "max"];
+
+/// A layout without a `files` slot: add the standard side panel right of its
+/// tab block, hidden until Files or cmd-e shows it. The tab block's parent
+/// row takes it; a tab block in a column is wrapped in a row first.
+fn add_panel(layout: &mut Value, panel_width: u32) -> Result<()> {
+    let mut taken = HashSet::new();
+    ids(layout, &mut taken);
+    let free = |id: &str| {
+        if taken.contains(id) {
+            format!("herdr-nvim-{id}")
+        } else {
+            id.to_owned()
+        }
+    };
+    let (panel, stack) = (free(PANEL), free(PANEL_BODY));
+    if taken.contains(&panel) || taken.contains(&stack) || taken.contains(ROW) {
+        bail!("this layout already uses the ids herdr-nvim's side panel needs ({panel}, {stack}, {ROW})");
+    }
+    let mut trail = Vec::new();
+    if !path_to_tab(layout, &mut trail) || trail.is_empty() {
+        bail!("this layout has no `files` slot and no tab block (`{{\"tab\": \"active\"}}`) to put the side panel beside");
+    }
+    let width = f64::from(panel_width);
+    let parent_is_row = at_path(layout, &trail[..trail.len() - 1])
+        .get("type")
+        .and_then(Value::as_str)
+        == Some("row");
+    let added = if parent_is_row {
+        json!({"panel": panel})
+    } else {
+        json!({"panel": panel, "row": ROW})
+    };
+    let node = json!({"id": panel, "type": "column", "hidden": true, "size": {"px": panel_width},
+        "min": width.min(280.0), "max": width.max(900.0),
+        "children": [{"id": stack, "type": "stack", "active": SLOT, "children": [
+            {"id": SLOT, "type": "block",
+             "content": {"mod": MOD, "props": {"added": added, "panel_width": panel_width}}}]}]});
+    let at = *trail.last().expect("not empty");
+    let parent = at_path(layout, &trail[..trail.len() - 1]);
+    let list = parent["children"].as_array_mut().context("children")?;
+    if parent_is_row {
+        list.insert(at + 1, node);
+    } else {
+        let mut tab = list[at].take();
+        let mut row = json!({"id": ROW, "type": "row", "gap": 8});
+        for key in PLACE {
+            if let Some(value) = tab.as_object_mut().and_then(|t| t.shift_remove(key)) {
+                row[key] = value;
+            }
+        }
+        row["children"] = json!([tab, node]);
+        list[at] = row;
+    }
+    Ok(())
+}
+
+/// Undo `add_panel`: remove the panel, and unwrap the tab block if it was
+/// wrapped (and nothing else was put in that row since).
+fn remove_panel(layout: &mut Value, added: &Value) {
+    if let Some(panel) = added.get("panel").and_then(Value::as_str) {
+        remove_node(layout, panel);
+    }
+    let Some(row_id) = added.get("row").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(row) = find_mut(layout, row_id) else {
+        return;
+    };
+    let Some([only]) = row
+        .get("children")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    else {
+        return;
+    };
+    let mut tab = only.clone();
+    for key in PLACE {
+        if let Some(value) = row.get(key) {
+            tab[key] = value.clone();
+        }
+    }
+    *row = tab;
+}
+
 fn px(node: &Value) -> Option<f64> {
     node.pointer("/size/px").and_then(Value::as_f64)
 }
 
 /// Pure: install into `layout`. Returns whether anything changed.
 pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
+    if !layout.is_object() {
+        bail!("the layout is not an object");
+    }
     let before = layout.clone();
+    if find_mut(layout, SLOT).is_none() {
+        add_panel(layout, panel_width)?;
+    }
     let panel = panel_id(layout);
-    let slot = find_mut(layout, SLOT)
-        .context("this layout has no `files` slot (the side panel's Files browser) to replace")?;
+    let slot = find_mut(layout, SLOT).context("the `files` slot")?;
     if slot.pointer("/content/mod").and_then(Value::as_str) != Some(MOD) {
         let old = slot.get("content").cloned().unwrap_or(Value::Null);
         slot["content"] = json!({"mod": MOD, "props": {"replaces": old}});
@@ -101,7 +257,7 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
     }
     if let Some(was) = was {
         let props = &mut find_mut(layout, SLOT).expect("found above")["content"]["props"];
-        if props.get("panel_width_was").is_none() {
+        if props.get("panel_width_was").is_none() && props.get("added").is_none() {
             props["panel_width_was"] = was;
         }
         props["panel_width"] = json!(panel_width);
@@ -130,27 +286,33 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
 pub(crate) fn restore(layout: &mut Value) -> bool {
     let before = layout.clone();
     let panel = panel_id(layout);
-    if let Some(slot) = find_mut(layout, SLOT)
+    let props = find_mut(layout, SLOT)
         .filter(|s| s.pointer("/content/mod").and_then(Value::as_str) == Some(MOD))
-    {
-        let props = slot
-            .pointer("/content/props")
-            .cloned()
-            .unwrap_or(Value::Null);
-        slot["content"] = props
-            .get("replaces")
-            .filter(|old| !old.is_null())
-            .cloned()
-            .unwrap_or_else(|| json!({"mod": SLOT}));
-        if let (Some(ours), Some(node)) = (
-            props.get("panel_width").and_then(Value::as_f64),
-            panel.as_deref().and_then(|id| find_mut(layout, id)),
-        ) {
-            if px(node) == Some(ours) {
-                match props.get("panel_width_was").filter(|was| was.is_number()) {
-                    Some(was) => node["size"] = json!({"px": was}),
-                    None => {
-                        node.as_object_mut().map(|n| n.remove("size"));
+        .map(|slot| {
+            slot.pointer("/content/props")
+                .cloned()
+                .unwrap_or(Value::Null)
+        });
+    if let Some(props) = props {
+        if let Some(added) = props.get("added").filter(|a| a.is_object()) {
+            remove_panel(layout, added);
+        } else {
+            let slot = find_mut(layout, SLOT).expect("found above");
+            slot["content"] = props
+                .get("replaces")
+                .filter(|old| !old.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!({"mod": SLOT}));
+            if let (Some(ours), Some(node)) = (
+                props.get("panel_width").and_then(Value::as_f64),
+                panel.as_deref().and_then(|id| find_mut(layout, id)),
+            ) {
+                if px(node) == Some(ours) {
+                    match props.get("panel_width_was").filter(|was| was.is_number()) {
+                        Some(was) => node["size"] = json!({"px": was}),
+                        None => {
+                            node.as_object_mut().map(|n| n.shift_remove("size"));
+                        }
                     }
                 }
             }
@@ -160,35 +322,11 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
         if let Some(list) = root.get_mut("floating").and_then(Value::as_array_mut) {
             list.retain(|f| f.get("id").and_then(Value::as_str) != Some(SYNC));
             if list.is_empty() {
-                root.remove("floating");
+                root.shift_remove("floating");
             }
         }
     }
     *layout != before
-}
-
-/// Pure: whether a clone is back to being its origin (nothing but the clone
-/// record differs).
-pub(crate) fn same_as_origin(clone: &Value, origin: &Value) -> bool {
-    let mut clone = clone.clone();
-    if let Some(root) = clone.as_object_mut() {
-        root.remove("cloned_from");
-    }
-    numbers_as_floats(clone) == numbers_as_floats(origin.clone())
-}
-
-/// `368` and `368.0` are the same width: compare every number as a float.
-fn numbers_as_floats(value: Value) -> Value {
-    match value {
-        Value::Number(n) => n.as_f64().map_or(Value::Number(n), |f| json!(f)),
-        Value::Array(list) => Value::Array(list.into_iter().map(numbers_as_floats).collect()),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, numbers_as_floats(v)))
-                .collect(),
-        ),
-        other => other,
-    }
 }
 
 #[cfg(test)]
@@ -246,22 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn restore_puts_back_what_was_there_and_clone_detection_sees_others() {
+    fn restore_puts_back_what_was_there_in_the_same_order() {
         let mut value = layout();
+        let text = serde_json::to_string_pretty(&value).unwrap();
         patch(&mut value, 300).unwrap();
         assert!(restore(&mut value));
-        assert_eq!(value, layout());
+        assert_eq!(serde_json::to_string_pretty(&value).unwrap(), text);
         assert!(!restore(&mut value));
-        // gitview's slot still differs from main: the clone must stay.
-        let mut origin = layout();
-        origin.as_object_mut().unwrap().remove("cloned_from");
-        origin["children"][0]["size"] = json!({"px": 368}); // as main.json writes it
-        assert!(!same_as_origin(&value, &{
-            let mut o = origin.clone();
-            o["children"][0]["children"][0]["children"][1]["content"] = json!({"mod": "changes"});
-            o
-        }));
-        assert!(same_as_origin(&value, &origin));
     }
 
     #[test]
@@ -277,9 +406,78 @@ mod tests {
         assert_eq!(value, layout());
     }
 
+    /// The tab block of a layout, in a row or a column.
+    fn tab_block() -> Value {
+        json!({"id": "main", "type": "block", "content": {"tab": "active"}})
+    }
+
     #[test]
-    fn a_layout_without_a_files_slot_is_refused() {
-        let mut value = json!({"id": "root", "type": "row", "children": []});
+    fn a_layout_without_a_files_slot_gets_the_side_panel_beside_its_tab() {
+        let original = json!({"id": "root", "type": "row", "children": [
+            {"id": "list", "type": "block", "content": {"mod": "agents"}}, tab_block(),
+            {"id": "right", "type": "block", "content": {"mod": "clock"}}]});
+        let mut value = original.clone();
+        assert!(patch(&mut value, 300).unwrap());
+        let panel = &value["children"][2];
+        assert_eq!(panel["id"], "panel");
+        assert_eq!(panel["hidden"], true);
+        assert_eq!(panel["size"], json!({"px": 300}));
+        assert_eq!(panel["children"][0]["id"], "panel-body");
+        assert_eq!(panel["children"][0]["active"], "files");
+        assert_eq!(
+            panel["children"][0]["children"][0]["content"],
+            json!({"mod": "herdr-nvim", "props": {"added": {"panel": "panel"}, "panel_width": 300}})
+        );
+        assert_eq!(panel_id(&value).as_deref(), Some("panel"));
+        assert_eq!(value["floating"][0]["id"], SYNC);
+        assert!(!patch(&mut value, 300).unwrap(), "idempotent");
+        assert!(patch(&mut value, 320).unwrap(), "its width can change");
+        assert_eq!(value["children"][2]["size"], json!({"px": 320}));
+        assert!(restore(&mut value));
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            serde_json::to_string(&original).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_tab_block_in_a_column_is_wrapped_in_a_row_and_unwrapped_again() {
+        let mut tab = tab_block();
+        tab["size"] = json!({"weight": 2});
+        let original = json!({"id": "root", "type": "column", "gap": 8, "children": [
+            {"id": "tabs", "type": "block", "content": {"mod": "terminals-bar"}}, tab]});
+        let mut value = original.clone();
+        assert!(patch(&mut value, 300).unwrap());
+        let row = &value["children"][1];
+        assert_eq!(row["id"], ROW);
+        assert_eq!(row["type"], "row");
+        assert_eq!(
+            row["size"],
+            json!({"weight": 2}),
+            "the row takes the tab's place"
+        );
+        assert_eq!(row["children"][0]["id"], "main");
+        assert!(row["children"][0].get("size").is_none());
+        assert_eq!(row["children"][1]["id"], "panel");
+        assert!(restore(&mut value));
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn panel_ids_someone_else_uses_are_not_reused() {
+        let mut value = json!({"id": "root", "type": "row", "children": [
+            tab_block(), {"id": "panel", "type": "block", "content": {"mod": "notes"}}]});
+        patch(&mut value, 300).unwrap();
+        assert_eq!(value["children"][1]["id"], "herdr-nvim-panel");
+        assert_eq!(value["children"][1]["children"][0]["id"], "panel-body");
+        assert!(restore(&mut value));
+        assert_eq!(value["children"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_layout_without_a_files_slot_or_a_tab_block_is_refused() {
+        let mut value = json!({"id": "root", "type": "row", "children": [
+            {"id": "x", "type": "block", "content": {"mod": "win98"}}]});
         assert!(patch(&mut value, 300).is_err());
     }
 }
