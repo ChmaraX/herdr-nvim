@@ -45,9 +45,14 @@ export class Sync {
       await treeMode();
       for (;;) {
         const command = await nextCommand();
-        if (command.startsWith("pick")) cx.spawn(async () => pick(place()));
-        else if (command.startsWith("reveal")) await this.reveal(cx);
-        else if (command.startsWith("toggle")) await this.toggleTree(cx);
+        // `reveal:<tab>` / `toggle:<tab>` come from that tab's nvim
+        // (`app-reveal`): only for the tab on screen (the panel is the
+        // window's), never for one the person has left meanwhile.
+        const [verb, tab] = command.split(":");
+        if (tab && focused()?.tab !== tab) continue;
+        if (verb === "pick") cx.spawn(async () => pick(place()));
+        else if (verb === "reveal") await this.reveal(cx);
+        else if (verb === "toggle") await this.toggleTree(cx);
       }
     });
   }
