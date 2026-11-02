@@ -1,7 +1,7 @@
 //! `herdr-nvim app-setup install|uninstall --keys <keys.json> [--panel-width N]`: the two edits
 //! the Herdr app install makes outside the mod folders, and undoes.
 //!
-//! * **Layout** (`layout_patch`, RECIPE.md "Layout changes"): the person's one
+//! * **Layout** (`layout_patch`, RECIPE.md "Built from › Layout footprint"): the person's one
 //!   personal layout, the one on screen, gets herdr-nvim's tree in its `files`
 //!   slot (or the standard side panel when it has none), the floating
 //!   `herdr-nvim-sync` controller and the panel width. Herdr's own layouts

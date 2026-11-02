@@ -200,6 +200,12 @@ export class Tree {
   // pane, tab or space (`focused()` changed), the tab's nvim got the keyboard
   // (its FocusGained stamp changed), they left with q / Esc / the tree key, or
   // another "focus" arrived. Never on render, never after it settled.
+  //
+  // The cause is the app's: it draws a pane's focus ring before the view
+  // that should hold the keyboard does. Fixed upstream after 0.1.12
+  // (herdrdev/herdr-app 558cf56, "hide pane focus ring when another view
+  // holds keyboard"; herdrdev/herdr-app#362). Remove this retry once a
+  // release has that fix.
   takeKeyboard(cx) {
     const arrival = (this.arrival = { where: focusKey() });
     try { this.handle.focus(); } catch {}

@@ -1,4 +1,4 @@
-//! herdr-nvim's whole layout footprint (RECIPE.md, "Layout changes"), put
+//! herdr-nvim's whole layout footprint (RECIPE.md, "Built from › Layout footprint"), put
 //! into any personal layout and taken out again:
 //!
 //! * the `files` slot (the side panel's Files browser, shown by the tab bar's

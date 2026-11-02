@@ -5,8 +5,8 @@ CLI subcommands for checking and managing herdr-nvim, and how the plugin gets in
 ## Sub-features
 
 - doctor: `herdr-nvim doctor [--with-agent claude]` runs a live self-test in a scratch workspace named `herdr-nvim-doctor` and then cleans it up. It checks the full-height split, the toggle restoring the layout, the hidden nvim's health, the remote-UI attach and (optionally) agent liveness. It prints OK/FAIL lines and "all doctor checks OK", and exits non-zero on failure.
-- daemons list: `herdr-nvim daemons [--json]` shows each hidden nvim with its workspace/tab, RAM (including children such as LSPs), uptime and state (`alive`, `orphaned`, `unresponsive`, `unknown`, plus "N unsaved"). It ends with a total and hint lines.
-- daemons stop: `herdr-nvim daemons stop <tab-id>`, `stop --all` or `stop --orphans`. A daemon with unsaved buffers or pending comments is not stopped unless `--force` is given. The next toggle in that tab starts a fresh nvim.
+- daemons list: `herdr-nvim daemons [--json]` shows each hidden nvim with its workspace/tab, RAM (including children such as LSPs), uptime and state (`alive`, `orphaned`, `unresponsive`, `unknown`, plus "N unsaved"; and `· stale` for an nvim of the Herdr app host that runs a runtime older than the installed one, with a `stale:` hint line). A daemon that doesn't answer within 2 s (waiting at a prompt) counts as `unresponsive`, so the listing never hangs. It ends with a total and hint lines.
+- daemons stop: `herdr-nvim daemons stop <tab-id>`, `stop --all` or `stop --orphans`. A daemon with unsaved buffers or pending comments is not stopped unless `--force` is given. One that doesn't answer (at a prompt) is kept too, since what it holds is unknown, unless a probe just found it clean or `--force` is given. The next toggle in that tab starts a fresh nvim.
 - install: `herdr plugin install ChmaraX/herdr-nvim` or `herdr plugin link <dir>`. It downloads a prebuilt binary, or builds with cargo if that fails. Needs herdr ≥ 0.7.5. Running the binary with no args prints usage and exits 2.
 
 ## How to get to it (user POV)

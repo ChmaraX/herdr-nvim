@@ -66,7 +66,7 @@ and `nvim --headless --noplugin -u NONE -l tests/run.lua` are fine.
   that should survive (toggle, reopen).
 - Non-visual bugs: show the state (screen text, `box exec` output). No video needed.
 - Proof that shows the wrong thing, or misses part of the bug, is no proof.
-- Never commit media.
+- Never commit media. The one exception is `herdr-app/preview.png`: the herdr.dev mod format requires it.
 - If the bug needs something the box lacks (see Limits in the box README),
   say so and cover the closest real path instead of faking it.
 - When a change alters how a feature works, update the matching

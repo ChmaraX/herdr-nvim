@@ -25,6 +25,10 @@ This is a behavior-level list of what herdr-nvim does for a user: an nvim sideba
 
 - [annotations](annotations.md): Comment on lines, list comments, send them to an agent, `:Herdr ref`, statusline, `:Herdr` command and keymaps.
 
+## Herdr desktop app
+
+- [app](app.md): The same core serving the Herdr desktop app: the tab's nvim pane with a native file tree in the Files panel, the `cmd-o` picker, installs and stale nvims.
+
 ## Journeys
 
 - [journeys](journeys.md): The review loop across features: agent edit, picker, comment, submit, agent reply.
