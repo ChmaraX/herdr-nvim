@@ -24,8 +24,44 @@ pub struct Config {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub picker: Picker,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_app")]
     pub app: App,
+}
+
+/// `[app]`, read leniently: a value herdr-nvim doesn't know warns and falls
+/// back to its default, so a typo there never costs the TUI its `[sidebar]`
+/// and `[picker]` (one strict parse would fail as a whole).
+fn lenient_app<'de, D: serde::Deserializer<'de>>(d: D) -> Result<App, D::Error> {
+    Ok(App::from_toml(&toml::Value::deserialize(d)?))
+}
+
+impl App {
+    fn from_toml(value: &toml::Value) -> Self {
+        let mut app = Self::default();
+        let Some(table) = value.as_table() else {
+            eprintln!("herdr-nvim: config: [app] is not a table; using the defaults");
+            return app;
+        };
+        if let Some(tree) = table.get("tree") {
+            match tree.as_str().map(str::to_ascii_lowercase).as_deref() {
+                Some("native") => app.tree = TreeMode::Native,
+                Some("nvim") => app.tree = TreeMode::Nvim,
+                _ => eprintln!(
+                    "herdr-nvim: config: [app] tree is \"native\" or \"nvim\", not {tree}; using \"native\""
+                ),
+            }
+        }
+        if let Some(key) = table.get("tree_key") {
+            match key.as_str() {
+                Some(key) => app.tree_key = key.to_owned(),
+                None => eprintln!(
+                    "herdr-nvim: config: [app] tree_key is an nvim key (a string), not {key}; using {:?}",
+                    app.tree_key
+                ),
+            }
+        }
+        app
+    }
 }
 
 /// The Herdr desktop app's settings (`[app]`; the TUI plugin ignores them).
@@ -377,5 +413,22 @@ mod tests {
 
         let config = load();
         assert!(!config.picker.frecency);
+    }
+
+    #[test]
+    fn a_bad_app_section_keeps_the_rest_of_the_config() {
+        let config: Config = toml::from_str(
+            "[sidebar]\nnvim_bin = \"/opt/nvim\"\n[app]\ntree = \"bogus\"\ntree_key = 5\n",
+        )
+        .unwrap();
+        assert_eq!(config.sidebar.nvim_bin, "/opt/nvim");
+        assert_eq!(config.app, App::default());
+        let config: Config = toml::from_str("app = 3\n").unwrap();
+        assert_eq!(config.app, App::default());
+        let config: Config = toml::from_str("[app]\ntree = \"nvim\"\ntree_key = \"\"\n").unwrap();
+        assert_eq!(
+            (config.app.tree, config.app.tree_key.as_str()),
+            (TreeMode::Nvim, "")
+        );
     }
 }
