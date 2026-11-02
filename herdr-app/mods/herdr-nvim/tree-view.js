@@ -9,7 +9,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
 import { nvim } from "./lib.js";
-import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
+import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
 import { ACTIONS } from "./tree-keys.js";
@@ -148,7 +148,7 @@ export class Tree {
     if (!this.defaults) {
       this.defaults = true;
       cx.spawn(async (cx) => {
-        const d = await fsOp(this.where(), { op: "defaults" });
+        const d = await fsOp(this.where(), request.defaults());
         if (d) Object.assign(this.model, { showHidden: d.hidden, showIgnored: d.ignored });
         cx.notify();
       });
@@ -309,14 +309,14 @@ export class Tree {
         const dir = this.dirOf(row), paths = [...this.picked];
         this.picked.clear();
         return this.dialog({ kind: "confirm", title: `Move ${paths.length} item${paths.length > 1 ? "s" : ""} to ${rel(dir) || "."}/?`,
-          detail: paths.map(rel).join(", "), action: { type: "request", request: { op: "move", paths, dir } } });
+          detail: paths.map(rel).join(", "), action: { type: "request", request: request.move(paths, dir) } });
       }
       case "copy":
         if (this.picked.size) {
           const paths = [...this.picked];
           this.picked.clear();
           return this.dialog({ kind: "confirm", title: `Copy ${paths.length} item${paths.length > 1 ? "s" : ""} to ${rel(this.dirOf(row)) || "."}/?`,
-            detail: paths.map(rel).join(", "), action: { type: "request", request: { op: "copy_into", paths, dir: this.dirOf(row) } } });
+            detail: paths.map(rel).join(", "), action: { type: "request", request: request.copyInto(paths, this.dirOf(row)) } });
         }
         if (row) this.dialog({ kind: "input", title: "Copy to", value: row.name, hint: `In ${rel(dirname(row.abs)) || "."}/`,
           action: { type: "copy", from: row.abs, base: dirname(row.abs) } });
@@ -325,14 +325,14 @@ export class Tree {
         const paths = this.targets(row);
         this.picked.clear();
         if (paths.length) this.dialog({ kind: "confirm", title: `Delete ${paths.length === 1 ? rel(paths[0]) : `${paths.length} items`}?`,
-          detail: "Their buffers in the tab's nvim close too.", action: { type: "request", request: { op: "delete", paths } } });
+          detail: "Their buffers in the tab's nvim close too.", action: { type: "request", request: request.delete(paths) } });
         return;
       }
       case "yank": {
         const paths = this.targets(row);
         this.picked.clear();
         return cx.spawn(async (cx) => {
-          const r = await fsOp(this.where(), { op: "yank", paths });
+          const r = await fsOp(this.where(), request.yank(paths));
           if (r) notify({ title: `Yanked ${r.count} item${r.count === 1 ? "" : "s"}`, level: "info", timeout: 2500 });
           cx.notify();
         });
@@ -341,9 +341,9 @@ export class Tree {
         const dir = this.dirOf(row);
         if (!inside(dir, this.where().cwd)) {
           return this.dialog({ kind: "confirm", title: "Paste outside this tab's folder?", detail: dir,
-            action: { type: "request", request: { op: "paste", dir, outside: true } } });
+            action: { type: "request", request: { ...request.paste(dir), outside: true } } });
         }
-        return cx.spawn(async () => { await fsOp(this.where(), { op: "paste", dir }); });
+        return cx.spawn(async () => { await fsOp(this.where(), request.paste(dir)); });
       }
     }
   }

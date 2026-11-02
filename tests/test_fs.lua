@@ -15,7 +15,7 @@ end
 
 T.test("fs: create makes a folder, or a file opened in nvim", function()
   local root = tmpdir()
-  T.eq(run({ op = "create", root = root, path = root .. "/src/new/", dir = true }).ok, true)
+  T.eq(run({ op = "create", root = root, path = root .. "/src/new/", folder = true }).ok, true)
   T.eq(vim.fn.isdirectory(root .. "/src/new"), 1)
   T.eq(run({ op = "create", root = root, path = root .. "/src/new/b.lua" }).ok, true)
   T.eq(vim.fn.filereadable(root .. "/src/new/b.lua"), 1)

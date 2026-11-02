@@ -117,13 +117,13 @@ function ops.defaults()
   return { ok = true, hidden = opts.hidden == true, ignored = opts.ignored == true, snacks = s ~= nil }
 end
 
--- {path, dir}: a new file (opened in nvim) or folder.
+-- {path, folder}: a new file (opened in nvim), or a folder when `folder`.
 function ops.create(req)
   local path = norm(req.path)
   check_inside(req, path)
   if exists(path) then error("already exists: " .. path) end
-  vim.fn.mkdir(req.dir and path or vim.fs.dirname(path), "p")
-  if not req.dir then
+  vim.fn.mkdir(req.folder and path or vim.fs.dirname(path), "p")
+  if not req.folder then
     vim.fn.writefile({}, path)
     vim.cmd.edit(vim.fn.fnameescape(path))
   end

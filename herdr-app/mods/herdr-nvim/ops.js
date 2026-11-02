@@ -1,6 +1,7 @@
 // The tree's client for herdr-nvim's file operations: each runs in the tab's
-// nvim (`herdr-nvim fs`), so buffers and language servers follow. One place
-// that knows the request shapes (lua/herdr-nvim/fs.lua) and where a path may go.
+// nvim (`herdr-nvim fs`), so buffers and language servers follow. The one
+// place that knows the request shapes (lua/herdr-nvim/fs.lua, `request`) and
+// where a path may go.
 
 import { exec, focused, notify, setShared, shared, window } from "herdr";
 import { bin, nvim } from "./lib.js";
@@ -8,6 +9,36 @@ import { bin, nvim } from "./lib.js";
 // The tab the tree works for, with its folder: what `--ctx` takes.
 export function tabOf(place) {
   return { space: place.space ?? focused()?.space, tab: place.tab, terminal: null, cwd: place.cwd };
+}
+
+// Every request the tree makes, by op (fs.lua's `ops`).
+export const request = {
+  defaults: () => ({ op: "defaults" }),
+  // A name ending in / is a folder.
+  create: (dir, name) => ({ op: "create", path: join(dir, name), folder: name.endsWith("/") }),
+  rename: (from, to) => ({ op: "rename", path: from, to }),
+  copy: (from, to) => ({ op: "copy", path: from, to }),
+  move: (paths, dir) => ({ op: "move", paths, dir }),
+  copyInto: (paths, dir) => ({ op: "copy_into", paths, dir }),
+  delete: (paths) => ({ op: "delete", paths }),
+  yank: (paths) => ({ op: "yank", paths }),
+  paste: (dir) => ({ op: "paste", dir }),
+};
+
+// The request a dialog's typed value makes, from the dialog's action:
+// {type: "create", dir} / {type: "rename" | "copy", from, base} take the
+// name typed; {type: "request", request} is ready.
+export function requestFor(action, value) {
+  const v = value.trim();
+  if (action.type === "create") return request.create(action.dir, v);
+  if (action.type === "rename") return request.rename(action.from, join(action.base, v));
+  if (action.type === "copy") return request.copy(action.from, join(action.base, v));
+  return action.request;
+}
+
+// Every path a request writes to or takes from.
+export function pathsOf(r) {
+  return [r.path, r.to, r.dir, ...(r.paths ?? [])].filter(Boolean);
 }
 
 // Runs one operation; resolves with its JSON answer, or null (a toast said why).

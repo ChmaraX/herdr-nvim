@@ -5,22 +5,8 @@
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { closeOverlay, notify, openOverlay, props, setShared, shared, theme } from "herdr";
-import { fsOp, inside, join } from "./ops.js";
-
-// The request a typed value makes, from the dialog's action.
-function requestFor(action, value) {
-  const v = value.trim();
-  if (action.type === "create") return { op: "create", path: join(action.dir, v), dir: v.endsWith("/") };
-  if (action.type === "rename") return { op: "rename", path: action.from, to: join(action.base, v) };
-  if (action.type === "copy") return { op: "copy", path: action.from, to: join(action.base, v) };
-  return action.request;
-}
-
-// Every path a request writes to or takes from.
-function pathsOf(r) {
-  return [r.path, r.to, r.dir && typeof r.dir === "string" ? r.dir : null, ...(r.paths ?? [])].filter(Boolean);
-}
+import { closeOverlay, openOverlay, props, setShared, shared, theme } from "herdr";
+import { fsOp, inside, pathsOf, requestFor } from "./ops.js";
 
 export function openDialog(spec) {
   openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 460, props: { dialog: spec } });
@@ -58,7 +44,6 @@ export class Dialog {
     cx.spawn(async () => {
       const result = await fsOp(d.place, request);
       if (!result) return;
-      if (request.op === "yank") notify({ title: `Yanked ${result.count} file${result.count === 1 ? "" : "s"}`, level: "info" });
       const show = result.path ?? result.paths?.[0] ?? request.dir;
       const n = (shared("herdr-nvim.reveal")?.n ?? 0) + 1;
       setShared("herdr-nvim.reveal", { tab: d.place.tab, path: show ?? null, n });
