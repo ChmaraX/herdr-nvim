@@ -6,9 +6,9 @@ use std::{env, path::Path, process::Stdio};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::{bridge, config, extract, herdr::Herdr, openlink, pathkey};
+use crate::{bridge, extract, herdr::Herdr, host::Pick, openlink, pathkey};
 
-use super::{cli, host, rpc, session, sidebar, AppHost};
+use super::{cli, host, rpc, sidebar, AppHost};
 
 /// `herdr-nvim app-agents`: every agent the app shows, in the shape of the
 /// TUI's `herdr agent list`, so `agents.lua` parses both the same way.
@@ -60,60 +60,30 @@ pub fn send_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim pick-file [--ctx JSON] [--list]` in the app: gather the
-/// candidates (the agent's session log first, then git changes, the paths on
-/// its screen and the repo) and start the picker in a hidden core terminal.
-/// Prints `{"terminal": "t9"}` for the mod to show in a dialog, or
-/// `{"empty": "<why>"}`. `--list` prints the candidates instead.
-pub(crate) fn start_pick() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
-    let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
-    let config = config::load();
-    let mut herdr = AppHost;
-    let target =
-        match bridge::target_agent_pane(&mut herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane) {
-            Ok(target) => target,
-            Err(_) => {
-                println!("{}", json!({"empty": "No agent in this space"}));
-                return Ok(());
-            }
-        };
-    let facts = host::terminal(&target)?;
-    let cwd = host::cwd_of(&facts).context("the agent's terminal has no folder")?;
-    let agent_session = session::find(&facts);
-    let text = herdr.read_pane(&target, config.picker.scan_lines)?;
-    let candidates =
-        bridge::gather_candidates(agent_session.as_ref(), &text, &cwd, &|path| path.is_file());
-    if args.iter().any(|arg| arg == "--list") {
-        println!(
-            "{}",
-            json!({"agent": target, "session": agent_session.map(|s| s.value), "candidates": candidates})
-        );
-        return Ok(());
-    }
-    if candidates.is_empty() {
-        println!(
-            "{}",
-            json!({"empty": "Nothing to pick yet: the agent has no session log here, the folder is not a git repo, and no file paths are on its screen"})
-        );
-        return Ok(());
-    }
-    let handoff = crate::picker::Handoff {
-        candidates,
-        chosen: None,
-        workspace: ctx.workspace.clone(),
-        tab: ctx.tab.clone(),
-        focused_pane: ctx.focused_pane.clone(),
-        cwd: cwd.to_string_lossy().into_owned(),
-        max_files: config.picker.max_files,
+/// The app's last step of `pick-file` (`bridge::start_pick`): start the
+/// picker in a hidden core terminal and print `{"terminal": "t9"}` for the mod
+/// to show in a dialog, or `{"empty": "<why>"}`.
+pub(crate) fn show_pick(pick: Pick) -> Result<()> {
+    let (handoff, cwd) = match pick {
+        Pick::NoAgent(_) => {
+            println!("{}", json!({"empty": "No agent in this space"}));
+            return Ok(());
+        }
+        Pick::Nothing => {
+            println!(
+                "{}",
+                json!({"empty": "Nothing to pick yet: the agent has no session log here, the folder is not a git repo, and no file paths are on its screen"})
+            );
+            return Ok(());
+        }
+        Pick::Ready { handoff, cwd } => (handoff, cwd),
     };
-    let handoff_path = bridge::write_handoff(&handoff)?;
     let started = rpc::call(
         "terminal.run",
         json!({
             "argv": [cli::self_command()?.to_string_lossy(), "picker"],
             "cwd": cwd,
-            "env": {"HERDR_NVIM_HANDOFF": handoff_path, "TERM": "xterm-256color", "COLORTERM": "truecolor"},
+            "env": {"HERDR_NVIM_HANDOFF": handoff, "TERM": "xterm-256color", "COLORTERM": "truecolor"},
             "no_parent": true,
             "rm": true,
         }),

@@ -27,9 +27,9 @@ use anyhow::{bail, Context, Result};
 use crate::{
     candidates::{self, BuildInput, Candidate},
     config, daemon, extract, gitscan,
-    herdr::{self, CliHerdr, Herdr},
-    host::{self, Opened},
-    maneuver::{self, Ctx},
+    herdr::{self, Herdr},
+    host::{self, Opened, Pick},
+    maneuver::Ctx,
     pathkey,
     picker::Handoff,
     sessions,
@@ -101,13 +101,18 @@ pub fn target_agent_pane(
 
 /// Phase 1: read the target agent pane, gather candidates from the three
 /// read-only layers (session mining, git worktree status, scrape), and open
-/// the picker.
+/// the picker (the host's own way: a TUI popup, or the app's dialog).
+/// `--list` prints the candidates instead.
 fn start_pick() -> Result<()> {
-    let mut herdr = CliHerdr;
-    let ctx = maneuver::read_ctx(&mut herdr)?;
+    let host = host::ops();
+    let ctx = host.ctx()?;
     let config = config::load();
+    let mut herdr = host.herdr();
 
-    let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane)?;
+    let target = match target_agent_pane(&mut *herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane) {
+        Ok(target) => target,
+        Err(error) => return host.show_pick(Pick::NoAgent(error)),
+    };
     let snapshot = herdr.pane_snapshot(&target)?;
     let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
     let text = herdr.read_pane(&target, lines)?;
@@ -117,9 +122,16 @@ fn start_pick() -> Result<()> {
         path.is_file()
     });
 
-    if candidates.is_empty() {
-        notify_no_candidates();
+    if env::args().any(|arg| arg == "--list") {
+        let session = snapshot.agent_session.map(|s| s.value);
+        println!(
+            "{}",
+            serde_json::json!({"agent": target, "session": session, "candidates": candidates})
+        );
         return Ok(());
+    }
+    if candidates.is_empty() {
+        return host.show_pick(Pick::Nothing);
     }
 
     let handoff = Handoff {
@@ -131,9 +143,8 @@ fn start_pick() -> Result<()> {
         cwd: cwd.to_string_lossy().into_owned(),
         max_files: config.picker.max_files,
     };
-    let handoff_path = write_handoff(&handoff)?;
-    open_picker(&handoff_path)?;
-    Ok(())
+    let handoff = write_handoff(&handoff)?;
+    host.show_pick(Pick::Ready { handoff, cwd })
 }
 
 /// Gather candidates from all three layers given the pane's already-fetched
@@ -333,7 +344,7 @@ fn open_in_nvim(
 
 /// Open the picker as a floating popup pane, passing the handoff path via the
 /// environment.
-fn open_picker(handoff_path: &str) -> Result<()> {
+pub(crate) fn open_picker(handoff_path: &str) -> Result<()> {
     let status = Command::new("herdr")
         .args([
             "plugin",
@@ -362,7 +373,7 @@ fn open_picker(handoff_path: &str) -> Result<()> {
 
 /// Show a herdr notification (best-effort, falling back to stderr) that no file
 /// paths were found. Callers exit 0 after this — an empty result is not an error.
-fn notify_no_candidates() {
+pub(crate) fn notify_no_candidates() {
     let shown = Command::new("herdr")
         .args([
             "notification",

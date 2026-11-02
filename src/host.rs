@@ -58,10 +58,24 @@ pub struct Opened {
     pub notice: Option<String>,
 }
 
+/// What `pick-file` found, for the host to show (`HostOps::show_pick`).
+pub enum Pick {
+    /// No agent pane to read in this workspace (why).
+    NoAgent(anyhow::Error),
+    /// The agent's session, git and screen gave no file.
+    Nothing,
+    /// The candidates are in the handoff file; the picker runs in `cwd`.
+    Ready { handoff: String, cwd: PathBuf },
+}
+
 /// The steps that differ between the hosts.
 pub trait HostOps: Sync {
     /// The host's answers to the shared queries (agents, tabs, pane output).
     fn herdr(&self) -> Box<dyn Herdr>;
+    /// The tab this command was run for.
+    fn ctx(&self) -> Result<Ctx>;
+    /// `pick-file`'s last step: show the picker (or say why there is none).
+    fn show_pick(&self, pick: Pick) -> Result<()>;
     /// The tab's nvim pane, opened if it isn't.
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened>;
     /// Give the tab's nvim pane the keyboard. Best-effort: says why on stderr.
@@ -86,6 +100,23 @@ pub struct Tui;
 impl HostOps for Tui {
     fn herdr(&self) -> Box<dyn Herdr> {
         Box::new(CliHerdr)
+    }
+
+    /// herdr's plugin env (`HERDR_PANE_ID`, …).
+    fn ctx(&self) -> Result<Ctx> {
+        maneuver::read_ctx(&mut CliHerdr)
+    }
+
+    /// A floating popup pane; nothing to pick is a toast, no agent an error.
+    fn show_pick(&self, pick: Pick) -> Result<()> {
+        match pick {
+            Pick::NoAgent(error) => Err(error),
+            Pick::Nothing => {
+                crate::bridge::notify_no_candidates();
+                Ok(())
+            }
+            Pick::Ready { handoff, .. } => crate::bridge::open_picker(&handoff),
+        }
     }
 
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened> {

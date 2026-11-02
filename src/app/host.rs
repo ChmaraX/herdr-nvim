@@ -14,7 +14,7 @@ use crate::{
     config::Sidebar,
     daemon,
     herdr::{AgentInfo, Herdr, PaneSnapshot, TabInfo},
-    host::{HostOps, Opened},
+    host::{HostOps, Opened, Pick},
     maneuver::Ctx,
 };
 
@@ -29,6 +29,16 @@ pub struct App;
 impl HostOps for App {
     fn herdr(&self) -> Box<dyn Herdr> {
         Box::new(AppHost)
+    }
+
+    /// The mod passes the focused tab as `--ctx JSON`.
+    fn ctx(&self) -> Result<Ctx> {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        super::sidebar::ctx(&super::cli::read_ctx(&args)?)
+    }
+
+    fn show_pick(&self, pick: Pick) -> Result<()> {
+        super::commands::show_pick(pick)
     }
 
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened> {
@@ -152,13 +162,13 @@ impl Herdr for AppHost {
     }
 
     fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
-        // herdr-core knows no agent session file and serves `hc read` from its
-        // own scrollback, so there is nothing to clamp: the picker uses its
-        // git and scraped-output tiers.
+        // The agent's session log is found from its program and folder
+        // (`session`); herdr-core serves `hc read` from its own scrollback, so
+        // there is no scroll depth to clamp.
+        let facts = terminal(pane)?;
         Ok(PaneSnapshot {
-            cwd: cwd_of(&terminal(pane)?)
-                .with_context(|| format!("terminal {pane} has no folder"))?,
-            agent_session: None,
+            cwd: cwd_of(&facts).with_context(|| format!("terminal {pane} has no folder"))?,
+            agent_session: super::session::find(&facts),
             scroll: None,
         })
     }
