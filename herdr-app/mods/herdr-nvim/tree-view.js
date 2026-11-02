@@ -46,14 +46,36 @@ export class Tree {
     });
   }
 
-  // Follow the focused tab: its folder, the file its nvim shows.
+  // Follow the focused tab: its folder (as a real path, so the agent's pane
+  // at /tmp/x and nvim's at /private/tmp/x are one tree), and the file its
+  // nvim shows.
   follow(cx) {
     const next = place(this.place);
     const moved = next.tab !== this.place?.tab || next.cwd !== this.place?.cwd || next.machine !== this.place?.machine;
     this.place = next;
     if (!moved) return;
-    this.setRoot(next.machine ? null : next.cwd, cx);
-    if (next.cwd && !next.machine) this.watchCurrent(next, cx);
+    if (next.machine || !next.cwd) {
+      this.rootTab = next.tab;
+      this.tabRoot = null;
+      return this.setRoot(null, cx);
+    }
+    cx.spawn(async (cx) => {
+      const { real_root } = await current(next);
+      if (this.place?.tab !== next.tab) return;
+      const root = real_root ?? next.cwd;
+      if (root === this.model.root && next.tab === this.rootTab) return;
+      const tabChanged = next.tab !== this.rootTab;
+      this.rootTab = next.tab;
+      this.tabRoot = root;
+      this.setRoot(root, cx);
+      if (tabChanged) this.watchCurrent(next, cx);
+      cx.notify();
+    });
+  }
+
+  // The tab, with its folder as the tree knows it: what operations get.
+  where() {
+    return { tab: this.place?.tab, cwd: this.tabRoot ?? this.model.root };
   }
 
   setRoot(root, cx) {
@@ -82,7 +104,7 @@ export class Tree {
     if (!this.defaults) {
       this.defaults = true;
       cx.spawn(async (cx) => {
-        const d = await fsOp(this.place, { op: "defaults" });
+        const d = await fsOp(this.where(), { op: "defaults" });
         if (d) Object.assign(this.model, { showHidden: d.hidden, showIgnored: d.ignored });
         cx.notify();
       });
@@ -93,32 +115,23 @@ export class Tree {
   // it changes, without taking the keyboard.
   watchCurrent(where, cx) {
     cx.spawn(async (cx) => {
-      const { file, watch, real_root } = await current(where);
-      this.realRoot = real_root;
+      const { file, watch } = await current(where);
       if (file) await this.reveal(file, cx);
       if (!watch) return;
-      while (this.place?.tab === where.tab) {
+      while (this.rootTab === where.tab) {
         await watchFolder(dirname(watch));
-        if (this.place?.tab !== where.tab) return;
-        const path = this.ours((await readTextFile(watch))?.trim());
+        if (this.rootTab !== where.tab) return;
+        const path = (await readTextFile(watch))?.trim();
         if (path && path !== this.current) await this.reveal(path, cx);
       }
     });
   }
 
-  // nvim's name for a file (its real path) as a path under this tree's folder.
-  ours(path) {
-    const real = this.realRoot, tab = this.place?.cwd;
-    if (!path || !real || !tab || real === tab || !inside(path, real)) return path;
-    return tab + path.slice(real.length);
-  }
-
   async revealCurrent(cx) {
     if (!this.place?.cwd) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
-    const { file, real_root } = await current(this.place);
+    const { file } = await current(this.place);
     if (seq !== this.revealSeq) return;
-    this.realRoot = real_root ?? this.realRoot;
     if (file) await this.reveal(file, cx);
   }
 
@@ -126,7 +139,6 @@ export class Tree {
   // with `reload`); if it isn't listed yet (just created), render selects it
   // once it is. The latest reveal wins, whichever finishes first.
   async reveal(path, cx, reload = false) {
-    path = this.ours(path);
     if (!path || !inside(path, this.model.root ?? "")) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
     if (reload) await this.model.reload().catch(() => {});
@@ -152,7 +164,7 @@ export class Tree {
   }
 
   dialog(spec) {
-    openDialog({ place: this.place, ...spec });
+    openDialog({ place: this.where(), ...spec });
   }
 
   async openRow(row, cx) {
@@ -163,7 +175,7 @@ export class Tree {
     }
     this.busy = true;
     cx.notify();
-    await nvim("open", [row.abs], tabOf(this.place));
+    await nvim("open", [row.abs], tabOf(this.where()));
     this.busy = false;
     cx.notify();
   }
@@ -217,18 +229,18 @@ export class Tree {
         const paths = this.targets(row);
         this.picked.clear();
         return cx.spawn(async (cx) => {
-          const r = await fsOp(this.place, { op: "yank", paths });
+          const r = await fsOp(this.where(), { op: "yank", paths });
           if (r) notify({ title: `Yanked ${r.count} item${r.count === 1 ? "" : "s"}`, level: "info", timeout: 2500 });
           cx.notify();
         });
       }
       case "paste": {
         const dir = this.dirOf(row);
-        if (!inside(dir, this.place.cwd)) {
+        if (!inside(dir, this.where().cwd)) {
           return this.dialog({ kind: "confirm", title: "Paste outside this tab's folder?", detail: dir,
             action: { type: "request", request: { op: "paste", dir, outside: true } } });
         }
-        return cx.spawn(async () => { await fsOp(this.place, { op: "paste", dir }); });
+        return cx.spawn(async () => { await fsOp(this.where(), { op: "paste", dir }); });
       }
     }
   }

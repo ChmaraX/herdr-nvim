@@ -87,8 +87,8 @@ pub fn current_cmd() -> Result<()> {
         // The tree watches this folder before nvim first writes into it.
         std::fs::create_dir_all(dir)?;
     }
-    // nvim names files by their real path (/private/tmp on macOS); the tree
-    // maps them onto its root through this.
+    // The tree works with real paths (/private/tmp on macOS, not /tmp), so
+    // one tab's folder is one tree whichever of its panes had the focus.
     let real_root = std::fs::canonicalize(&ctx.cwd).unwrap_or_else(|_| ctx.cwd.clone());
     let config = config::load();
     let socket = daemon::registry::socket_path(&ctx.tab);
@@ -98,7 +98,12 @@ pub fn current_cmd() -> Result<()> {
         &config.sidebar,
         Duration::from_secs(2),
     )
-    .filter(|f| !f.is_empty());
+    .filter(|f| !f.is_empty())
+    .map(|f| {
+        std::fs::canonicalize(&f)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(f)
+    });
     println!(
         "{}",
         json!({"file": file, "watch": watch, "real_root": real_root})

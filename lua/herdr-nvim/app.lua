@@ -80,7 +80,8 @@ local function write_current()
   local name = vim.api.nvim_buf_get_name(0)
   if not path or name == "" or vim.bo.buftype ~= "" or vim.fn.filereadable(name) == 0 then return end
   vim.fn.mkdir(vim.fs.dirname(path), "p")
-  pcall(vim.fn.writefile, { vim.fn.fnamemodify(name, ":p") }, path)
+  -- Its real path: the tree works with real paths (/private/tmp, not /tmp).
+  pcall(vim.fn.writefile, { vim.fn.resolve(vim.fn.fnamemodify(name, ":p")) }, path)
 end
 
 -- Whether an explorer window is already on screen.
