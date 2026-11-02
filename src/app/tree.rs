@@ -104,9 +104,16 @@ pub fn current_cmd() -> Result<()> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or(f)
     });
+    // The tab's folder for the tree: where the tab's nvim works (`:pwd`), which
+    // doesn't move when another pane of the tab is focused or `cd`s.
+    let tab_root =
+        daemon::remote_expr_within(&socket, "getcwd()", &config.sidebar, Duration::from_secs(2))
+            .filter(|cwd| !cwd.is_empty())
+            .and_then(|cwd| std::fs::canonicalize(cwd).ok())
+            .unwrap_or_else(|| real_root.clone());
     println!(
         "{}",
-        json!({"file": file, "watch": watch, "real_root": real_root})
+        json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root})
     );
     Ok(())
 }
