@@ -91,14 +91,21 @@ local function move_buffers(from, to)
   end
 end
 
--- The language servers' part of a rename (what Snacks.rename does), with the
--- `client:method()` calls (the `client.method` ones are deprecated in 0.11).
+-- `client:name(...)` on nvim 0.11+ (the `client.name(...)` calls are
+-- deprecated there and gone in 0.13); 0.10 has only the dot calls.
+local METHOD_CALLS = vim.fn.has("nvim-0.11") == 1
+local function call(client, name, ...)
+  if METHOD_CALLS then return client[name](client, ...) end
+  return client[name](...)
+end
+
+-- The language servers' part of a rename (what Snacks.rename does).
 local function lsp_rename(from, to, rename)
   local changes = { files = { { oldUri = vim.uri_from_fname(from), newUri = vim.uri_from_fname(to) } } }
   local clients = (vim.lsp.get_clients or vim.lsp.get_active_clients)()
   for _, client in ipairs(clients) do
-    if client:supports_method("workspace/willRenameFiles") then
-      local resp = client:request_sync("workspace/willRenameFiles", changes, 1000, 0)
+    if call(client, "supports_method", "workspace/willRenameFiles") then
+      local resp = call(client, "request_sync", "workspace/willRenameFiles", changes, 1000, 0)
       if resp and resp.result ~= nil then
         vim.lsp.util.apply_workspace_edit(resp.result, client.offset_encoding)
       end
@@ -106,8 +113,8 @@ local function lsp_rename(from, to, rename)
   end
   rename()
   for _, client in ipairs(clients) do
-    if client:supports_method("workspace/didRenameFiles") then
-      client:notify("workspace/didRenameFiles", changes)
+    if call(client, "supports_method", "workspace/didRenameFiles") then
+      call(client, "notify", "workspace/didRenameFiles", changes)
     end
   end
 end
