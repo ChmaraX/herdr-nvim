@@ -222,5 +222,5 @@ retire_pick
 prune_runtimes "$root"
 
 "$wrapper" app-setup install --keys "$here/keys.json" ${panel_width:+--panel-width "$panel_width"}
-[ -z "$tree" ] || "$wrapper" app-setup tree "$tree"
+[ -z "$tree" ] || "$wrapper" app-config tree "$tree"
 echo "herdr-nvim: installed in $home (Files or cmd-e: the file tree with the tab's nvim; cmd-shift-e: into the tree; cmd-o: files from the agent)"

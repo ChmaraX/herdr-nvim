@@ -243,9 +243,6 @@ fn panel_width(args: &[String]) -> Result<u32> {
 pub fn setup_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let home = home();
-    if args.first().map(String::as_str) == Some("tree") {
-        return super::settings::set_tree(args.get(1).map(String::as_str).unwrap_or_default());
-    }
     let ours = keys_file(&args)?;
     let keys = home.join("keys.json");
     if !keys.exists() {

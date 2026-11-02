@@ -638,7 +638,7 @@ say "tree_key = \"\": <leader>e left unmapped, and the tree has no tree key"
 # --- 6c. tree = "nvim": cmd-e and Files open only nvim, with its explorer ---
 keys 14:cmd
 poll 10 panel_is hidden || fail "cmd-e did not close the pair"
-"$wrapper" app-setup tree nvim | tee -a "$log"
+"$wrapper" app-config tree nvim | tee -a "$log"
 "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
 keys 14:cmd
@@ -659,7 +659,7 @@ poll 10 panel_is hidden || fail "tree=nvim: Files showed the panel"
 keys 14:cmd
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "tree=nvim: cmd-e did not close nvim"
 say "tree=nvim: Files and cmd-e toggle the nvim pane alone; the panel never stays"
-"$wrapper" app-setup tree native | tee -a "$log"
+"$wrapper" app-config tree native | tee -a "$log"
 pid_a=$(daemon_pid "$sock_a") # tab A's daemon now (6b/6c restarted it)
 alive "$pid_a" || fail "tab A has no daemon after the tree checks"
 
