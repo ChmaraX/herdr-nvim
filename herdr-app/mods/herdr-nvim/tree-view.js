@@ -56,9 +56,11 @@ export class Tree {
       for (;;) {
         const command = await nextCommand();
         if (command === "focus") {
-          // Back from our own dialog, or a press in the tree: the selection
-          // stays; from elsewhere, nvim's file (else the first row).
-          const keep = this.overlayOpen || this.pressing;
+          // The selection stays where the person left it: nvim's file changes
+          // already move it (watchCurrent), and cmd-shift-e / <leader>E reveal
+          // on purpose (shared "herdr-nvim.reveal"). Only the first arrival,
+          // before the tree knows nvim's file, picks it (else the first row).
+          const keep = this.overlayOpen || this.pressing || this.current != null;
           this.overlayOpen = this.pressing = false;
           this.takeKeyboard(cx);
           cx.notify();
