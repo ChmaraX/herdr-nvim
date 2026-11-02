@@ -659,6 +659,96 @@ say "tree=nvim: Files and cmd-e toggle the nvim pane alone; the panel never stay
 pid_a=$(daemon_pid "$sock_a") # tab A's daemon now (6b/6c restarted it)
 alive "$pid_a" || fail "tab A has no daemon after the tree checks"
 
+# --- 6d. stale nvims: an install leaves them, reopening restarts the clean ones -
+stamp_file=$XDG_DATA_HOME/herdr-nvim/app/runtime-stamp
+real_stamp=$(cat "$stamp_file")
+stamp_of() { nvim_eval "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP'; }
+[ "$(stamp_of)" = "$real_stamp" ] || fail "tab A's nvim did not record the runtime stamp ($(stamp_of) vs $real_stamp)"
+# Tab A's nvim as one started before an install: it loaded runtime "old-e2e".
+echo old-e2e > "$stamp_file"
+"$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
+keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+sock_a=$(sock_of "$space" "$tab_a"); poll 10 test -S "$sock_a" || fail "no daemon socket"
+poll 10 sh -c "[ \"\$(nvim --headless --server $sock_a --remote-expr '\$HERDR_NVIM_RUNTIME_STAMP' 2>/dev/null)\" = old-e2e ]" ||
+  fail "the daemon did not record old-e2e"
+keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+old_pid=$(daemon_pid "$sock_a")
+installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
+[ "$(cat "$stamp_file")" = "$real_stamp" ] || fail "the install wrote another stamp for the same runtime"
+echo "$installed" | grep -q '^nvim: 1 of 2 running tab nvim(s) are stale' || fail "the install did not report 1 stale nvim of 2"
+alive "$old_pid" || fail "the install stopped a stale nvim"
+"$wrapper" daemons | tee -a "$log" | grep -q 'alive · stale' || fail "daemons does not list tab A's nvim as stale"
+say "install: reported 1 of 2 nvims stale, stopped none (tab A's $old_pid still runs)"
+keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
+sidebar_a=$(sidebar_of "$tab_a")
+poll 10 sh -c "! kill -0 $old_pid" || fail "reopening did not restart the stale nvim"
+poll 10 sh -c "[ \"\$(nvim --headless --server $sock_a --remote-expr '\$HERDR_NVIM_RUNTIME_STAMP' 2>/dev/null)\" = $real_stamp ]" ||
+  fail "the restarted nvim is not on the installed runtime"
+pid_a=$(daemon_pid "$sock_a")
+say "reopening the pair restarted the stale clean nvim ($old_pid -> $pid_a) on runtime $real_stamp"
+# A stale nvim with an unsaved buffer is kept, with a toast and a message in nvim.
+nvim_eval "$sock_a" 'execute("enew") . setline(1, "unsaved")' >/dev/null
+[ "$(nvim_eval "$sock_a" "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))")" = 1 ] || fail "no unsaved buffer"
+keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+echo old-e2e > "$stamp_file" # the next install
+keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
+sidebar_a=$(sidebar_of "$tab_a")
+sleep 1.5
+alive "$pid_a" || fail "a stale nvim with an unsaved buffer was restarted"
+shot 23-stale-unsaved-kept-toast
+poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'execute(\"messages\")' 2>/dev/null | grep -q 'before the last install'" ||
+  fail "nvim did not say why it was kept"
+say "a stale nvim with an unsaved buffer was kept ($pid_a), with a toast and a message in nvim (shot 23)"
+nvim_eval "$sock_a" 'execute("bwipeout!")' >/dev/null
+echo "$real_stamp" > "$stamp_file"
+
+# --- 6e. on a fresh nvim: pane.go left from the tree, and space e (Snacks-like) --
+# The person's setup: space leader, LazyVim's Snacks explorer keys, and
+# cmd-j h / cmd-j l for pane.go.
+cat > "$XDG_CONFIG_HOME/nvim/init.lua" <<'LUA'
+vim.g.mapleader = " "
+vim.keymap.set("n", "<leader>fe", function() vim.g.explorer_opened = (vim.g.explorer_opened or 0) + 1 end, { desc = "Explorer Snacks (root dir)" })
+vim.keymap.set("n", "<leader>e", "<leader>fe", { desc = "Explorer Snacks (root dir)", remap = true })
+LUA
+"$py" - "$HERDR_APP_HOME/keys.json" <<'PY'
+import json, sys
+k = json.load(open(sys.argv[1]))
+k.setdefault("global", {}).update({"cmd-j h": "pane.go:left", "cmd-j l": "pane.go:right"})
+json.dump(k, open(sys.argv[1], "w"), indent=2)
+PY
+restart_pair
+pid_fresh=$(daemon_pid "$sock_a")
+[ "$(stamp_of)" = "$real_stamp" ] || fail "the fresh nvim is not on the installed runtime"
+poll 10 leader_e_is "herdr-nvim: Files, show/hide (Explorer Snacks (root dir))" ||
+  fail "space e (Snacks-like) was not taken over: $(leader_e_desc)"
+go_left() { keys 38:cmd text:h; sleep 0.8; } # cmd-j h
+into_tree; focus_shot 24-fresh-tree-cmd-shift-e tree
+go_left; focus_shot 24-fresh-cmd-j-h-from-tree nvim
+H do herdr-nvim.click >/dev/null; sleep 1; focus_shot 24-fresh-click-tree tree
+go_left; focus_shot 24-fresh-cmd-j-h-after-click nvim
+keys 38:cmd text:l; sleep 0.8; focus_shot 24-fresh-cmd-j-l-tree tree
+go_left; focus_shot 24-fresh-cmd-j-h-after-cmd-j-l nvim
+say "fresh nvim ($pid_fresh): cmd-j h from the tree (after cmd-shift-e, a click, cmd-j l) left one highlight, nvim's"
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
+tree_key "text: e" # space e in nvim, tree showing: hidden, nvim stays focused
+poll 10 panel_is hidden || fail "space e did not hide the tree"
+sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "space e closed nvim"
+focus_is "$sidebar_a" || fail "space e: nvim does not have the keyboard"
+focus_shot 25-fresh-space-e-hid-tree wide
+tree_key "text: e" # tree hidden: shown, with the keyboard
+poll 10 panel_is files || fail "space e did not show the tree"
+sleep 1; focus_shot 25-fresh-space-e-shows-tree tree
+go_left; focus_shot 25-fresh-cmd-j-h-after-space-e nvim
+H do pane.go '{"direction":"right"}' >/dev/null; sleep 0.8
+tree_key "text: e" # the same keys in the tree: hidden, back to nvim
+poll 10 panel_is hidden || fail "space e in the tree did not hide it"
+sleep 1; focus_shot 25-fresh-tree-space-e-back-to-nvim wide
+[ -z "$(nvim_eval "$sock_a" 'get(g:, "explorer_opened", "")')" ] || fail "space e opened the Snacks-like explorer"
+say "fresh nvim: space e (Snacks-like <leader>e) toggled the native tree from nvim and from the tree; Snacks' explorer never ran"
+keys 14:cmd; poll 10 panel_is files || fail "cmd-e did not show the tree"
+keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+pid_a=$pid_fresh
+
 # --- 7. closing tab B stops its daemon ----------------------------------------
 H do tab.close "{\"id\":\"$tab_b\",\"confirmed\":true}" >/dev/null
 poll 15 sh -c "! kill -0 $pid_b" || fail "tab B's daemon $pid_b survived its tab"
