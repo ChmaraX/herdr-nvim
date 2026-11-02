@@ -51,19 +51,13 @@ local function as_app(fn)
   if not ok then error(err, 0) end
 end
 
-T.test("dispatch (app): submit sends through app-send --submit", function()
-  as_app(function()
-    local calls, exec = recorder()
-    T.ok(dispatch.send("t5", "hi", { submit = true }, exec))
-    T.eq(calls[1], { "/opt/herdr-nvim/bin/herdr-nvim", "app-send", "t5", "hi", "--submit" })
-  end)
-end)
-
+-- (That a submit is really submitted, and a paste only pasted, the app e2e
+-- checks on a real agent.)
 T.test("dispatch (app): paste mode never submits", function()
   as_app(function()
     local calls, exec = recorder()
     T.ok(dispatch.send("t5", "line1\nline2", { submit = false }, exec))
-    T.eq(calls[1], { "/opt/herdr-nvim/bin/herdr-nvim", "app-send", "t5", "line1\nline2" })
+    T.ok(not vim.tbl_contains(calls[1], "--submit"))
   end)
 end)
 

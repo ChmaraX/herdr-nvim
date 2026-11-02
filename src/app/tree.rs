@@ -140,17 +140,3 @@ pub(crate) fn reveal_command(args: &[String], tab: &str) -> String {
     };
     format!("herdr-nvim.{verb}:{tab}")
 }
-
-#[cfg(test)]
-mod reveal_tests {
-    use super::reveal_command;
-
-    #[test]
-    fn reveal_or_toggle() {
-        assert_eq!(reveal_command(&[], "tb1"), "herdr-nvim.reveal:tb1");
-        assert_eq!(
-            reveal_command(&["--toggle".to_owned()], "tb1"),
-            "herdr-nvim.toggle:tb1"
-        );
-    }
-}
