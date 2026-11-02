@@ -627,7 +627,7 @@ EOF
 "$wrapper" app-config | grep -q '"tree_key":""' || fail "tree_key = \"\" not read: $("$wrapper" app-config)"
 restart_pair
 sleep 2; leader_e_is "" || fail "tree_key = \"\": <leader>e is mapped ($(leader_e_desc))"
-grep -qx '{"tree_key":\[\]}' "$(nvim_eval "$sock_a" '$HERDR_NVIM_CURRENT_FILE').keys" || fail "tree_key = \"\": the tree still has a key"
+grep -q '"tree_key":\[\]' "$(nvim_eval "$sock_a" '$HERDR_NVIM_CURRENT_FILE')" || fail "tree_key = \"\": the tree still has a key"
 cp "$root/config.toml.saved" "$config_toml"
 say "tree_key = \"\": <leader>e left unmapped, and the tree has no tree key"
 

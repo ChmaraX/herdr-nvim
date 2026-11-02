@@ -84,27 +84,35 @@ pub fn current_cmd() -> Result<()> {
     // The tree works with real paths (/private/tmp on macOS, not /tmp), so
     // one tab's folder is one tree whichever of its panes had the focus.
     let real_root = std::fs::canonicalize(&ctx.cwd).unwrap_or_else(|_| ctx.cwd.clone());
-    let config = config::load();
-    let socket = daemon::registry::socket_path(&ctx.tab);
-    let file = daemon::remote_expr_within(
-        &socket,
-        "expand('%:p')",
-        &config.sidebar,
-        Duration::from_secs(2),
-    )
-    .filter(|f| !f.is_empty())
-    .map(|f| {
-        std::fs::canonicalize(&f)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or(f)
-    });
+    // What the tab's nvim last wrote (`app.lua` `write_state`); an nvim that
+    // hasn't written yet is asked, once.
+    let state: Value = std::fs::read_to_string(&watch)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(|state: &Value| state.get("cwd").is_some_and(Value::is_string))
+        .or_else(|| {
+            let config = config::load();
+            let socket = daemon::registry::socket_path(&ctx.tab);
+            let out = daemon::remote_expr_within(
+                &socket,
+                "json_encode({'file': expand('%:p'), 'cwd': getcwd()})",
+                &config.sidebar,
+                Duration::from_secs(2),
+            )?;
+            serde_json::from_str(&out).ok()
+        })
+        .unwrap_or_default();
+    let real = |key: &str| {
+        state
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .and_then(|path| std::fs::canonicalize(path).ok())
+    };
+    let file = real("file").filter(|path| path.is_file());
     // The tab's folder for the tree: where the tab's nvim works (`:pwd`), which
     // doesn't move when another pane of the tab is focused or `cd`s.
-    let tab_root =
-        daemon::remote_expr_within(&socket, "getcwd()", &config.sidebar, Duration::from_secs(2))
-            .filter(|cwd| !cwd.is_empty())
-            .and_then(|cwd| std::fs::canonicalize(cwd).ok())
-            .unwrap_or_else(|| real_root.clone());
+    let tab_root = real("cwd").unwrap_or_else(|| real_root.clone());
     println!(
         "{}",
         json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root})

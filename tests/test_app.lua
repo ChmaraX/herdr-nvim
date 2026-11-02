@@ -93,14 +93,18 @@ T.test("app: the tree key's presses, as the tree names keys", function()
   T.eq(app.key_presses("<localleader>t", " ", "-"), { "-", "t" })
 end)
 
-T.test("app: the tree key's presses are written next to the current file", function()
+T.test("app: the tree key's presses go into the one state file for the tree", function()
   reset()
   local dir = vim.fn.tempname()
   vim.env.HERDR_NVIM_CURRENT_FILE = dir .. "/current"
+  app.state = { file = "/repo/a.lua" }
   app.write_keys("<leader>e")
-  T.eq(vim.json.decode(vim.fn.readfile(dir .. "/current.keys")[1]), { tree_key = { "space", "e" } })
+  local state = vim.json.decode(vim.fn.readfile(dir .. "/current")[1])
+  T.eq(state.tree_key, { "space", "e" })
+  T.eq(state.file, "/repo/a.lua", "one file: the other fields stay")
   app.write_keys("")
-  T.eq(vim.json.decode(vim.fn.readfile(dir .. "/current.keys")[1]), { tree_key = {} })
+  T.eq(vim.json.decode(vim.fn.readfile(dir .. "/current")[1]).tree_key, {})
+  T.eq(vim.fn.filereadable(dir .. "/current.tmp"), 0)
   vim.env.HERDR_NVIM_CURRENT_FILE = nil
   vim.fn.delete(dir, "rf")
 end)

@@ -169,7 +169,7 @@ export class Tree {
       while (this.currentGen === gen) {
         await watchFolder(dirname(watch));
         if (this.currentGen !== gen) return;
-        const path = (await readTextFile(watch))?.trim();
+        const path = (await this.nvimState()).file;
         if (path && path !== this.current) await this.reveal(path, cx);
         cx.notify(); // nvim took the keyboard, maybe: draw the focus again
       }
@@ -208,10 +208,16 @@ export class Tree {
     });
   }
 
-  // What the tab's nvim wrote on its last FocusGained (lua/herdr-nvim/app.lua).
+  // What the tab's nvim tells the tree, one JSON file (lua/herdr-nvim/app.lua
+  // `write_state`): {file, cwd, tree_key, leader, focus}; {} before it wrote.
+  async nvimState() {
+    const text = this.watching ? await readTextFile(this.watching).catch(() => null) : null;
+    try { return (text && JSON.parse(text)) || {}; } catch { return {}; }
+  }
+
+  // What the tab's nvim wrote on its last FocusGained.
   async nvimFocusStamp() {
-    if (!this.watching) return null;
-    return ((await readTextFile(`${this.watching}.focus`).catch(() => null)) ?? "").trim() || null;
+    return (await this.nvimState()).focus ?? null;
   }
 
   // nvim's file; arriving with the keyboard and no file of nvim's to show,
@@ -354,12 +360,9 @@ export class Tree {
     cx.notify();
   }
 
-  // The tree key's presses, as the tab's nvim wrote them (with its leader)
-  // next to the file the tree watches.
+  // The tree key's presses, as the tab's nvim wrote them (with its leader).
   async readTreeKey() {
-    const text = this.watching ? await readTextFile(`${this.watching}.keys`).catch(() => null) : null;
-    let keys = null;
-    try { keys = text ? JSON.parse(text).tree_key : null; } catch { keys = null; }
+    const keys = (await this.nvimState()).tree_key;
     this.treeKey = Array.isArray(keys) ? keys : TREE_KEY;
   }
 

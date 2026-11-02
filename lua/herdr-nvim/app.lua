@@ -2,8 +2,9 @@
 -- for the app: HERDR_NVIM_HOST=app; never in the TUI plugin or a nvim the
 -- person starts themselves).
 --
--- * The current file, written to $HERDR_NVIM_CURRENT_FILE on every buffer
---   switch, so the app's native tree can follow it.
+-- * One state file for the app's native tree, $HERDR_NVIM_CURRENT_FILE
+--   (`write_state`): the current file (every buffer switch, so the tree
+--   follows it), the folder, the tree key and the last FocusGained.
 -- * The tree key (`[app] tree_key`, default `<leader>e`) shows the native
 --   tree on the current file, or hides it when it shows (nvim stays), when
 --   the tree setting is "native". It is taken over when it opens a known
@@ -11,8 +12,8 @@
 --   alone when it does anything else; `""` maps nothing. LazyVim's other
 --   explorer keys (`<leader>E`, `<leader>fe`, `<leader>fE`) focus the tree
 --   instead, when they open a known explorer.
--- * The tree key's presses, with this nvim's leader, written next to the
---   current file for the tree, which takes the same key to hide itself.
+-- * The tree key's presses, with this nvim's leader, in that state file for
+--   the tree, which takes the same key to hide itself.
 -- * `tree = "nvim"`: the person's own explorer opens with the window.
 local exec = require("herdr-nvim.exec")
 
@@ -138,14 +139,29 @@ function M.toggle()
   vim.fn.jobstart({ exec.self(), "app-reveal", "--toggle" }, { detach = true })
 end
 
--- The tree key's presses for the tree (it reads them when it takes the
--- keyboard): {"tree_key": ["space", "e"]}, [] for none.
-function M.write_keys(tree_key)
+-- What this nvim tells the tab's tree, in one JSON file
+-- ($HERDR_NVIM_CURRENT_FILE, which the tree watches): `file` (the current
+-- real file), `cwd` (`:pwd`, the tab's folder), `tree_key` (its presses, []
+-- for none) and `leader`, `focus` (a stamp from the last FocusGained). Each
+-- change rewrites the whole file through a rename, so it is never half read.
+M.state = {}
+
+function M.write_state(changes)
+  M.state = vim.tbl_extend("force", M.state, changes)
   local path = vim.env.HERDR_NVIM_CURRENT_FILE
   if not path then return end
-  local presses = tree_key == "" and {} or M.key_presses(tree_key, vim.g.mapleader, vim.g.maplocalleader)
   vim.fn.mkdir(vim.fs.dirname(path), "p")
-  pcall(vim.fn.writefile, { vim.json.encode({ tree_key = presses }) }, path .. ".keys")
+  local tmp = path .. ".tmp"
+  if pcall(vim.fn.writefile, { vim.json.encode(M.state) }, tmp) then
+    pcall(vim.uv.fs_rename, tmp, path)
+  end
+end
+
+-- The tree key's presses for the tree (it reads them when it takes the
+-- keyboard): ["space", "e"], [] for none.
+function M.write_keys(tree_key)
+  local presses = tree_key == "" and {} or M.key_presses(tree_key, vim.g.mapleader, vim.g.maplocalleader)
+  M.write_state({ tree_key = presses, leader = vim.g.mapleader or "\\" })
 end
 
 -- The tree key: show or hide the tree (in nvim mode, what the key did).
@@ -190,14 +206,20 @@ function M.remap_explorer_keys(get_mode, tree_key)
   end
 end
 
--- Write the current file for the tree to follow (real files only).
+-- Real paths: the tree works with them (/private/tmp, not /tmp).
+local function real(path)
+  return vim.uv.fs_realpath(path) or vim.fn.resolve(vim.fn.fnamemodify(path, ":p"))
+end
+
+-- The current file for the tree to follow (real files only), and the folder.
 local function write_current()
-  local path = vim.env.HERDR_NVIM_CURRENT_FILE
   local name = vim.api.nvim_buf_get_name(0)
-  if not path or name == "" or vim.bo.buftype ~= "" or vim.fn.filereadable(name) == 0 then return end
-  vim.fn.mkdir(vim.fs.dirname(path), "p")
-  -- Its real path: the tree works with real paths (/private/tmp, not /tmp).
-  pcall(vim.fn.writefile, { vim.fn.resolve(vim.fn.fnamemodify(name, ":p")) }, path)
+  local cwd = real(vim.fn.getcwd())
+  if name == "" or vim.bo.buftype ~= "" or vim.fn.filereadable(name) == 0 then
+    if cwd ~= M.state.cwd then M.write_state({ cwd = cwd }) end
+    return
+  end
+  M.write_state({ file = real(name), cwd = cwd })
 end
 
 -- Whether an explorer window is already on screen.
@@ -228,15 +250,12 @@ end
 
 function M.setup()
   local group = vim.api.nvim_create_augroup("herdr-nvim-app", { clear = true })
-  vim.api.nvim_create_autocmd("BufEnter", { group = group, callback = write_current })
+  vim.api.nvim_create_autocmd({ "BufEnter", "DirChanged" }, { group = group, callback = write_current })
   -- The window gave this nvim the keyboard (the terminal's focus report):
   -- tell the app's tree, which can't see the keyboard leave it.
   vim.api.nvim_create_autocmd("FocusGained", {
     group = group,
-    callback = function()
-      local path = vim.env.HERDR_NVIM_CURRENT_FILE
-      if path then pcall(vim.fn.writefile, { tostring(vim.uv.hrtime()) }, path .. ".focus") end
-    end,
+    callback = function() M.write_state({ focus = tostring(vim.uv.hrtime()) }) end,
   })
   M.tree_key = M.settings().tree_key or M.DEFAULT_TREE_KEY
   M.remap_explorer_keys()
