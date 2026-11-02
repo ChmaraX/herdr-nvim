@@ -87,6 +87,16 @@ herdr-app/install.sh --panel-width 340  # the Files panel's width (default 300)
 herdr-app/install.sh --uninstall        # back to the stock Files browser
 ```
 
+The tree's show/hide key is a setting in `~/.config/herdr-nvim/config.toml`:
+
+```toml
+[app]
+tree_key = "<leader>e"  # the default; any nvim lhs, or "" for none
+```
+
+It is taken over when it opens a known explorer (Snacks, neo-tree,
+nvim-tree), mapped when free, and left alone when it does anything else.
+
 What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 Other mods open a file in a tab's nvim with
 `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
