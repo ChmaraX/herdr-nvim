@@ -187,6 +187,26 @@ mod tests {
     fn a_missing_or_foreign_document_is_unknown_not_empty() {
         assert!(parse(&json!({"version": 0, "value": null})).is_none());
         assert!(parse(&json!({"version": 3, "value": {"something": []}})).is_none());
+        // A space or tab the parse can't read hides no tabs: the whole
+        // document is unknown, so nothing is reaped.
+        for bad in [
+            json!({"spaces": [{"id": "spA"}]}),
+            json!({"spaces": [{"id": "spA", "tab_list": []}]}),
+            json!({"spaces": [{"tabs": []}]}),
+            json!({"spaces": [{"id": 7, "tabs": []}]}),
+            json!({"spaces": [{"id": "spA", "tabs": [{"name": "no id"}]}]}),
+            json!({"spaces": [{"id": "spA", "tabs": {}}]}),
+        ] {
+            assert!(
+                parse(&json!({"version": 4, "value": bad})).is_none(),
+                "{bad}"
+            );
+        }
+        // Names and folders of another type are only missing.
+        let odd = parse(&json!({"version": 4, "value": {"spaces": [
+            {"id": "spA", "name": 3, "folder": null, "tabs": [{"id": "tbA", "name": {}}]}]}}))
+        .unwrap();
+        assert_eq!(tab_infos(&odd)[0].tab_label, None);
         let empty = parse(&json!({"version": 9, "value": {"spaces": []}})).unwrap();
         assert!(
             tab_infos(&empty).is_empty(),
@@ -215,6 +235,17 @@ mod tests {
             Some(("pRight".to_owned(), "spA:tbOne".to_owned()))
         );
         assert_eq!(pane_of(&doc, "t9"), None);
+        // Every space is searched (no early return on one).
+        let mut raw = fixture();
+        raw["value"]["spaces"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"id": "spEmpty", "tabs": [{"id": "tbE"}]}));
+        let doc = parse(&raw).unwrap();
+        assert_eq!(
+            pane_of(&doc, "t5"),
+            Some(("pAgent".to_owned(), "spA:tbTwo".to_owned()))
+        );
         assert_eq!(space_of(&doc, "tbTwo").as_deref(), Some("spA"));
         assert_eq!(terminals_of(&doc, "tbOne"), ["t1", "t4"]);
         assert_eq!(terminal_of_pane(&doc, "pRight").as_deref(), Some("t4"));
