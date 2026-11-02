@@ -1,18 +1,22 @@
-// herdr-nvim's file tree: the focused tab's folder with git marks, in the
-// side panel's `files` slot. Picking a file opens it in the tab's nvim pane.
-// It follows the focused tab's folder and re-lists a folder when something
-// under it changes (a folder watch, no polling).
+// herdr-nvim's file tree in the side panel's `files` slot: the tab's folder
+// with git marks, and LazyVim's explorer keys (Snacks defaults). It draws;
+// the tab's nvim does every file operation (ops.js), and opening a file shows
+// it in the tab's nvim pane. It takes the keyboard from `pane.go` and
+// cmd-shift-e (`"focus"`), follows the file nvim shows, and gives the
+// keyboard back with q / Esc.
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { focused, spaces, panes, theme, watchFolder } from "herdr";
+import { focused, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
 import { nvim } from "./lib.js";
-import { listFolder, gitMarks } from "./tree.js";
+import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
+import { openDialog } from "./dialog.js";
+import { TreeModel, dirname } from "./tree-model.js";
 
-const ROWS = 3000;
+const HINT = "/ find · a new · r rename · m move · c copy · d delete · y p yank paste · H I hidden ignored · ⌫ up · . root · o open · q back";
 
-// The focused tab and its folder. A focused layout block (this tree) has no
-// pane: the tab's folder stays what it was.
+// The focused tab and its folder. While this tree has the keyboard there is
+// no focused pane: the tab's folder stays what it was.
 function place(previous) {
   const f = focused();
   const space = spaces().find((s) => s.id === f?.space) ?? spaces().find((s) => s.active);
@@ -24,135 +28,333 @@ function place(previous) {
 export class Tree {
   constructor(cx) {
     this.handle = cx.focus_handle();
+    this.model = new TreeModel();
     this.place = null;
-    this.reset(null);
-  }
-
-  reset(root) {
-    this.root = root;
-    this.entries = new Map(); // folder ("" = root) -> entries
-    this.open = new Set();
-    this.marks = {};
     this.selected = 0;
-    this.error = null;
-    this.busy = false;
+    this.picked = new Set(); // Tab-selected paths
+    this.filter = null; // {query, results, seq}
+    this.revealed = shared("herdr-nvim.reveal")?.n ?? 0;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "focus") {
+          this.handle.focus();
+          cx.notify();
+          await this.revealCurrent(cx);
+        }
+      }
+    });
   }
 
-  // Follow the focused tab's folder; each folder is listed once and again
-  // whenever something under it changes (no polling).
+  // Follow the focused tab: its folder, the file its nvim shows.
   follow(cx) {
     const next = place(this.place);
-    const moved = next.cwd !== this.place?.cwd || next.machine !== this.place?.machine;
+    const moved = next.tab !== this.place?.tab || next.cwd !== this.place?.cwd || next.machine !== this.place?.machine;
     this.place = next;
     if (!moved) return;
-    this.reset(next.cwd);
-    if (!next.cwd || next.machine) return;
-    const root = next.cwd;
-    this.load("", cx);
+    this.setRoot(next.machine ? null : next.cwd, cx);
+    if (next.cwd && !next.machine) this.watchCurrent(next, cx);
+  }
+
+  setRoot(root, cx) {
+    const keep = { hidden: this.model.showHidden, ignored: this.model.showIgnored };
+    this.model.reset(root);
+    Object.assign(this.model, { showHidden: keep.hidden, showIgnored: keep.ignored });
+    this.selected = 0;
+    this.picked.clear();
+    this.filter = null;
+    this.error = null;
+    if (!root) return;
     cx.spawn(async (cx) => {
       try {
-        for (;;) {
-          this.marks = await gitMarks(root);
-          if (this.root !== root) return;
-          cx.notify();
+        await this.model.reload();
+        cx.notify();
+        while (this.model.root === root) {
           await watchFolder(root);
-          if (this.root !== root) return;
-          for (const folder of ["", ...this.open]) this.load(folder, cx);
+          if (this.model.root !== root) return;
+          await this.model.reload();
+          cx.notify();
         }
       } catch (e) {
-        if (this.root === root) { this.error = String(e); cx.notify(); }
+        if (this.model.root === root) { this.error = String(e); cx.notify(); }
       }
     });
-  }
-
-  load(folder, cx) {
-    const root = this.root;
-    cx.spawn(async (cx) => {
-      try {
-        const entries = await listFolder(folder ? `${root}/${folder}` : root);
-        if (this.root !== root) return;
-        this.entries.set(folder, entries);
-      } catch (e) {
-        if (this.root === root && !folder) this.error = String(e);
-      }
-      cx.notify();
-    });
-  }
-
-  // The rows on screen, depth first through the open folders.
-  rows(folder = "", depth = 0, out = []) {
-    for (const entry of this.entries.get(folder) ?? []) {
-      if (out.length >= ROWS) break;
-      const path = folder ? `${folder}/${entry.name}` : entry.name;
-      out.push({ ...entry, path, depth });
-      if (entry.dir && this.open.has(path)) this.rows(path, depth + 1, out);
+    if (!this.defaults) {
+      this.defaults = true;
+      cx.spawn(async (cx) => {
+        const d = await fsOp(this.place, { op: "defaults" });
+        if (d) Object.assign(this.model, { showHidden: d.hidden, showIgnored: d.ignored });
+        cx.notify();
+      });
     }
-    return out;
   }
 
-  activate(row, cx) {
+  // The file the tab's nvim shows: selected (and its folders opened) whenever
+  // it changes, without taking the keyboard.
+  watchCurrent(where, cx) {
+    cx.spawn(async (cx) => {
+      const { file, watch, real_root } = await current(where);
+      this.realRoot = real_root;
+      if (file) await this.reveal(file, cx);
+      if (!watch) return;
+      while (this.place?.tab === where.tab) {
+        await watchFolder(dirname(watch));
+        if (this.place?.tab !== where.tab) return;
+        const path = this.ours((await readTextFile(watch))?.trim());
+        if (path && path !== this.current) await this.reveal(path, cx);
+      }
+    });
+  }
+
+  // nvim's name for a file (its real path) as a path under this tree's folder.
+  ours(path) {
+    const real = this.realRoot, tab = this.place?.cwd;
+    if (!path || !real || !tab || real === tab || !inside(path, real)) return path;
+    return tab + path.slice(real.length);
+  }
+
+  async revealCurrent(cx) {
+    if (!this.place?.cwd) return;
+    const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
+    const { file, real_root } = await current(this.place);
+    if (seq !== this.revealSeq) return;
+    this.realRoot = real_root ?? this.realRoot;
+    if (file) await this.reveal(file, cx);
+  }
+
+  // Selects `path`, opening its folders (after listing everything again,
+  // with `reload`); if it isn't listed yet (just created), render selects it
+  // once it is. The latest reveal wins, whichever finishes first.
+  async reveal(path, cx, reload = false) {
+    path = this.ours(path);
+    if (!path || !inside(path, this.model.root ?? "")) return;
+    const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
+    if (reload) await this.model.reload().catch(() => {});
+    await this.model.expandTo(path);
+    if (seq !== this.revealSeq) return;
+    this.current = path;
+    this.revealing = path;
+    cx.notify();
+  }
+
+  rows() {
+    if (this.filter) return this.filter.results.map((rel) => ({ name: rel, abs: `${this.model.root}/${rel}`, dir: false, depth: 0 }));
+    return this.model.rows();
+  }
+
+  // The folder an action works in: the row's own folder, or its parent.
+  dirOf(row) {
+    return row ? (row.dir ? row.abs : dirname(row.abs)) : this.model.root;
+  }
+
+  targets(row) {
+    return this.picked.size ? [...this.picked] : row ? [row.abs] : [];
+  }
+
+  dialog(spec) {
+    openDialog({ place: this.place, ...spec });
+  }
+
+  async openRow(row, cx) {
     if (!row) return;
     if (row.dir) {
-      if (this.open.has(row.path)) this.open.delete(row.path);
-      else { this.open.add(row.path); if (!this.entries.has(row.path)) this.load(row.path, cx); }
-      cx.notify();
-      return;
+      await this.model.toggle(row.abs).catch((e) => notify({ title: "Cannot open folder", body: String(e), level: "error" }));
+      return cx.notify();
     }
     this.busy = true;
     cx.notify();
-    cx.spawn(async (cx) => {
-      await nvim("open", [`${this.root}/${row.path}`]);
-      this.busy = false;
-      cx.notify();
-    });
+    await nvim("open", [row.abs], tabOf(this.place));
+    this.busy = false;
+    cx.notify();
+  }
+
+  // Snacks' `h`: close the open folder, else the one the row is in, and stand on it.
+  closeRow(row, cx) {
+    if (!row) return;
+    const folder = row.dir && this.model.open.has(row.abs) ? row.abs : dirname(row.abs);
+    if (folder === this.model.root) return;
+    this.model.close(folder);
+    const at = this.model.rows().findIndex((r) => r.abs === folder);
+    if (at >= 0) this.selected = at;
+    cx.notify();
+  }
+
+  action(name, row, cx) {
+    const rel = (path) => path.slice(this.model.root.length + 1);
+    switch (name) {
+      case "add":
+        return this.dialog({ kind: "input", title: "New file or folder", hint: `In ${rel(this.dirOf(row)) || "."}/ — end with / for a folder`,
+          action: { type: "create", dir: this.dirOf(row) } });
+      case "rename":
+        if (row) this.dialog({ kind: "input", title: "Rename", value: rel(row.abs), hint: "A path in this folder; the tab's nvim updates its buffers and language servers",
+          action: { type: "rename", from: row.abs, base: this.model.root } });
+        return;
+      case "move": {
+        if (!this.picked.size) return this.action("rename", row, cx);
+        const dir = this.dirOf(row), paths = [...this.picked];
+        this.picked.clear();
+        return this.dialog({ kind: "confirm", title: `Move ${paths.length} item${paths.length > 1 ? "s" : ""} to ${rel(dir) || "."}/?`,
+          detail: paths.map(rel).join(", "), action: { type: "request", request: { op: "move", paths, dir } } });
+      }
+      case "copy":
+        if (this.picked.size) {
+          const paths = [...this.picked];
+          this.picked.clear();
+          return this.dialog({ kind: "confirm", title: `Copy ${paths.length} item${paths.length > 1 ? "s" : ""} to ${rel(this.dirOf(row)) || "."}/?`,
+            detail: paths.map(rel).join(", "), action: { type: "request", request: { op: "copy_into", paths, dir: this.dirOf(row) } } });
+        }
+        if (row) this.dialog({ kind: "input", title: "Copy to", value: row.name, hint: `In ${rel(dirname(row.abs)) || "."}/`,
+          action: { type: "copy", from: row.abs, base: dirname(row.abs) } });
+        return;
+      case "delete": {
+        const paths = this.targets(row);
+        this.picked.clear();
+        if (paths.length) this.dialog({ kind: "confirm", title: `Delete ${paths.length === 1 ? rel(paths[0]) : `${paths.length} items`}?`,
+          detail: "Their buffers in the tab's nvim close too.", action: { type: "request", request: { op: "delete", paths } } });
+        return;
+      }
+      case "yank": {
+        const paths = this.targets(row);
+        this.picked.clear();
+        return cx.spawn(async (cx) => {
+          const r = await fsOp(this.place, { op: "yank", paths });
+          if (r) notify({ title: `Yanked ${r.count} item${r.count === 1 ? "" : "s"}`, level: "info", timeout: 2500 });
+          cx.notify();
+        });
+      }
+      case "paste": {
+        const dir = this.dirOf(row);
+        if (!inside(dir, this.place.cwd)) {
+          return this.dialog({ kind: "confirm", title: "Paste outside this tab's folder?", detail: dir,
+            action: { type: "request", request: { op: "paste", dir, outside: true } } });
+        }
+        return cx.spawn(async () => { await fsOp(this.place, { op: "paste", dir }); });
+      }
+    }
   }
 
   key(e, rows, cx) {
+    if (this.filter) return this.filterKey(e, rows, cx);
+    const plain = !e.modifiers.platform && !e.modifiers.control && !e.modifiers.alt;
+    const k = plain && e.key_char && e.key_char.trim() ? e.key_char : e.keystroke;
     const row = rows[this.selected];
-    if (e.key === "down") this.selected = Math.min(rows.length - 1, this.selected + 1);
-    else if (e.key === "up") this.selected = Math.max(0, this.selected - 1);
-    else if (e.key === "enter") this.activate(row, cx);
-    else if (e.key === "right" && row?.dir && !this.open.has(row.path)) this.activate(row, cx);
-    else if (e.key === "left" && row?.dir && this.open.has(row.path)) this.activate(row, cx);
-    else return;
+    const move = (to) => { this.selected = Math.max(0, Math.min(rows.length - 1, to)); };
+    switch (k) {
+      case "down": case "j": this.revealing = null; move(this.selected + 1); break;
+      case "up": case "k": this.revealing = null; move(this.selected - 1); break;
+      case "g": move(0); break;
+      case "G": move(rows.length - 1); break;
+      case "enter": case "l": case "right": cx.spawn(async (cx) => this.openRow(row, cx)); break;
+      case "h": case "left": this.closeRow(row, cx); break;
+      case "tab":
+        if (row) { this.picked.has(row.abs) ? this.picked.delete(row.abs) : this.picked.add(row.abs); move(this.selected + 1); }
+        break;
+      case "a": this.action("add", row, cx); break;
+      case "r": this.action("rename", row, cx); break;
+      case "m": this.action("move", row, cx); break;
+      case "c": this.action("copy", row, cx); break;
+      case "d": this.action("delete", row, cx); break;
+      case "y": this.action("yank", row, cx); break;
+      case "p": this.action("paste", row, cx); break;
+      case "o": if (row) systemOpen(row.abs); break;
+      case "H": this.model.showHidden = !this.model.showHidden; break;
+      case "I": this.model.showIgnored = !this.model.showIgnored; break;
+      case "Z": this.model.open.clear(); break;
+      case "u": cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }); break;
+      case ".": if (row) this.setRoot(this.dirOf(row), cx); break;
+      case "backspace": if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); break;
+      case "/": this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; break;
+      case "escape": case "q": run("pane.go", { direction: "left" }); break;
+      default: return;
+    }
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // Typing finds files anywhere under the root (fff); ⏎ opens, Esc returns to the tree.
+  filterKey(e, rows, cx) {
+    const f = this.filter;
+    const k = e.keystroke;
+    if (k === "escape") this.filter = null;
+    else if (k === "enter") {
+      const row = rows[this.selected];
+      this.filter = null;
+      if (row) cx.spawn(async (cx) => { await this.reveal(row.abs, cx); await this.openRow(row, cx); });
+    } else if (k === "down" || k === "ctrl-n") this.selected = Math.min(rows.length - 1, this.selected + 1);
+    else if (k === "up" || k === "ctrl-p") this.selected = Math.max(0, this.selected - 1);
+    else {
+      if (k === "backspace") f.query = f.query.slice(0, -1);
+      else if (e.key_char && !e.modifiers.platform && !e.modifiers.control) f.query += e.key_char;
+      else return;
+      const seq = ++f.seq, root = this.model.root, query = f.query;
+      cx.spawn(async (cx) => {
+        const results = query ? await findFiles(root, query) : [];
+        if (this.filter !== f || f.seq !== seq) return;
+        f.results = results;
+        this.selected = 0;
+        cx.notify();
+      });
+    }
     cx.stop_propagation();
     cx.notify();
   }
 
   header(t) {
+    const badge = (on, label) => div().px(4).rounded(4).text_size(10).text_color(on ? t.foreground : t.dim).bg(on ? t.selected : t.background).child(label);
     return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
       .child(div().font_semibold().child("Files"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.root?.split("/").pop() ?? ""))
-      .when(this.busy, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.muted).spin(900)));
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.model.root?.split("/").pop() ?? ""))
+      .when(this.busy, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.muted).spin(900)))
+      .child(badge(this.model.showHidden, "H")).child(badge(this.model.showIgnored, "I"));
   }
 
-  row(r, i, t) {
-    const mark = this.marks[`${this.root}/${r.path}`];
+  filterBar(t) {
+    return h_flex().h(30).flex_none().mx(6).mt(6).px(8).gap(6).items_center().rounded(7).border_1().border_color(t.accent).bg(t.surface)
+      .child(div().text_color(t.accent).child("/"))
+      .child(div().flex_1().min_w(0).truncate().child(this.filter.query))
+      .child(div().text_size(11).text_color(t.dim).child(`${this.filter.results.length}`));
+  }
+
+  row(r, i, t, focusedNow) {
+    const mark = this.model.marks[r.abs];
     const markColor = mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked;
-    return h_flex().id(`row-${r.path}`).h(28).flex_none().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
-      .when(i === this.selected, (el) => el.bg(t.selected))
+    return h_flex().id(`row-${r.abs}`).h(28).flex_none().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
+      .when(i === this.selected, (el) => el.bg(focusedNow ? t.selected : t.hover))
       .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.selected = i; this.handle.focus(); this.activate(r, cx); })
-      .child(r.dir ? svg(`mods/files/chevron-${this.open.has(r.path) ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-      .child(svg(`mods/files/${r.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
-      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .on_click((_e, cx) => { this.selected = i; this.handle.focus(); cx.spawn(async (cx) => this.openRow(r, cx)); })
+      .child(r.dir ? svg(`mods/files/chevron-${this.model.open.has(r.abs) ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
+      .child(svg(`mods/files/${r.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(this.picked.has(r.abs) ? t.accent : t.muted))
+      .child(div().flex_1().min_w(0).truncate().text_color(r.ignored ? t.dim : r.abs === this.current ? t.accent : t.foreground).child(r.name))
+      .when(this.picked.has(r.abs), (el) => el.child(div().text_size(11).text_color(t.accent).child("●")))
       .when(Boolean(mark), (el) => el.child(div().text_size(11).text_color(markColor).child(mark)));
   }
 
   render(cx) {
     this.follow(cx);
-    const t = theme(), rows = this.rows();
+    const reveal = shared("herdr-nvim.reveal");
+    if (reveal && reveal.n !== this.revealed) {
+      this.revealed = reveal.n;
+      if (reveal.tab === this.place?.tab && reveal.path) cx.spawn(async (cx) => this.reveal(reveal.path, cx, true));
+    }
+    const t = theme(), rows = this.rows(), focusedNow = this.handle.is_focused?.() ?? false;
+    if (this.revealing && !this.filter) {
+      const at = rows.findIndex((r) => r.abs === this.revealing);
+      if (at >= 0) { this.selected = at; this.revealing = null; }
+    }
     this.selected = Math.min(this.selected, Math.max(0, rows.length - 1));
     const empty = this.place?.machine ? `This space is on ${this.place.machine}; herdr-nvim runs nvim on this computer.`
-      : this.error ?? (!this.root ? "No folder" : this.entries.has("") ? "No files" : "Loading files…");
+      : this.error ?? (this.filter ? (this.filter.query ? "No match" : "Type to find a file") : !this.model.root ? "No folder" : this.model.entries.has(this.model.root) ? "No files" : "Loading files…");
     return v_flex().id("herdr-nvim-files").size_full().min_h(0).rounded(10).overflow_hidden()
-      .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+      // The controller hands this tree the keyboard with `pane.go`, which
+      // needs it laid out: say when it is.
+      .on_size_change(() => setShared("herdr-nvim.tree-laid-out", (shared("herdr-nvim.tree-laid-out") ?? 0) + 1))
+      .bg(t.background).border_1().border_color(focusedNow ? t.accent : t.border).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, rows, cx))
       .child(this.header(t))
+      .when(Boolean(this.filter), (el) => el.child(this.filterBar(t)))
       .child(v_flex().id("herdr-nvim-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
-        .children(rows.map((r, i) => this.row(r, i, t)))
+        .children(rows.map((r, i) => this.row(r, i, t, focusedNow)))
         .when(rows.length === 0, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(empty))))
-      .child(div().flex_none().px(12).py(6).border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
-        .child("Click or ⏎ opens in this tab's nvim · ↑↓ ← →"));
+      .child(div().flex_none().px(12).py(6).border_t(1).border_color(t.border).text_size(11).text_color(t.dim).child(HINT));
   }
 }

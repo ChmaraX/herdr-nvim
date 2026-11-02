@@ -1,6 +1,7 @@
 {
   "global": {
     "cmd-e": "mod.open:herdr-nvim",
-    "cmd-o": "mod.open:herdr-nvim-pick"
+    "cmd-o": "mod.open:herdr-nvim-pick",
+    "cmd-shift-e": "herdr-nvim.reveal"
   }
 }

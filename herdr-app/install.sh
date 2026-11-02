@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install herdr-nvim into the Herdr desktop app, or take it out again.
 #
-#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--panel-width PX]
+#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--panel-width PX] [--tree native|nvim]
 #   herdr-app/install.sh --uninstall [--home DIR] [--app-bin PATH]
 #
 # The Herdr app must be open on that home (default: $HERDR_APP_HOME, else
@@ -12,8 +12,10 @@
 # Herdr's own layout as <name>-mods first): the Files slot shows herdr-nvim's
 # tree, an empty floating controller opens the tab's nvim with it, and the side
 # panel is --panel-width wide (default 300, unless the layout file already sets
-# a width of its own). Run it again to upgrade in place. Uninstall undoes each
-# step and stops the app's nvim daemons.
+# a width of its own). --tree writes [app] tree into herdr-nvim's config
+# (native: the native tree beside nvim, the default; nvim: nvim's own explorer
+# inside the nvim pane). Run it again to upgrade in place. Uninstall undoes
+# each step and stops the app's nvim daemons.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +24,7 @@ mode=install
 home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 app_bin=${HERDR_APP_BIN:-}
 panel_width=
+tree=
 mods=(herdr-nvim herdr-nvim-pick)
 
 die() { echo "herdr-nvim: $*" >&2; exit 1; }
@@ -32,7 +35,8 @@ while [ $# -gt 0 ]; do
     --home) home=$2; shift ;;
     --app-bin) app_bin=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    --tree) tree=$2; shift ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -108,4 +112,5 @@ chmod +x "$wrapper"
 
 for m in "${mods[@]}"; do "$app_bin" check "$home/mods/$m"; done
 "$wrapper" app-setup install --keys "$here/keys.json" ${panel_width:+--panel-width "$panel_width"}
-echo "herdr-nvim: installed in $home (Files or cmd-e: the file tree with the tab's nvim; cmd-o: files from the agent)"
+[ -z "$tree" ] || "$wrapper" app-setup tree "$tree"
+echo "herdr-nvim: installed in $home (Files or cmd-e: the file tree with the tab's nvim; cmd-shift-e: into the tree; cmd-o: files from the agent)"

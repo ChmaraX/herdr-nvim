@@ -34,3 +34,11 @@ export async function gitMarks(cwd) {
   }
   return marks;
 }
+
+// The names in `dir` that git ignores (none outside a repo).
+export async function ignoredIn(dir, names) {
+  if (!names.length) return new Set();
+  const r = await exec("git", ["-C", dir, "check-ignore", "--", ...names]).catch(() => null);
+  if (!r || (r.code !== 0 && r.code !== 1)) return new Set();
+  return new Set(r.stdout.split("\n").filter(Boolean).map((line) => line.replace(/\/$/, "")));
+}

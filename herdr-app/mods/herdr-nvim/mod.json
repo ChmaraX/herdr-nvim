@@ -1,1 +1,1 @@
-{ "place": "none", "title": "nvim sidebar", "overlay": { "kind": "popup", "at": "top", "width": 1, "height": 1, "frame": "none" } }
+{ "place": "none", "title": "nvim sidebar", "focusable": true, "overlay": { "kind": "popup", "at": "top", "width": 1, "height": 1, "frame": "none" } }

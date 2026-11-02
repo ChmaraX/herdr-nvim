@@ -2,40 +2,47 @@
 // full-height pane of the tab backed by that tab's persistent daemon) and a
 // native file tree beside it, opened and closed together.
 //
-// One mod, three roles, chosen by where it is shown:
+// One mod, four roles, chosen by where it is shown:
 // - the side panel's `files` slot (the tab bar's Files button shows it): the
-//   file tree (tree-view.js);
+//   file tree (tree-view.js), with the keyboard when `pane.go` or
+//   cmd-shift-e gives it (mod.json "focusable");
 // - an empty floating block, props {role: "sync"}: the controller that opens
 //   and closes the tab's nvim pane with the panel (sync.js);
+// - a dialog with props {dialog}: the tree's new/rename/copy/delete prompts
+//   (dialog.js);
 // - an overlay, `mod.open:herdr-nvim` (cmd-e): does exactly what the Files
-//   button does (Files shown: hide the panel; else show Files), then closes;
-//   the controller does the rest. Without the slot in this layout it toggles
-//   nvim alone.
+//   button does, then closes; with `tree = "nvim"`, or without the slot in
+//   this layout, it toggles the tab's nvim alone.
 
 import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props } from "herdr";
 import { nvim } from "./lib.js";
+import { treeMode } from "./ops.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
+import { Dialog } from "./dialog.js";
 import { Sync } from "./sync.js";
 import { Tree } from "./tree-view.js";
 
 export default class HerdrNvim extends View {
   init(_props, cx) {
-    const { overlay, role } = props() ?? {};
-    if (overlay) {
+    const { overlay, role, dialog } = props() ?? {};
+    if (dialog) this.part = new Dialog(cx);
+    else if (overlay) {
       cx.spawn(async () => {
         const p = panelState(layout());
-        if (!p) await nvim("toggle");
-        else if (p.files) hidePanel(p);
+        if (!p || (await treeMode()) === "nvim") {
+          if (p?.files) hidePanel(p);
+          await nvim("toggle");
+        } else if (p.files) hidePanel(p);
         else showFiles(p);
         closeOverlay(overlay);
       });
-    } else if (role === "sync") this.sync = new Sync();
-    else this.tree = new Tree(cx);
+    } else if (role === "sync") this.sync = new Sync(cx);
+    else this.part = new Tree(cx);
   }
 
   render(cx) {
-    if (this.tree) return this.tree.render(cx);
+    if (this.part) return this.part.render(cx);
     this.sync?.look(cx);
     return div();
   }

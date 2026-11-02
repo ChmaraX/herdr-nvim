@@ -17,13 +17,13 @@ FLAGS = {
 
 LETTERS = dict(zip("asdfhgzxcv bqweryt123465=97-80]ou[ip lj'k;\\,/nm.", range(51)))
 LETTERS[" "] = 49
-NAMES = {"enter": 36, "esc": 53, "backslash": 42, "tab": 48}
+NAMES = {"enter": 36, "esc": 53, "backslash": 42, "tab": 48, "backspace": 51}
 
 
 def specs(argv):
     for spec in argv:
         if spec.startswith("text:"):
-            yield from (str(LETTERS[ch]) for ch in spec[5:])
+            yield from (f"{LETTERS[ch.lower()]}:shift" if ch.isupper() else str(LETTERS[ch]) for ch in spec[5:])
         elif spec.split(":")[0] in NAMES:
             name, _, mods = spec.partition(":")
             yield f"{NAMES[name]}:{mods}"

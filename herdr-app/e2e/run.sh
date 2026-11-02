@@ -133,6 +133,15 @@ mkdir -p "$demo/src"
 printf 'export function greet(name) {\n  return `hello ${name}`;\n}\n\nexport function bye(name) {\n  return `bye ${name}`;\n}\n' > "$demo/src/greet.js"
 printf '# notes\n\nline three\n' > "$demo/src/notes.md"
 printf '{"name":"demo"}\n' > "$demo/package.json"
+mkdir -p "$demo/src/deep/er/nest" "$demo/build"
+echo needle > "$demo/src/deep/er/nest/needle.txt"
+echo 'build/' > "$demo/.gitignore"; echo out > "$demo/build/out.js"; echo h > "$demo/.hidden"
+# A LazyVim-like explorer mapping in the nvim config: herdr-nvim takes it over.
+mkdir -p "$XDG_CONFIG_HOME/nvim"
+cat > "$XDG_CONFIG_HOME/nvim/init.lua" <<'LUA'
+vim.keymap.set("n", "<leader>fe", function() vim.g.explorer_opened = (vim.g.explorer_opened or 0) + 1 end, { desc = "Explorer Snacks (root dir)" })
+vim.keymap.set("n", "<leader>e", "<leader>fe", { desc = "Explorer Snacks (root dir)", remap = true })
+LUA
 git -C "$demo" init -q && git -C "$demo" add -A && git -C "$demo" -c user.email=e2e@x -c user.name=e2e commit -qm init
 echo 'console.log(1)' >> "$demo/src/greet.js"
 agent=(python3 -u "$here/dummy-agent.py")
@@ -357,6 +366,150 @@ shot 10-reattached
 
 say "daemons: $("$wrapper" daemons | tr '\n' '|')"
 
+# --- 6b. the native tree: keyboard, LazyVim's keys, nvim doing the work -----
+sidebar_a=$(sidebar_of "$tab_a")
+ctx_a="{\"space\":\"$space\",\"tab\":\"$tab_a\",\"terminal\":\"$agent_a\",\"cwd\":\"$demo\"}"
+open_in_nvim() { "$wrapper" open "$1" --ctx "$ctx_a" >/dev/null; }
+nvim_on() { [ "$(nvim_eval "$sock_a" 'expand("%:t")')" = "$1" ]; }
+dialog_open() { H status | tr -d ' \n' | grep -q '"overlays":\["herdr-nvim"'; }
+gone_buffer() { [ "$(nvim_eval "$sock_a" "bufnr('$1')")" = "-1" ]; }
+real_demo=$(cd "$demo" && pwd -P)
+tree_key() { keys "$@"; sleep 0.4; } # paced like a person typing
+into_tree() { keys 14:cmd,shift; sleep 1; } # cmd-shift-e
+
+open_in_nvim "$demo/src/greet.js"
+poll 10 nvim_on greet.js || fail "nvim did not open greet.js"
+into_tree
+tree_key text:r
+poll 5 dialog_open || fail "cmd-shift-e: the tree did not take the keyboard (no rename dialog)"
+shot 11-tree-rename-dialog
+tree_key 0:cmd text:src/hello.js enter
+poll 10 test -f "$demo/src/hello.js" || fail "rename did not happen"
+[ ! -e "$demo/src/greet.js" ] || fail "rename left greet.js"
+poll 10 nvim_on hello.js || fail "nvim's buffer did not follow the rename"
+gone_buffer "$real_demo/src/greet.js" || fail "the old buffer is still there"
+say "cmd-shift-e: the tree took the keyboard on greet.js (nvim's file); r renamed it to src/hello.js, nvim's buffer followed"
+
+tree_key text:q # back to nvim
+H do pane.go '{"direction":"right"}' >/dev/null
+sleep 0.8
+tree_key text:a
+poll 5 dialog_open || fail "pane.go right did not give the tree the keyboard"
+tree_key text:fromgo.txt enter
+poll 10 test -f "$demo/src/fromgo.txt" || fail "a: no new file next to hello.js"
+poll 10 nvim_on fromgo.txt || fail "the new file did not open in nvim"
+say "pane.go right: into the tree on hello.js; a made src/fromgo.txt (next to it) and nvim opened it"
+
+H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null
+tree_key esc backslash 14 # \e: LazyVim's explorer key, in nvim
+tree_key text:c
+poll 5 dialog_open || fail "<leader>e did not focus the tree"
+tree_key 0:cmd text:copied.txt enter
+poll 10 test -f "$demo/src/copied.txt" || fail "c: no copy"
+[ "$(nvim_eval "$sock_a" 'get(g:, "explorer_opened", 0)')" = 0 ] || fail "<leader>e still opened nvim's explorer"
+say "<leader>e (an 'Explorer Snacks' mapping) in nvim: the tree took the keyboard on fromgo.txt, not nvim's explorer; c copied it to src/copied.txt"
+sleep 0.5
+shot 12-leader-e-tree-copied
+
+open_in_nvim "$demo/src/notes.md"
+into_tree
+tree_key tab text:g text:j text:m # mark notes.md, stand on src/deep, move
+poll 5 dialog_open || fail "m: no confirm"
+shot 13-move-confirm
+tree_key enter
+poll 10 test -f "$demo/src/deep/notes.md" || fail "m: notes.md not moved into src/deep"
+[ ! -e "$demo/src/notes.md" ] || fail "m left src/notes.md"
+poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'expand(\"%:p\")' | grep -q 'src/deep/notes.md'" || fail "nvim's buffer did not follow the move"
+say "Tab marked notes.md, m moved it into src/deep after the confirm; nvim's buffer followed"
+
+open_in_nvim "$demo/src/copied.txt"
+into_tree
+tree_key text:d
+poll 5 dialog_open || fail "d: no confirm"
+shot 14-delete-confirm
+tree_key enter
+poll 10 sh -c "! test -e $demo/src/copied.txt" || fail "d did not delete"
+poll 5 gone_buffer "$real_demo/src/copied.txt" || fail "the deleted file's buffer is still open"
+say "d deleted src/copied.txt after the confirm; its buffer is gone"
+
+open_in_nvim "$demo/package.json"
+poll 10 nvim_on package.json || fail "nvim did not open package.json"
+into_tree
+tree_key text:a
+poll 5 dialog_open || fail "a: no dialog"
+tree_key text:newdir/ enter
+poll 10 test -d "$demo/newdir" || fail "a: no folder"
+into_tree # back on package.json: a works in its folder
+tree_key text:a
+poll 5 dialog_open || fail "a: no dialog"
+tree_key text:newdir/made.lua enter
+poll 10 test -f "$demo/newdir/made.lua" || fail "a: no file in the new folder"
+poll 10 nvim_on made.lua || fail "the new file did not open in nvim"
+say "a made the folder newdir/ (trailing /) and newdir/made.lua, opened in nvim"
+
+into_tree
+tree_key text:/ text:needle
+sleep 1.5
+shot 15-filter-needle
+tree_key enter
+poll 10 nvim_on needle.txt || fail "/needle did not find and open src/deep/er/nest/needle.txt"
+say "/ needle + ⏎: found src/deep/er/nest/needle.txt and opened it in nvim"
+
+into_tree
+tree_key text:Z text:I text:H
+sleep 0.8
+shot 16-hidden-ignored-shown
+tree_key text:g text:r
+poll 5 dialog_open || fail "r on the first row: no dialog"
+tree_key 0:cmd text:build2 enter
+poll 10 test -d "$demo/build2" || fail "I: the ignored folder build/ was not the first row"
+tree_key text:G text:k text:r
+poll 5 dialog_open || fail "r on .hidden: no dialog"
+tree_key 0:cmd text:.hidden2 enter
+poll 10 test -f "$demo/.hidden2" || fail "H: .hidden was not shown"
+tree_key text:H text:I
+say "I showed the git-ignored build/ (renamed to build2 from its row), H showed .hidden (renamed to .hidden2)"
+
+# An nvim whose <leader>e opens no explorer keeps its own mapping.
+cat > "$XDG_CONFIG_HOME/nvim/init.lua" <<'LUA'
+vim.keymap.set("n", "<leader>e", function() vim.g.edit_hit = 1 end, { desc = "Edit something" })
+LUA
+keys 14:cmd
+poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "cmd-e did not close the pair"
+"$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
+keys 14:cmd
+poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
+sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
+poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'maparg(\"<leader>e\",\"n\",0,1).desc' | grep -qx 'Edit something'" ||
+  fail "a <leader>e that opens no explorer was taken over"
+say "an nvim whose <leader>e is 'Edit something' keeps it"
+
+# --- 6c. tree = "nvim": cmd-e and Files open only nvim, with its explorer ---
+keys 14:cmd
+poll 10 panel_is hidden || fail "cmd-e did not close the pair"
+"$wrapper" app-setup tree nvim | tee -a "$log"
+"$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
+H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
+keys 14:cmd
+poll 15 sidebar_of "$tab_a" || fail "tree=nvim: cmd-e did not open nvim"
+sock_a=$(sock_of "$space" "$tab_a")
+panel_is hidden || fail "tree=nvim: the Files panel showed"
+poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'join(map(nvim_list_wins(), {_,w -> getbufvar(winbufnr(w), \"&filetype\")}), \",\")' | grep -q netrw" ||
+  fail "tree=nvim: nvim's own explorer did not open"
+sleep 0.8
+shot 17-tree-nvim-mode
+say "tree=nvim: cmd-e opened only the nvim pane, with nvim's explorer (netrw here) inside"
+files_button
+poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "tree=nvim: Files did not close nvim"
+poll 10 panel_is hidden || fail "tree=nvim: Files left the panel open"
+files_button
+poll 15 sidebar_of "$tab_a" || fail "tree=nvim: Files did not open nvim"
+poll 10 panel_is hidden || fail "tree=nvim: Files showed the panel"
+keys 14:cmd
+poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "tree=nvim: cmd-e did not close nvim"
+say "tree=nvim: Files and cmd-e toggle the nvim pane alone; the panel never stays"
+"$wrapper" app-setup tree native | tee -a "$log"
+
 # --- 7. closing tab B stops its daemon ----------------------------------------
 H do tab.close "{\"id\":\"$tab_b\",\"confirmed\":true}" >/dev/null
 poll 15 sh -c "! kill -0 $pid_b" || fail "tab B's daemon $pid_b survived its tab"
@@ -378,5 +531,5 @@ grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 H do space.new "{\"name\":\"after\",\"folder\":\"$demo\"}" >/dev/null
 files_button
 sleep 1.5
-shot 11-uninstalled-stock-files
+shot 20-uninstalled-stock-files
 say "PASS: every step"
