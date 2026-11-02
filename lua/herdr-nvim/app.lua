@@ -29,11 +29,21 @@ local function describe(map)
   return ((map.desc or "") .. " " .. (map.rhs or "")):lower()
 end
 
--- Whether `map` (maparg(..., true)) opens a file explorer.
+-- What names a known explorer in a mapping's description or rhs: Snacks'
+-- explorer (LazyVim's "Explorer Snacks (root dir)", `Snacks.explorer()`,
+-- `Snacks.picker.explorer()`), neo-tree (`:Neotree`, LazyVim's "Explorer
+-- NeoTree") and nvim-tree (`:NvimTreeToggle`). Never the bare word
+-- "explorer": a "Database Explorer" is not one.
+M.KNOWN_EXPLORERS = {
+  "explorer snacks", "snacks explorer", "snacks%.explorer", "snacks%.picker%.explorer",
+  "neo%-?tree", "nvim%-?tree",
+}
+
+-- Whether `map` (maparg(..., true)) opens a known file explorer.
 function M.is_explorer(map)
   if not map or vim.tbl_isempty(map) then return false end
   local text = describe(map)
-  for _, pattern in ipairs({ "explorer", "neo%-?tree", "nvim%-?tree", "nvimtree" }) do
+  for _, pattern in ipairs(M.KNOWN_EXPLORERS) do
     if text:find(pattern) then return true end
   end
   return false
