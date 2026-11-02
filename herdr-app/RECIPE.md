@@ -59,24 +59,29 @@ button still open and close both together.
 
 | Key | Does |
 |---|---|
-| `j`/`k`, ↓/↑, `g`/`G` | move; first/last |
+| `j`/`k`, ↓/↑ | move |
+| `g`/`G` | first / last row |
 | `l`, ⏎, → | open the file in the tab's nvim (it takes the keyboard), or open/close the folder |
 | `h`, ← | close the folder (the open one, else the row's) and stand on it |
 | `/` | find: type to fuzzy-search every file under the root (fff); ⏎ opens, Esc returns |
+| Backspace | root up a folder |
+| `.` | the row's folder becomes the root |
+| `~` | root: back to the tab's folder |
+| `q`, Esc | back to the tab's nvim (Snacks closes its window; here the pair closes with cmd-e) |
 | `a` | new file in the row's folder (a dialog); end with `/` for a folder; a new file opens in nvim |
-| `r` | rename (a path in the root; nvim's buffers and language servers follow) |
+| `r` | rename (a path in the root; nvim's buffers, unsaved edits and language servers follow) |
 | Tab | select the row (●) for `m`, `c`, `d`, `y` |
 | `m` | move the selected rows into the row's folder (confirm); with none selected, rename |
 | `c` | copy the selected rows into the row's folder (confirm); with none, copy to a new name |
 | `d` | delete (confirm); to the trash when the person's Snacks says so; their buffers close |
 | `y` / `p` | yank the paths into nvim's register / paste those files into the row's folder |
-| `H` / `I` | show hidden / git-ignored files (start as the person's Snacks explorer has them) |
-| Backspace / `.` | root up a folder / the row's folder becomes the root |
 | `o` | open with the system's app |
-| `Z` / `u` | close every folder / list again |
-| `q`, Esc | back to the tab's nvim (Snacks closes its window; here the pair closes with cmd-e) |
+| `H` | show hidden files (starts as the person's Snacks explorer has it) |
+| `I` | show git-ignored files (starts as the person's Snacks explorer has it) |
+| `Z` | close every folder |
+| `u` | list again |
+| `?` | every key, in a list |
 | the tree key (`space` `e`) | hide the tree, back to nvim (nvim stays) |
-| `~` / `?` | root: back to the tab's folder / every key, in a list |
 
 ## How it behaves
 

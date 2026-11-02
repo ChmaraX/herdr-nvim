@@ -12,6 +12,7 @@ import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
+import { ACTIONS } from "./tree-keys.js";
 import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
 
 // The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
@@ -395,43 +396,48 @@ export class Tree {
       cx.stop_propagation();
       return cx.notify();
     }
-    const row = rows[this.selected];
-    const move = (to) => {
+    const action = ACTIONS.get(k);
+    if (!action) return;
+    this.actions[action](rows[this.selected], rows, cx);
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // What each key does (tree-keys.js names them).
+  get actions() {
+    const move = (rows, to) => {
       this.revealSeq = (this.revealSeq ?? 0) + 1; // a reveal still on its way doesn't undo the move
       this.selected = Math.max(0, Math.min(rows.length - 1, to));
     };
-    switch (k) {
-      case "down": case "j": this.revealing = null; move(this.selected + 1); break;
-      case "up": case "k": this.revealing = null; move(this.selected - 1); break;
-      case "g": move(0); break;
-      case "G": move(rows.length - 1); break;
-      case "enter": case "l": case "right": cx.spawn(async (cx) => this.openRow(row, cx)); break;
-      case "h": case "left": this.closeRow(row, cx); break;
-      case "tab":
-        if (row) { this.picked.has(row.abs) ? this.picked.delete(row.abs) : this.picked.add(row.abs); move(this.selected + 1); }
-        break;
-      case "a": this.action("add", row, cx); break;
-      case "r": this.action("rename", row, cx); break;
-      case "m": this.action("move", row, cx); break;
-      case "c": this.action("copy", row, cx); break;
-      case "d": this.action("delete", row, cx); break;
-      case "y": this.action("yank", row, cx); break;
-      case "p": this.action("paste", row, cx); break;
-      case "o": if (row) systemOpen(row.abs); break;
-      case "H": this.model.showHidden = !this.model.showHidden; break;
-      case "I": this.model.showIgnored = !this.model.showIgnored; break;
-      case "Z": this.model.open.clear(); break;
-      case "u": cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }); break;
-      case ".": if (row) this.setRoot(this.dirOf(row), cx); break;
-      case "backspace": if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); break;
-      case "~": if (this.tabRoot) this.setRoot(this.tabRoot, cx); break;
-      case "?": this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); break;
-      case "/": this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; break;
-      case "escape": case "q": this.arrival = null; run("pane.go", { direction: "left" }); break;
-      default: return;
-    }
-    cx.stop_propagation();
-    cx.notify();
+    return {
+      down: (_row, rows) => { this.revealing = null; move(rows, this.selected + 1); },
+      up: (_row, rows) => { this.revealing = null; move(rows, this.selected - 1); },
+      first: (_row, rows) => move(rows, 0),
+      last: (_row, rows) => move(rows, rows.length - 1),
+      open: (row, _rows, cx) => cx.spawn(async (cx) => this.openRow(row, cx)),
+      close: (row, _rows, cx) => this.closeRow(row, cx),
+      pick: (row, rows) => {
+        if (row) { this.picked.has(row.abs) ? this.picked.delete(row.abs) : this.picked.add(row.abs); move(rows, this.selected + 1); }
+      },
+      add: (row, _rows, cx) => this.action("add", row, cx),
+      rename: (row, _rows, cx) => this.action("rename", row, cx),
+      move: (row, _rows, cx) => this.action("move", row, cx),
+      copy: (row, _rows, cx) => this.action("copy", row, cx),
+      delete: (row, _rows, cx) => this.action("delete", row, cx),
+      yank: (row, _rows, cx) => this.action("yank", row, cx),
+      paste: (row, _rows, cx) => this.action("paste", row, cx),
+      systemOpen: (row) => { if (row) systemOpen(row.abs); },
+      hidden: () => { this.model.showHidden = !this.model.showHidden; },
+      ignored: () => { this.model.showIgnored = !this.model.showIgnored; },
+      collapse: () => this.model.open.clear(),
+      reload: (_row, _rows, cx) => cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }),
+      rootHere: (row, _rows, cx) => { if (row) this.setRoot(this.dirOf(row), cx); },
+      rootUp: (_row, _rows, cx) => { if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); },
+      rootHome: (_row, _rows, cx) => { if (this.tabRoot) this.setRoot(this.tabRoot, cx); },
+      help: () => { this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); },
+      find: () => { this.filter = { query: "", results: [], seq: 0 }; this.selected = 0; },
+      leave: () => { this.arrival = null; run("pane.go", { direction: "left" }); },
+    };
   }
 
   // Typing finds files anywhere under the root (fff); ⏎ opens, Esc returns to the tree.

@@ -173,6 +173,10 @@ echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on ship
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
 wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
 H check "$HERDR_APP_HOME/mods/herdr-nvim" | tee -a "$log"
+# RECIPE.md's key table is the tree's key table (tree-keys.js).
+node "$here/../mods/herdr-nvim/tree-keys.js" > "$root/keys-table.md"
+"$py" -c 'import sys; sys.exit(open(sys.argv[2]).read().find(open(sys.argv[1]).read().strip()) < 0)' "$root/keys-table.md" "$here/../RECIPE.md" ||
+  fail "RECIPE.md's key table differs from mods/herdr-nvim/tree-keys.js (node mods/herdr-nvim/tree-keys.js prints it)"
 again=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | grep '^layout:' || true)
 echo "$again" | grep -q 'already uses herdr-nvim' || fail "a second install is not a no-op: $again"
 say "second install: $again"

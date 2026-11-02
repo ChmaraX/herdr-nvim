@@ -1,25 +1,12 @@
-// The tree's key list (`?` in the tree): a dialog of this mod with props
-// {help: true}, grouped like Snacks' help, in two columns (Navigate | Files,
+// The tree's key list (`?` in the tree, from tree-keys.js): a dialog of this
+// mod with props {help: true}, grouped like Snacks' help, in two columns (Navigate | Files,
 // View) so it fits a short window. ?, Esc or q closes it, and the tree
 // gets the keyboard back ("focus").
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { closeOverlay, openOverlay, props, theme } from "herdr";
-
-export const GROUPS = [
-  ["Navigate", [
-    ["j k  ↓ ↑", "move"], ["g G", "first / last"], ["l  ⏎  →", "open in nvim, or open a folder"],
-    ["h  ←", "close the folder"], ["/", "find a file"], ["⌫", "root: up a folder"],
-    [".", "root: this folder"], ["~", "root: back to the tab's folder"], ["q  Esc", "back to nvim"],
-  ]],
-  ["Files", [
-    ["a", "new file (end with / for a folder)"], ["r", "rename"], ["Tab", "select"],
-    ["m", "move selected here (none: rename)"], ["c", "copy selected here (none: copy to a name)"],
-    ["d", "delete"], ["y p", "yank paths / paste them here"], ["o", "open with the system app"],
-  ]],
-  ["View", [["H", "hidden files"], ["I", "git-ignored files"], ["Z", "close every folder"], ["u", "list again"], ["?", "this list"]]],
-];
+import { helpGroups } from "./tree-keys.js";
 
 // The tree key's presses as the list shows them: ["space", "e"] -> "space e".
 export function keyLabel(presses) {
@@ -30,13 +17,6 @@ export function openKeyHelp(treeKey) {
   openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 780, props: { help: true, treeKey: keyLabel(treeKey) } });
 }
 
-// The groups, with the tree key (herdr-nvim's `[app] tree_key`) when it has one.
-export function groups(treeKey) {
-  if (!treeKey) return GROUPS;
-  const [nav, ...rest] = GROUPS;
-  return [[nav[0], [...nav[1], [treeKey, "hide the tree, back to nvim (in nvim: show it)"]]], ...rest];
-}
-
 export class KeyHelp {
   constructor(cx) {
     this.handle = cx.focus_handle();
@@ -44,7 +24,7 @@ export class KeyHelp {
   }
 
   render() {
-    const t = theme(), shown = groups(props()?.treeKey);
+    const t = theme(), shown = helpGroups(props()?.treeKey);
     const close = () => closeOverlay(props().overlay);
     const group = ([title, keys]) => v_flex().gap(4)
       .child(div().pt(6).text_size(11).font_semibold().text_color(t.dim).child(title.toUpperCase()))
