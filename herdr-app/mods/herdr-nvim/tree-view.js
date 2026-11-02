@@ -19,22 +19,12 @@ import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
 // with LazyVim's leader.
 const TREE_KEY = ["space", "e"];
 import { GIT_EVERY_MS, TreeModel, dirname } from "./tree-model.js";
+import { KeyboardHandover, TabRoots } from "./tree-parts.js";
 
 const HINT = "? keys";
 
-// After the app hands the tree the keyboard (`"focus"`), how long the tree
-// makes sure it holds it: checks every ARRIVAL_STEP_MS, at most ARRIVAL_STEPS.
-const ARRIVAL_STEP_MS = 100;
-const ARRIVAL_STEPS = 20;
-
 // `/` finds once typing pauses this long, one search at a time.
 const FIND_PAUSE_MS = 120;
-
-// Where the app's focus is, as far as a mod can see it.
-function focusKey() {
-  const f = focused();
-  return f ? `${f.space}|${f.tab}|${f.pane}|${f.terminal}` : "";
-}
 
 // The focused tab and its folder. While this tree has the keyboard there is
 // no focused pane: the tab's folder stays what it was.
@@ -54,7 +44,8 @@ export class Tree {
     this.selected = 0;
     this.picked = new Set(); // Tab-selected paths
     this.filter = null; // {query, results, seq}
-    this.roots = {}; // tab -> {tabRoot, root}: the root the person chose, per tab
+    this.roots = new TabRoots();
+    this.handover = new KeyboardHandover(this.handle, () => this.nvimFocusStamp());
     this.revealed = shared("herdr-nvim.reveal")?.n ?? 0;
     cx.spawn(async (cx) => {
       for (;;) {
@@ -66,7 +57,7 @@ export class Tree {
           // before the tree knows nvim's file, picks it (else the first row).
           const keep = this.overlayOpen || this.pressing || this.current != null;
           this.overlayOpen = this.pressing = false;
-          this.takeKeyboard(cx);
+          this.handover.arrive(cx);
           cx.notify();
           this.readTreeKey();
           // Not awaited: the loop stays free for the next "focus".
@@ -109,8 +100,7 @@ export class Tree {
     if (this.rootTab !== tab || (this.shownTab === tab && this.tabRoot === tabRoot)) return;
     this.shownTab = tab;
     this.tabRoot = tabRoot;
-    const saved = this.roots[tab];
-    this.setRoot(saved && saved.tabRoot === tabRoot ? saved.root : tabRoot, cx);
+    this.setRoot(this.roots.rootFor(tab, tabRoot), cx);
     cx.notify();
   }
 
@@ -123,7 +113,7 @@ export class Tree {
   // next setRoot (`rootGen`); the same root again (two tabs on one repo, or
   // back to a tab) keeps the loop, the listing and the selection.
   setRoot(root, cx) {
-    if (this.rootTab && root) this.roots[this.rootTab] = { tabRoot: this.tabRoot, root };
+    if (this.rootTab && root) this.roots.remember(this.rootTab, this.tabRoot, root);
     if (root && root === this.model.root && !this.error) return;
     const gen = (this.rootGen = (this.rootGen ?? 0) + 1);
     const keep = { hidden: this.model.showHidden, ignored: this.model.showIgnored };
@@ -187,44 +177,6 @@ export class Tree {
         if (path && path !== this.current) await this.reveal(path, cx);
         cx.notify(); // nvim took the keyboard, maybe: draw the focus again
       }
-    });
-  }
-
-  // The app gave this tree the keyboard (`pane.go`, cmd-shift-e, the tree
-  // key): take it, and make sure it took. The app draws the tree as focused
-  // from that moment, but the keys reach the tree only while its own handle
-  // has GPUI's focus, and a handover can be lost (reported from the person's app:
-  // highlighted, no keys until a click). So, for this arrival only, the tree
-  // takes the keyboard again while it doesn't hold it, and stops as soon as it
-  // has held it twice in a row, or the person has gone elsewhere: another
-  // pane, tab or space (`focused()` changed), the tab's nvim got the keyboard
-  // (its FocusGained stamp changed), they left with q / Esc / the tree key, or
-  // another "focus" arrived. Never on render, never after it settled.
-  //
-  // The cause is the app's: it draws a pane's focus ring before the view
-  // that should hold the keyboard does. Fixed upstream after 0.1.12
-  // (herdrdev/herdr-app 558cf56, "hide pane focus ring when another view
-  // holds keyboard"; herdrdev/herdr-app#362). Remove this retry once a
-  // release has that fix.
-  takeKeyboard(cx) {
-    const arrival = (this.arrival = { where: focusKey() });
-    try { this.handle.focus(); } catch {}
-    cx.spawn(async (cx) => {
-      arrival.nvim = await this.nvimFocusStamp();
-      let held = 0;
-      for (let step = 0; step < ARRIVAL_STEPS && this.arrival === arrival; step++) {
-        await cx.sleep(ARRIVAL_STEP_MS);
-        if (this.arrival !== arrival || focusKey() !== arrival.where) break;
-        if ((await this.nvimFocusStamp()) !== arrival.nvim) break;
-        if (this.handle.is_focused()) {
-          if (++held >= 2) break;
-          continue;
-        }
-        held = 0;
-        try { this.handle.focus(); } catch {}
-        cx.notify();
-      }
-      if (this.arrival === arrival) this.arrival = null;
     });
   }
 
@@ -401,7 +353,7 @@ export class Tree {
   }
 
   hideToNvim() {
-    this.arrival = null;
+    this.handover.cancel();
     const tab = this.place?.tab, p = panelState(layout());
     if (tab && p?.files) hideTreeKeepNvim(p, tab, nvimPanes(tab)[0]);
   }
@@ -455,7 +407,7 @@ export class Tree {
       rootHome: (_row, _rows, cx) => { if (this.tabRoot) this.setRoot(this.tabRoot, cx); },
       help: () => { this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); },
       find: () => { this.filter = { query: "", results: [], seq: 0, root: this.findRoot() }; this.selected = 0; },
-      leave: () => { this.arrival = null; run("pane.go", { direction: "left" }); },
+      leave: () => { this.handover.cancel(); run("pane.go", { direction: "left" }); },
     };
   }
 
