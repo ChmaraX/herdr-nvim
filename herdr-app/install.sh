@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install herdr-nvim into the Herdr desktop app, or take it out again.
+# A convenience helper: does what RECIPE.md describes, the way AGENTS.md says
+# to add a mod, so an agent can do the same by hand.
 #
 #   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--panel-width PX] [--tree native|nvim]
 #   herdr-app/install.sh --uninstall [--home DIR] [--app-bin PATH]
@@ -7,15 +8,18 @@
 # The Herdr app must be open on that home (default: $HERDR_APP_HOME, else
 # ~/.config/herdr-app). Install builds herdr-nvim, copies its runtime (binary +
 # lua) to ${XDG_DATA_HOME:-~/.local/share}/herdr-nvim/app, copies the two mods
-# into <home>/mods with a wrapper at mods/herdr-nvim/bin/herdr-nvim, adds the
-# keys from keys.json where they're free, and patches the layout (cloning
-# Herdr's own layout as <name>-mods first): the Files slot shows herdr-nvim's
-# tree, an empty floating controller opens the tab's nvim with it, and the side
-# panel is --panel-width wide (default 300, unless the layout file already sets
-# a width of its own). --tree writes [app] tree into herdr-nvim's config
-# (native: the native tree beside nvim, the default; nvim: nvim's own explorer
-# inside the nvim pane). Run it again to upgrade in place. Uninstall undoes
-# each step and stops the app's nvim daemons.
+# into <home>/mods with a wrapper at mods/herdr-nvim/bin/herdr-nvim, runs
+# `herdr-app check` on them, merges keys.json into the person's keys (only
+# free keys: one they already use is kept and reported), and makes RECIPE.md's
+# layout changes in the person's personal layout, the one on screen. On one
+# of Herdr's own layouts it uses the person's copy of it, or clones it once
+# (`layout.clone`, `<name>-copy`). The side panel is --panel-width wide
+# (default 300, unless the layout file sets a width of its own). --tree writes
+# [app] tree into herdr-nvim's config (native: the native tree beside nvim, the
+# default; nvim: nvim's own explorer inside the nvim pane). Run it again to
+# upgrade in place. Uninstall takes out exactly those edits (keys still bound
+# to herdr-nvim, its layout changes in every personal layout; no layout is
+# deleted or switched), the mods and the runtime, and stops the app's nvims.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,7 +40,7 @@ while [ $# -gt 0 ]; do
     --app-bin) app_bin=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
     --tree) tree=$2; shift ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
