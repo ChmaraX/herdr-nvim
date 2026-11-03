@@ -12,7 +12,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { appHome, exec, notify, panes, props, readTextFile, shared, spaces, terminals, theme, watchFolder } from "herdr";
+import { appHome, exec, notify, panes, props, readTextFile, setShared, shared, spaces, terminals, theme, watchFolder } from "herdr";
 import Pane from "./pane-base.js";
 
 const KINDS = {
@@ -84,8 +84,13 @@ export default class Header extends Pane {
     this.busy = true;
     cx.notify();
     const args = r.role === "nvim" ? ["app-preview", "--file", this.file] : ["app-source"];
+    // For herdr-nvim's controller (sync.js): mid-swap, the tab shows neither
+    // pane for a moment; that is not nvim closing (which would hide the tree).
+    const swap = { tab: r.tab, at: Date.now(), done: null };
+    setShared("herdr-nvim.swap", swap);
     cx.spawn(async (cx) => {
       const out = await exec(bin(), [...args, "--ctx", this.ctxOf(r)]).catch((e) => ({ code: 1, stderr: String(e) }));
+      setShared("herdr-nvim.swap", { ...swap, done: Date.now() });
       if (out.code !== 0) notify({ title: `herdr-nvim ${args[0]} failed`, body: (out.stderr || out.stdout || "").trim().slice(-400), level: "error" });
       this.busy = false;
       cx.notify();

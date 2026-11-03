@@ -39,6 +39,16 @@ import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
+// A Preview / Source swap in `tab` (the pane header, mods/herdr-nvim-header):
+// while it runs, and a moment after (the app's pane and terminal lists catch
+// up), the tab may show neither nvim nor its preview. Nothing is decided then.
+const SWAP_SETTLE_MS = 800, SWAP_MAX_MS = 10000;
+function swapping(tab) {
+  const s = shared("herdr-nvim.swap");
+  if (!s || s.tab !== tab || Date.now() - s.at > SWAP_MAX_MS) return false;
+  return !s.done || Date.now() - s.done < SWAP_SETTLE_MS;
+}
+
 export class Sync {
   constructor(cx) {
     this.kept = new Set(); // tabs whose tree the tree key hid, nvim kept
@@ -80,6 +90,7 @@ export class Sync {
     this.focusTree();
     if (this.busy) return;
     const p = panelState(layout()), f = focused();
+    if (f?.tab && swapping(f.tab)) return;
     if (!p || !f?.tab) {
       this.prev = null;
       return;
