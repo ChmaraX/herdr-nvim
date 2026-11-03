@@ -183,18 +183,32 @@ them, `?` lists them, and this table is that file's output
   `{"terminal": "tN"}`; the panel opens with it). It needs no herdr-nvim mod
   copy on screen.
 
-- **Preview / Source** swap in place (`herdr-nvim app-preview --file F`,
-  `app-source`): the preview splits nvim's pane, then nvim's pane closes,
-  so the preview has nvim's exact place; Source does the reverse. nvim
-  keeps running meanwhile (its daemon), with its buffers, cursor, undo and
-  unsaved edits. Enter on an image or SVG in the tree opens the preview
-  directly; markdown and everything else open in nvim. Opening any file in
-  nvim (the tree, `cmd-o`, `open`) while the preview shows brings nvim back
-  with it. The preview reloads when its file changes on disk (saving in
-  nvim). For the pair the preview counts as nvim's pane: Files closes it
-  with the tree and the next Files shows it again (remembered per tab in
-  `<state dir>/app-preview/<tab key>`); a tab switch keeps each tab's.
+- **Preview / Source** swap in place: the pane header's button (and Enter
+  on an image or SVG in the tree) asks herdr-nvim's controller for the swap
+  (`herdr-nvim.swap:<tab>:<file>`; no file: Source). The controller splits
+  the old pane across the split that made nvim's slot (`app-config`'s
+  `across`: down for a side nvim), so both nest in the slot, and closes the
+  old pane once the new one is in the tab: the new one has the old one's
+  exact size. A new pane that doesn't come in 3 s closes nothing and says
+  so. nvim keeps running meanwhile (its daemon), with its buffers, cursor,
+  undo and unsaved edits; Source's new pane runs `herdr-nvim sidebar
+  --refresh`, which restarts a stale clean nvim first, as Files does. Until
+  the swap is done the controller decides nothing else, so the moment with
+  neither pane never closes the tree. Opening any file in nvim (the tree,
+  `cmd-o`, `open`) while the preview shows brings nvim back with it (the
+  same across split, by herdr-nvim). The preview reloads when its file
+  changes on disk (saving in nvim). For the pair the preview counts as
+  nvim's pane: Files closes it with the tree and the next Files shows it
+  again (remembered per tab in `<state dir>/app-preview/<tab key>`); a tab
+  switch keeps each tab's. The swap keeps the size while nvim's pane is the
+  one the install made; a pane the person split by hand may not keep it.
   Layouts without pane headers get no button. No keys.
+- A main window on something that isn't a file (`:help`, a terminal, a new
+  buffer) has no current file: the tree keeps its selection and the header
+  offers no Preview; floating windows (pickers, hovers) change nothing.
+- The tree reaches nvim and the panel with `pane.go` left and right: the
+  Files panel must be right of nvim, as in Herdr's layouts and the panel the
+  install adds.
 
 ## Built from
 
@@ -264,8 +278,24 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     title bar. A dialog focuses its first terminal; it closes when the picker
     exits. `pick-file --list` prints the candidates instead (what the e2e
     checks).
+  - props `{preview, tab, cwd}` → `preview.js`: the file rendered (a
+    herdr-nvim mod pane is only ever this). Images are copied into
+    `mods/herdr-nvim/.cache` (hidden, so writing there reloads no mod),
+    named by content, the newest 40 kept, and drawn with `image()` (which
+    takes paths inside the app home).
   - `lib.js` runs the wrapper `<appHome>/mods/herdr-nvim/bin/herdr-nvim` and
     posts errors and notices with `notify`.
+- **Shared values** (`setShared`, every copy sees them):
+  `herdr-nvim.tree` (the `tree` setting), `herdr-nvim.reveal` (the tree
+  selects a path, or nvim's file for null), `herdr-nvim.keep-nvim` (the tree
+  key's hide keeps nvim, 10 s), `herdr-nvim.tree-laid-out` (the tree's size
+  changed), `herdr-nvim.previews` (the file each tab's preview shows, for its
+  header; only tabs with a preview), `herdr-nvim.preview-cache` (the image
+  copies, newest first).
+- **`herdr-nvim-header`** (the layout's pane header, `pane-base.js` + one
+  button): the button runs `herdr-nvim.swap:<tab>:<file>` (Preview) or
+  `herdr-nvim.swap:<tab>:` (Source). It learns nvim's file from
+  `app-current` once, then watches that state file.
 - **The wrapper** (written by the install) exports `HERDR_NVIM_HOST=app`,
   `HERDR_NVIM_SELF`, `HERDR_APP_BIN`, `HERDR_APP_HOME` and the plugin root,
   then execs the herdr-nvim binary (Rust, this repo) from its runtime,
@@ -280,8 +310,9 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     (`terminal.list`); closes it with `pane.close`, or `pane.split {direction:
     right, pane: <the tab's root node id from the core's herdr-app document>,
     argv: [wrapper, sidebar, --cwd, dir]}`.
-  - `sidebar` (in the new pane): reads its tab from its `herdr.space`/
-    `herdr.tab` labels, starts the tab's headless nvim daemon if needed
+  - `sidebar [--refresh]` (in the new pane): reads its tab from its `herdr.space`/
+    `herdr.tab` labels, with `--refresh` (a pane the mod opened) restarts a
+    stale clean nvim, starts the tab's headless nvim daemon if needed
     (socket `…/herdr-nvim/app/<space12>_<tab12>.sock`, `titlestring` "nvim ·
     %t"), starts the watcher, and execs `nvim --remote-ui`.
   - `pick-file`: finds the agent's session log from `terminal.get` (its
@@ -315,10 +346,12 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   install's `cmd-o` → `mod.open:herdr-nvim-pick` counts as free and is
   replaced): `cmd-e` → `mod.open:herdr-nvim`, `cmd-o` → `herdr-nvim.pick`,
   `cmd-shift-e` → `herdr-nvim.reveal` (commands the controller takes).
-- **Install** (`install.sh`): builds the runtime into its stamped folder,
-  makes the mod folder whole beside the live one (with the wrapper), runs
-  `herdr-app check` on it, then swaps it in by a rename (the old one comes
-  back if that fails). It refuses to replace a `mods/herdr-nvim` it didn't
+- **Install** (`install.sh`): checks `--tree`, builds the runtime into its
+  stamped folder, checks the width and the layout patch in memory
+  (`app-setup check`), makes every mod folder whole beside the live one
+  (with the wrapper) and runs `herdr-app check` on each, then swaps them all
+  in by renames (the old ones come back if one fails). Nothing of the
+  person's changes before all of that passed. It refuses to replace a `mods/herdr-nvim` it didn't
   make (no wrapper of its own inside). Uninstall runs through a runtime's
   binary, not the wrapper, so a half-replaced mod folder can't block it.
 
@@ -423,5 +456,11 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   that layout exactly as it was.
 - Uninstall: keys removed, the layout's Files is the shipped browser again,
   every layout kept and the one on screen still shown.
+- Preview on nvim's `src/notes.md` puts the rendered file in nvim's place
+  at nvim's size, the tree shown the whole time; Source brings nvim back on
+  the same daemon, same size; Preview → Source twice leaves the slot's size
+  as it was; Files closes the preview and opens it again; Enter on an image
+  in the tree opens its preview. (Not in `run.sh` yet.)
 
-`herdr-app/e2e/run.sh` does every check above in a private app and core.
+`herdr-app/e2e/run.sh` does every check above in a private app and core,
+except the Preview line.

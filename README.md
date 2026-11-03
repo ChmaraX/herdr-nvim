@@ -78,7 +78,9 @@ hides the tree like LazyVim's explorer, nvim staying open. The tree has LazyVim'
 explorer keys (find, new, rename, move, copy, delete, …), done by the tab's
 nvim so buffers and language servers follow. `cmd-o` lists the files the
 tab's agent read and edited (from its pi or Claude Code session log), then
-the repo's changes; the annotations work as below. With the app open:
+the repo's changes; the annotations work as below. On nvim's pane header,
+a **Preview** button shows a markdown file, an image or an SVG rendered in
+nvim's place (**Source** brings nvim back as it was). With the app open:
 
 ```sh
 herdr-app/install.sh                    # install, or upgrade in place
@@ -100,7 +102,14 @@ nvim-tree), mapped when free, and left alone when it does anything else.
 What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 Other mods open a file in a tab's nvim with
 `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
-`herdr-app/e2e/run.sh` checks all of it in a private app and core.
+`herdr-app/e2e/run.sh` checks all of it in a private app and core (Preview
+not yet).
+
+The port also changed a few things the TUI plugin does:
+`herdr-nvim daemons stop` and the TUI's daemon cleanup keep a daemon that
+still listens but doesn't answer (reported as an error) instead of dropping
+its records, the `daemons` list gives each daemon 2 s to answer, and the
+picker's finisher writes its errors to `finisher.log` in the state folder.
 
 ## The sidebar
 
