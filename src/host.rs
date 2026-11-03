@@ -78,6 +78,11 @@ pub trait HostOps: Sync {
     fn show_pick(&self, pick: Pick) -> Result<()>;
     /// The tab's nvim pane, opened if it isn't.
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened>;
+    /// Show `path` rendered instead of in nvim, when this host can and nvim
+    /// can't show it (an image in the Herdr app). Whether it did.
+    fn preview(&self, _ctx: &Ctx, _path: &str) -> Result<bool> {
+        Ok(false)
+    }
     /// Give the tab's nvim pane the keyboard. Best-effort: says why on stderr.
     fn focus(&self, pane: &str);
     /// What a daemon for `tab` gets on top of the shared command line.

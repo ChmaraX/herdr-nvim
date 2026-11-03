@@ -45,6 +45,21 @@ impl HostOps for App {
         super::sidebar::ensure_open(ctx)
     }
 
+    /// An image (or SVG) goes to the controller's swap (sync.js
+    /// `startSwap`): rendered in nvim's place, nvim kept running.
+    fn preview(&self, ctx: &Ctx, path: &str) -> Result<bool> {
+        if !super::sidebar::is_image(path) {
+            return Ok(false);
+        }
+        let command = format!(
+            "herdr-nvim.swap:{}:{}",
+            super::raw_tab(ctx.tab.as_str()),
+            super::sidebar::uri_component(path)
+        );
+        super::cli::app_do(&command, &json!({}))?;
+        Ok(true)
+    }
+
     fn focus(&self, pane: &str) {
         if let Err(error) = super::sidebar::focus(pane) {
             eprintln!("herdr-nvim: could not focus sidebar {pane}: {error:#}");

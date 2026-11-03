@@ -11,7 +11,7 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, panes, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 
 const KINDS = {
@@ -53,13 +53,43 @@ async function cached(bytes, ext) {
   return `${CACHE}/${name}`;
 }
 
+// A mod reads files only inside the home folder: one elsewhere (/tmp, a
+// screenshot under /private/var/folders) is read through a process.
+async function readText(file) {
+  try {
+    return await fs.readFile(file, "utf8");
+  } catch {
+    const r = await exec("cat", [file]);
+    if (r.code !== 0) throw new Error(r.stderr);
+    return r.stdout;
+  }
+}
+
+async function readBytes(file) {
+  try {
+    return await fs.readFile(file);
+  } catch {
+    // Copied into the cache (inside the app home), read there, then gone.
+    const dir = `${appHome()}/${CACHE}`;
+    await fs.mkdir(dir, { recursive: true });
+    const copy = `${dir}/.copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const r = await exec("cp", [file, copy]);
+    if (r.code !== 0) throw new Error(r.stderr);
+    try {
+      return await fs.readFile(copy);
+    } finally {
+      await fs.unlink(copy).catch(() => {});
+    }
+  }
+}
+
 // {kind, text} / {kind, src}, or {error}.
 async function load(file) {
   const kind = previewKind(file);
   if (!kind) return { error: "Can't preview this kind of file." };
   let data;
   try {
-    data = kind === "markdown" ? await fs.readFile(file, "utf8") : await fs.readFile(file);
+    data = kind === "markdown" ? await readText(file) : await readBytes(file);
   } catch {
     return { error: "The file is gone." };
   }

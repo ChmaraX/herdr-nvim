@@ -158,6 +158,33 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
     Ok(json!({"preview": pane.unwrap_or(json!(true))}))
 }
 
+/// Pure: whether the preview shows `path` as an image (the mods' list:
+/// preview.js `KINDS`), which nvim can't show.
+pub(crate) fn is_image(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(
+        ext.as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg")
+    )
+}
+
+/// Pure: `text` as JavaScript's `encodeURIComponent` writes it (what the
+/// controller decodes from a `herdr-nvim.swap:<tab>:<file>` command).
+pub(crate) fn uri_component(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// The direction to split nvim's pane (or its preview) in for a swap that
 /// keeps its place: across the split that made the slot, so both nest in
 /// the slot and the new pane keeps its size when the old one closes (along
@@ -347,6 +374,13 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_path_reaches_the_controller_as_encodeuricomponent_writes_it() {
+        assert_eq!(uri_component("/a b/it's:x.png"), "%2Fa%20b%2Fit's%3Ax.png");
+        assert_eq!(uri_component("/é.png"), "%2F%C3%A9.png");
+        assert!(is_image("/x/Shot.PNG") && is_image("/x/a.svg") && !is_image("/x/a.md"));
     }
 
     #[test]

@@ -284,6 +284,11 @@ pub(crate) fn open_in_sidebar_at(
     col: Option<u32>,
     focus: bool,
 ) -> Result<Opened> {
+    let host = host::ops();
+    // A file nvim can't show (an image), shown rendered where the host can.
+    if host.preview(ctx, path)? {
+        return Ok(Opened::default());
+    }
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
@@ -292,7 +297,6 @@ pub(crate) fn open_in_sidebar_at(
     let config = config::load();
     let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
 
-    let host = host::ops();
     let opened = host.ensure_sidebar(ctx)?;
 
     open_in_nvim(&socket, path, line, col, &config.sidebar)?;

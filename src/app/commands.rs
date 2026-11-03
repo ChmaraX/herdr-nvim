@@ -149,6 +149,11 @@ pub(crate) fn open_cmd() -> Result<()> {
         bail!("no such file: {}", path.display());
     }
     let opened = bridge::open_in_sidebar_at(&ctx, &path.to_string_lossy(), line, col, focus)?;
+    // An image went to the preview (`HostOps::preview`): no terminal.
+    if opened.pane.is_empty() {
+        println!("{}", json!({"preview": path}));
+        return Ok(());
+    }
     let mut made = json!({"terminal": opened.pane});
     if let Some(notice) = opened.notice {
         made["notice"] = json!(notice);

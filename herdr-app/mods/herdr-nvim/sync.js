@@ -60,9 +60,10 @@ export class Sync {
         const command = await nextCommand();
         // `reveal:<tab>` / `toggle:<tab>` come from that tab's nvim
         // (`app-reveal`): only for the tab on screen (the panel is the
-        // window's), never for one the person has left meanwhile.
+        // window's), never for one the person has left meanwhile. A swap
+        // names its tab and may be for any (`open --tab` of an image).
         const [verb, tab] = command.split(":");
-        if (tab && focused()?.tab !== tab) continue;
+        if (tab && verb !== "swap" && focused()?.tab !== tab) continue;
         if (verb === "pick") pick(place());
         else if (verb === "swap") await this.startSwap(tab, decodeURIComponent(command.split(":").slice(2).join(":")), cx);
         else if (verb === "reveal") await this.reveal(cx);
@@ -135,7 +136,11 @@ export class Sync {
   async startSwap(tab, file, cx) {
     if (this.busy || this.swapping) return;
     const { across } = await appConfig().catch(() => ({ across: "down" }));
-    const at = place();
+    // The tab the swap is for (it may not be the one on screen).
+    const here = place();
+    const at = here?.tab === tab ? here
+      : { space: spaces().find((s) => s.tabs.some((t) => t.id === tab))?.id ?? null, tab, terminal: null, cwd: null };
+    if (!at.space) return;
     if (file) {
       // In nvim's place, or the preview's (another file to preview).
       const terminal = nvimPanes(tab)[0];

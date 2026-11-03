@@ -183,8 +183,9 @@ them, `?` lists them, and this table is that file's output
   `{"terminal": "tN"}`; the panel opens with it). It needs no herdr-nvim mod
   copy on screen.
 
-- **Preview / Source** swap in place: the pane header's button (and Enter
-  on an image or SVG in the tree) asks herdr-nvim's controller for the swap
+- **Preview / Source** swap in place: the pane header's button (and an
+  image or SVG opened any way: Enter in the tree, `cmd-o`, `herdr-nvim open`
+  from gitview or a link, which nvim can't show) asks herdr-nvim's controller for the swap
   (`herdr-nvim.swap:<tab>:<file>`; no file: Source). The controller splits
   the old pane across the split that made nvim's slot (`app-config`'s
   `across`: down for a side nvim), so both nest in the slot, and closes the
@@ -282,7 +283,10 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     history herdr-core scrolls an idle full-screen program such as pi back and
     forth, which took 5-6 s per `cmd-o`.
   - props `{preview, tab, cwd}` → `preview.js`: the file rendered (a
-    herdr-nvim mod pane is only ever this). Images are copied into
+    herdr-nvim mod pane is only ever this). A mod reads files only inside
+    the home folder, so a file elsewhere (`/tmp`, a screenshot under
+    `/private/var/folders`) is read with `cat`, or copied with `cp` into the
+    cache first. Images are copied into
     `mods/herdr-nvim/.cache` (hidden, so writing there reloads no mod),
     named by content, the newest 40 kept, and drawn with `image()` (which
     takes paths inside the app home).
