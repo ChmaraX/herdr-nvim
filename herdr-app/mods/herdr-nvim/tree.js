@@ -6,39 +6,49 @@ import { exec } from "herdr";
 
 export const PER_FOLDER = 500;
 
+// One process per folder: its entries ("d"/"f" + name), then an "x" record,
+// then the names git ignores there (`check-ignore -z`, nothing outside a repo).
 const LIST = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
   + 'name=${p##*/}; [ "$name" = .git ] && continue; '
   + 'if [ -d "$p" ] && [ ! -L "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; '
-  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$1"';
+  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$1" || exit 1; printf "x\\0x\\0"; '
+  + 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+  + 'name=${p##*/}; [ "$name" = .git ] && continue; printf "%s\\0" "$name"; '
+  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done | git -C "$1" check-ignore -z --stdin 2>/dev/null; exit 0';
 
-// Folders first, then by name.
+// {entries: folders first, then by name; ignored: the names git ignores}.
 export async function listFolder(path) {
   const r = await exec("sh", ["-c", LIST, "herdr-nvim", path]);
   if (r.code !== 0) throw new Error(r.stderr.trim() || `Cannot list ${path}`);
-  const fields = r.stdout.split("\0"), out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
-  return out.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
+  const fields = r.stdout.split("\0"), entries = [];
+  let i = 0;
+  for (; i + 1 < fields.length && fields[i] !== "x"; i += 2) entries.push({ name: fields[i + 1], dir: fields[i] === "d" });
+  const ignored = new Set(fields.slice(i + 2).filter(Boolean).map((name) => name.replace(/\/$/, "")));
+  entries.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
+  return { entries, ignored };
+}
+
+// A folder's repo top (null outside one), asked once per folder.
+const tops = new Map();
+async function topOf(cwd) {
+  if (!tops.has(cwd)) {
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd }).catch(() => null);
+    tops.set(cwd, top?.code === 0 ? top.stdout.trim() : null);
+  }
+  return tops.get(cwd);
 }
 
 // Absolute path -> "M" | "A" | "D" | "U" for files git reports, {} outside a repo.
 export async function gitMarks(cwd) {
-  const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd }).catch(() => null);
-  if (top?.code !== 0) return {};
+  const top = await topOf(cwd);
+  if (!top) return {};
   // Writes nothing under .git, so the folder watch doesn't fire again.
   const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal"], { cwd }).catch(() => null);
   const marks = {};
   if (status?.code !== 0) return marks;
   for (const entry of status.stdout.split("\0").filter(Boolean)) {
     const xy = entry.slice(0, 2);
-    marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+    marks[`${top}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
   }
   return marks;
-}
-
-// The names in `dir` that git ignores (none outside a repo).
-export async function ignoredIn(dir, names) {
-  if (!names.length) return new Set();
-  const r = await exec("git", ["-C", dir, "check-ignore", "--", ...names]).catch(() => null);
-  if (!r || (r.code !== 0 && r.code !== 1)) return new Set();
-  return new Set(r.stdout.split("\n").filter(Boolean).map((line) => line.replace(/\/$/, "")));
 }

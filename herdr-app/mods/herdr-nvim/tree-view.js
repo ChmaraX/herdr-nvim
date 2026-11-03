@@ -6,7 +6,7 @@
 // keyboard back with q / Esc.
 
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
 import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
 import { previewKind } from "./preview.js";
 import { nvim } from "./lib.js";
@@ -40,6 +40,8 @@ function place(previous) {
 export class Tree {
   constructor(cx) {
     this.handle = cx.focus_handle();
+    this.scroll = VirtualListScrollHandle.new();
+    this.scrolledTo = null; // the selection last scrolled into view
     this.model = new TreeModel();
     this.place = null;
     this.selected = 0;
@@ -171,12 +173,19 @@ export class Tree {
       this.readTreeKey();
       if (file) await this.reveal(file, cx);
       if (!watch) return;
+      // The folder holds every tab's file: only this tab's wakes the tree
+      // (a batch naming the folder itself may be anything), and it redraws
+      // only for a new file or a new FocusGained.
+      let seen = await this.nvimState();
       while (this.currentGen === gen) {
-        await watchFolder(dirname(watch));
+        const changed = await watchFolder(dirname(watch));
         if (this.currentGen !== gen) return;
-        const path = (await this.nvimState()).file;
-        if (path && path !== this.current) await this.reveal(path, cx);
-        cx.notify(); // nvim took the keyboard, maybe: draw the focus again
+        if (changed.length && !changed.some((p) => p === watch || p === dirname(watch))) continue;
+        const now = await this.nvimState();
+        if (now.file && now.file !== this.current) await this.reveal(now.file, cx);
+        // nvim took the keyboard, maybe: draw the focus again.
+        else if (now.focus !== seen.focus) cx.notify();
+        seen = now;
       }
     });
   }
@@ -405,7 +414,7 @@ export class Tree {
       systemOpen: (row) => { if (row) systemOpen(row.abs); },
       hidden: () => { this.model.showHidden = !this.model.showHidden; },
       ignored: () => { this.model.showIgnored = !this.model.showIgnored; },
-      collapse: () => this.model.open.clear(),
+      collapse: () => this.model.collapseAll(),
       reload: (_row, _rows, cx) => cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }),
       rootHere: (row, _rows, cx) => { if (row) this.setRoot(this.dirOf(row), cx); },
       rootUp: (_row, _rows, cx) => { if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); },
@@ -506,15 +515,27 @@ export class Tree {
   row(r, i, t, focusedNow) {
     const mark = this.model.marks[r.abs];
     const markColor = mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked;
+    // No handlers here: a virtual list's rows take clicks through the list
+    // (`clicked`).
     return h_flex().id(`row-${r.abs}`).h(28).flex_none().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
       .when(i === this.selected, (el) => el.bg(focusedNow ? t.selected : t.hover))
       .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.selected = i; this.handle.focus(); cx.spawn(async (cx) => this.openRow(r, cx)); })
       .child(r.dir ? svg(`mods/files/chevron-${this.model.open.has(r.abs) ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
       .child(svg(`mods/files/${r.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(this.picked.has(r.abs) ? t.accent : t.muted))
       .child(div().flex_1().min_w(0).truncate().text_color(r.ignored ? t.dim : r.abs === this.current ? t.accent : t.foreground).child(r.name))
       .when(this.picked.has(r.abs), (el) => el.child(div().text_size(11).text_color(t.accent).child("●")))
       .when(Boolean(mark), (el) => el.child(div().text_size(11).text_color(markColor).child(mark)));
+  }
+
+  // A click on a row (the list reports its key, the row's path): select it,
+  // take the keyboard, open it.
+  clicked(key, cx) {
+    const rows = this.rows(), at = rows.findIndex((r) => r.abs === key);
+    if (at < 0) return;
+    this.selected = at;
+    this.scrolledTo = at; // already on screen: it was clicked
+    this.handle.focus();
+    cx.spawn(async (cx) => this.openRow(rows[at], cx));
   }
 
   render(cx) {
@@ -539,6 +560,10 @@ export class Tree {
       if (at >= 0) { this.selected = at; this.revealing = null; }
     }
     this.selected = Number.isInteger(this.selected) ? Math.min(this.selected, Math.max(0, rows.length - 1)) : 0;
+    if (this.selected !== this.scrolledTo && rows.length) {
+      this.scrolledTo = this.selected;
+      this.scroll.scroll_to_item(this.selected);
+    }
     const empty = this.place?.machine ? `This space is on ${this.place.machine}; herdr-nvim runs nvim on this computer.`
       : this.error ?? (this.filter ? (this.filter.query ? "No match" : "Type to find a file") : !this.model.root ? "No folder" : this.model.entries.has(this.model.root) ? "No files" : "Loading files…");
     return v_flex().id("herdr-nvim-files").size_full().min_h(0).rounded(10).overflow_hidden()
@@ -551,9 +576,16 @@ export class Tree {
       .on_mouse_down("left", (_e, cx) => this.pressed(cx))
       .child(this.header(t))
       .when(Boolean(this.filter), (el) => el.child(this.filterBar(t)))
-      .child(v_flex().id("herdr-nvim-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
-        .children(rows.map((r, i) => this.row(r, i, t, focusedNow)))
-        .when(rows.length === 0, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(empty))))
+      // Only the rows on screen are built (a tree can list thousands), and
+      // a moved selection is scrolled into view.
+      .child(rows.length === 0
+        ? div().flex_1().p(14).text_size(12).text_color(t.dim).child(empty)
+        : div().relative().flex_1().min_h(0).p(6)
+          .child(v_virtual_list("herdr-nvim-tree", rows.length, 28, (i) => rows[i].abs,
+            (range) => rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, t, focusedNow)))
+            .track_scroll(this.scroll).size_full()
+            .on_item_click((key, cx) => this.clicked(key, cx)))
+          .child(Scrollbar.vertical("herdr-nvim-tree").absolute().inset_0()))
       .child(div().flex_none().px(12).py(6).border_t(1).border_color(t.border).text_size(11).text_color(t.dim).child(HINT));
   }
 }

@@ -28,6 +28,7 @@ import { PickBar } from "./pick.js";
 import { Preview } from "./preview.js";
 import { Sync } from "./sync.js";
 import { Tree } from "./tree-view.js";
+import { timed } from "./timing.js";
 
 export default class HerdrNvim extends View {
   init(_props, cx) {
@@ -51,8 +52,11 @@ export default class HerdrNvim extends View {
   }
 
   render(cx) {
-    if (this.part) return this.part.render(cx);
-    this.sync?.look(cx);
-    return div();
+    const name = this.sync ? "controller" : this.part?.constructor?.name ?? "overlay";
+    return timed(name, () => {
+      if (this.part) return this.part.render(cx);
+      this.sync?.look(cx);
+      return div();
+    });
   }
 }

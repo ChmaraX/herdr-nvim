@@ -9,10 +9,13 @@ import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { notify, openOverlay, theme } from "herdr";
 import { nvim } from "./lib.js";
+import { mark } from "./timing.js";
 
 // `at`: the tab, as `place()` captured it when the key was pressed.
 export async function pick(at) {
+  const t0 = Date.now();
   const out = await nvim("pick-file", [], at);
+  mark(`pick-file answered in ${Date.now() - t0} ms`);
   if (out === null) return;
   const result = JSON.parse(out);
   if (result.empty) {
@@ -28,6 +31,7 @@ export async function pick(at) {
       { type: "block", content: { terminal: result.terminal } },
     ] },
   });
+  mark(`dialog opened with ${result.terminal}`);
 }
 
 // The dialog's title bar.
