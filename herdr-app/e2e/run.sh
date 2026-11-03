@@ -784,9 +784,11 @@ rm "$demo/link"
 say "fs: a create through a symlink in the tab's folder to elsewhere is not done; the tree is told to ask (outside)"
 # No focused terminal and no folder from the mod: the tab's folder from the
 # app's document, never this process's own folder.
-"$wrapper" daemons stop "$space:$tab_b" --force >/dev/null
+stopped=$("$wrapper" daemons stop "$space:$tab_b" --force 2>&1) || fail "stopping tab B's nvim failed: $stopped"
 (cd / && "$wrapper" toggle --state open --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null) ||
   fail "toggle with only a space and a tab failed"
+# Its nvim starts in the new pane, a moment after the toggle returns.
+poll 15 sock_of "$space" "$tab_b" || fail "no daemon for tab B"
 sock_b=$(sock_of "$space" "$tab_b"); poll 10 test -S "$sock_b" || fail "no daemon for tab B"
 poll 10 eval_is "$sock_b" 'getcwd()' "$real_demo" ||
   fail "tab B's nvim did not start in the tab's folder ($(nvim_eval "$sock_b" 'getcwd()'))"
