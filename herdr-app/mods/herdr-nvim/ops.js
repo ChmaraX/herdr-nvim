@@ -62,18 +62,26 @@ export async function current(place) {
 // matters and shared with every copy of the mod ("herdr-nvim.tree"), so a
 // change applies without reinstalling. `app-config` runs again only when the
 // config file's text changed (read, not run), not on every action.
-let config = null; // {path, text, tree}
+let config = null; // {path, text, tree, across}
 
-export async function treeMode() {
+// The settings the mod uses: {tree, across} (across: the direction a
+// Preview / Source swap splits in, `sidebar::swap_direction`).
+export async function appConfig() {
   const text = config?.path ? await readTextFile(config.path).catch(() => null) : undefined;
-  if (config && text === config.text) return config.tree;
+  if (config && text === config.text) return config;
   const r = await exec(bin(), ["app-config"]).catch(() => null);
-  const out = r?.code === 0 ? JSON.parse(r.stdout) : {};
+  let out = {};
+  try { out = r?.code === 0 ? JSON.parse(r.stdout) : {}; } catch {}
   const tree = out.tree ?? "native";
   const path = out.config ?? null;
-  config = r?.code === 0 ? { path, tree, text: path ? await readTextFile(path).catch(() => null) : undefined } : null;
+  const read = { path, tree, across: out.across ?? "down", text: path ? await readTextFile(path).catch(() => null) : undefined };
+  config = r?.code === 0 ? read : null;
   if (shared("herdr-nvim.tree") !== tree) setShared("herdr-nvim.tree", tree);
-  return tree;
+  return read;
+}
+
+export async function treeMode() {
+  return (await appConfig()).tree;
 }
 
 export async function systemOpen(path) {

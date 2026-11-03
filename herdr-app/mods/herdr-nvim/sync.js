@@ -32,22 +32,12 @@
 // app's terminal list shows its result, the result is assumed (the list lags
 // the command by a moment).
 
-import { focused, layout, nextCommand, run, setShared, shared, spaces } from "herdr";
-import { nvim, place } from "./lib.js";
-import { treeMode } from "./ops.js";
+import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces } from "herdr";
+import { bin, nvim, place } from "./lib.js";
+import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
-
-// A Preview / Source swap in `tab` (the pane header, mods/herdr-nvim-header):
-// while it runs, and a moment after (the app's pane and terminal lists catch
-// up), the tab may show neither nvim nor its preview. Nothing is decided then.
-const SWAP_SETTLE_MS = 1500, SWAP_MAX_MS = 10000;
-function swapping(tab) {
-  const s = shared("herdr-nvim.swap");
-  if (!s || s.tab !== tab || Date.now() - s.at > SWAP_MAX_MS) return false;
-  return !s.done || Date.now() - s.done < SWAP_SETTLE_MS;
-}
 
 export class Sync {
   constructor(cx) {
@@ -62,6 +52,7 @@ export class Sync {
         const [verb, tab] = command.split(":");
         if (tab && focused()?.tab !== tab) continue;
         if (verb === "pick") cx.spawn(async () => pick(place()));
+        else if (verb === "swap") await this.startSwap(tab, decodeURIComponent(command.split(":").slice(2).join(":")), cx);
         else if (verb === "reveal") await this.reveal(cx);
         else if (verb === "toggle") await this.toggleTree(cx);
       }
@@ -89,8 +80,8 @@ export class Sync {
   look(cx) {
     this.focusTree();
     if (this.busy) return;
+    if (this.swapping) return this.finishSwap();
     const p = panelState(layout()), f = focused();
-    if (f?.tab && swapping(f.tab)) return;
     if (!p || !f?.tab) {
       this.prev = null;
       return;
@@ -113,6 +104,61 @@ export class Sync {
     if (want.panel === "show") { showFiles(p); cur.files = true; }
     if (want.panel === "hide") { hidePanel(p); cur.files = false; }
     if (want.nvim) this.act(cur, p, cx);
+  }
+
+  // `herdr-nvim.swap:<tab>:<file>` (the pane header's Preview, Enter on an
+  // image in the tree): `file` rendered in the tab's nvim's place;
+  // `herdr-nvim.swap:<tab>:` (Source): nvim back in the preview's place.
+  // Split the old pane across the slot's split (`across`), so both nest in
+  // its slot, then close the old one once the new one is in the tab: the new
+  // pane keeps the old one's exact size. nvim keeps running meanwhile (its
+  // pane only attaches to the tab's daemon). Until the swap is done, nothing
+  // else is decided (`finishSwap`), so the moment with neither pane is not
+  // read as nvim closing.
+  async startSwap(tab, file, cx) {
+    if (this.busy || this.swapping) return;
+    const { across } = await appConfig();
+    const at = place();
+    if (file) {
+      const terminal = nvimPanes(tab)[0];
+      const old = panes().find((p) => p.terminal === terminal)?.pane;
+      // No nvim pane on screen: herdr-nvim puts the preview in its place.
+      if (!old) return void (await nvim("app-preview", ["--file", file], at));
+      this.swapping = { tab, old, to: "preview", before: this.panesOf(tab), at: Date.now() };
+      run("pane.split", { direction: across, pane: old, mod: "herdr-nvim", props: { preview: file, tab, cwd: at?.cwd ?? null } });
+    } else {
+      const old = previewPane(tab);
+      if (!old) return;
+      this.swapping = { tab, old, to: "nvim", before: this.panesOf(tab), at: Date.now() };
+      const argv = [bin(), "sidebar", "--refresh", ...(at?.cwd ? ["--cwd", at.cwd] : [])];
+      run("pane.split", { direction: across, pane: old, argv });
+    }
+    cx.notify();
+  }
+
+  panesOf(tab) {
+    return new Set(panes().filter((p) => p.tab === tab).map((p) => p.pane));
+  }
+
+  // Each render mid-swap: close the old pane once the new one is in the
+  // tab; done once the old one is gone and the new one counts as nvim's
+  // place (nvim's terminal labelled, which a stale nvim's restart delays,
+  // or the preview listed). A new pane that doesn't come in 3 s closes
+  // nothing; 15 s at most in all.
+  finishSwap() {
+    const s = this.swapping, waited = Date.now() - s.at;
+    const made = panes().find((p) => p.tab === s.tab && !s.before.has(p.pane));
+    if (!s.closed && made && waited < 3000) {
+      run("pane.close", { pane: s.old });
+      s.closed = true;
+    }
+    const settled = s.closed && !panes().some((p) => p.pane === s.old)
+      && (s.to === "nvim" ? nvimPanes(s.tab).length > 0 : Boolean(previewPane(s.tab)));
+    if (settled || (!s.closed && waited >= 3000) || waited >= 15000) {
+      if (!s.closed) notify({ title: "herdr-nvim", body: "The new pane did not show up; nothing was closed.", level: "error" });
+      this.swapping = null;
+      if (this.prev?.tab === s.tab) this.prev = { ...this.prev, nvim: true };
+    }
   }
 
   // The panel opened or closed: open or close the tab's nvim to match. With

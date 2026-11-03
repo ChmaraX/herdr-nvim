@@ -14,7 +14,7 @@ import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
 import { ACTIONS } from "./tree-keys.js";
-import { goToTree, hideTreeKeepNvim, nvimPanes, panelState, previewPane } from "./panel.js";
+import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
 
 // The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
 // with LazyVim's leader.
@@ -250,14 +250,11 @@ export class Tree {
     }
     this.busy = true;
     cx.notify();
-    // nvim can't show an image: the preview takes nvim's place instead. Either
-    // way round, a swap with the preview tells the controller (sync.js).
-    const where = tabOf(this.where()), image = previewKind(row.abs) === "image";
-    const swap = image || previewPane(where.tab) ? { tab: where.tab, at: Date.now(), done: null } : null;
-    if (swap) setShared("herdr-nvim.swap", swap);
-    if (image) await nvim("app-preview", ["--file", row.abs], where);
+    // nvim can't show an image: the preview takes nvim's place instead (the
+    // controller swaps them, sync.js `startSwap`).
+    const where = tabOf(this.where());
+    if (previewKind(row.abs) === "image") run(`herdr-nvim.swap:${where.tab}:${encodeURIComponent(row.abs)}`);
     else await nvim("open", [row.abs], where);
-    if (swap) setShared("herdr-nvim.swap", { ...swap, done: Date.now() });
     this.busy = false;
     cx.notify();
   }

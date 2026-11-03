@@ -72,8 +72,7 @@ pub fn find_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim app-current [--across] --ctx <tab>`; `--across` adds the
-/// direction the pane header splits in for a swap (`sidebar::swap_direction`).
+/// `herdr-nvim app-current --ctx <tab>`.
 pub fn current_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;

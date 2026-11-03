@@ -11,7 +11,7 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, panes, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 
 const KINDS = {
@@ -74,7 +74,10 @@ export class Preview {
     this.file = props.preview;
     this.tab = props.tab;
     this.shown = null;
-    setShared(SHOWN, { ...(shared(SHOWN) ?? {}), [this.tab]: this.file });
+    // Only tabs that still show a preview keep their entry.
+    const showing = new Set(panes().filter((p) => p.terminal === null && p.mod === "herdr-nvim").map((p) => p.tab));
+    const kept = Object.fromEntries(Object.entries(shared(SHOWN) ?? {}).filter(([tab]) => showing.has(tab)));
+    setShared(SHOWN, { ...kept, [this.tab]: this.file });
     cx.spawn(async (cx) => {
       // A changed path of the folder's root means "anything may have changed".
       const ours = (changed) => !changed.length || changed.some((p) => p === this.file || p === dirname(this.file));

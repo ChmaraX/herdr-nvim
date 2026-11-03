@@ -61,12 +61,19 @@ impl HostOps for App {
 
     fn sidebar_identity(&self) -> Result<(String, String, PathBuf)> {
         let (tab, pane, cwd) = super::sidebar::identity()?;
+        // Opened by the mod (the controller's swap), not by `sidebar::open`,
+        // which checks before it splits: check here, before the daemon is used.
+        if std::env::args().any(|arg| arg == "--refresh") {
+            if let Err(error) = super::stale::refresh_on_open(tab.as_str(), &cwd) {
+                eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
+            }
+        }
         Ok((tab.as_str().to_owned(), pane, cwd))
     }
 
     fn sidebar_ready(&self, socket: &Path, sidebar: &Sidebar) {
         super::watch::ensure_running();
-        if std::env::args().any(|arg| arg == "--explore") {
+        if crate::config::load().app.tree == crate::config::TreeMode::Nvim {
             // nvim's own explorer, once this window is attached (UIEnter).
             let _ = daemon::remote_expr(
                 socket,

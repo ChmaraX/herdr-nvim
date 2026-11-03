@@ -94,16 +94,13 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
             .and_then(|doc| doc::root_of(doc, raw_tab(&ctx.tab)))
             .with_context(|| format!("tab {} is not in the app's layout", raw_tab(&ctx.tab)))?,
     };
-    let mut argv = vec![
+    // `tree = "nvim"` opens nvim's own explorer with it (`sidebar_ready`).
+    let argv = vec![
         cli::self_command()?.to_string_lossy().into_owned(),
         "sidebar".to_owned(),
         "--cwd".to_owned(),
         ctx.cwd.to_string_lossy().into_owned(),
     ];
-    // `tree = "nvim"`: nvim's own explorer is the tree, open it with nvim.
-    if config.app.tree == crate::config::TreeMode::Nvim {
-        argv.push("--explore".to_owned());
-    }
     // In a preview's place: across, so nvim takes the preview's exact slot
     // (`swap_direction`); else beside the whole tab.
     let split = match preview {
@@ -368,21 +365,6 @@ pub fn preview_cmd() -> Result<()> {
         anyhow::bail!("no such file: {}", file.display());
     }
     println!("{}", open_preview(&ctx, &file.to_string_lossy())?);
-    Ok(())
-}
-
-/// `herdr-nvim app-source --ctx JSON` (the preview's Source button): nvim
-/// back in the preview's place, as it was, with the keyboard.
-pub fn source_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
-    let ctx = ctx(&cli::read_ctx(&args)?)?;
-    let opened = ensure_open(&ctx)?;
-    focus(&opened.pane)?;
-    let mut made = json!({"terminal": opened.pane});
-    if let Some(notice) = opened.notice {
-        made["notice"] = json!(notice);
-    }
-    println!("{made}");
     Ok(())
 }
 

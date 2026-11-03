@@ -48,8 +48,10 @@ export function nvimPanes(tab) {
   return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
 }
 
-// Whether a preview shows in the tab's nvim's place (`app-preview`): a
-// herdr-nvim mod pane of the tab. For the pair it counts as nvim's pane.
+// The tab's preview pane, if one shows in its nvim's place: a herdr-nvim mod
+// pane of the tab. herdr-nvim opens a mod pane only as a preview (always
+// with `props.preview`, which is how the Rust side, `doc::preview_of`, finds
+// it: `panes()` has no props). For the pair it counts as nvim's pane.
 export function previewPane(tab) {
   return panes().find((p) => p.tab === tab && p.terminal === null && p.mod === "herdr-nvim")?.pane ?? null;
 }
