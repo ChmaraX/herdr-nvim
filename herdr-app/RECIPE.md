@@ -37,15 +37,11 @@ their layout).
   `Preview · <file>` with a **Source** button (**nvim** for an image or an
   SVG). A file it can't show reads "Too big to preview (N MB)." or "The file
   is gone." in `dim`.
-- **Picker** (`cmd-o`, the `herdr-nvim.pick` command): an 820×470 native
-  dialog (`popover`) titled "Open file from agent output" on a 34px bar with
-  a `border` line and a `dim` hint (↑↓ move · ⏎ open in nvim · esc close), a
-  34px search field (`accent` border), and 30px rows: the folder part of the
-  path in `dim`, the file name in `foreground` (`muted` for a repo match),
-  right-aligned `+N` (`ansi2`) `-M` (`ansi1`) or `new` (`blocked`) and the age
-  (`dim`); the selected row on `selected`. The files the agent's session log
-  shows it touched (newest first), then uncommitted git changes; typing
-  filters those and adds the repo's matches below them.
+- **Picker** (`cmd-o`, the `herdr-nvim.pick` command): an 820×470 dialog titled "Open file from agent
+  output" on a 30px `chrome` bar with a `border` line and a `dim` hint; under
+  it herdr-nvim's terminal picker: the files the agent's session log shows it
+  touched (newest first), then uncommitted git changes, with `+N -M` diff
+  stats and ages; typing fuzzy-searches the whole repo.
 - **Annotations** (inside nvim, default `<leader>a…` maps): `ac` comment the
   line or selection, `al` list, `as` paste all comments into the agent's
   input, `aS` send them (submitted), `ai` reference `path:line`.
@@ -150,9 +146,8 @@ them, `?` lists them, and this table is that file's output
   since the agent's process started), then uncommitted git changes; without a
   log, the paths on the agent's screen. ⏎ opens the file in the tab's nvim
   (at the line the agent named, for a path taken from its screen) and focuses
-  it; Esc closes the dialog. The dialog opens at once ("Looking at the
-  agent's files…" until they come); with nothing the agent touched it says
-  so and searching the repo still works.
+  it; Esc closes the dialog. With nothing to list, an 8-second warning toast
+  says why.
 - Annotations go to the tab's agent: the only agent of the space, or the only
   one in this tab; otherwise nvim asks which. "Send" pastes and presses Enter
   once the person has stopped typing for ~3 s (`hc send`); "paste" leaves the
@@ -275,15 +270,17 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   - overlay (`mod.open:herdr-nvim`, `cmd-e`): exactly the Files button
     (`layout.select {stack, child}` + `layout.show`, or `layout.hide`), then
     `closeOverlay`.
-  - `herdr-nvim.pick` → props `{pick: <the tab>}` (`pick.js`): opens the
-    dialog at once, then `exec bin/herdr-nvim pick-file --list --session
-    --ctx …` (the agent's files and git's changes as JSON, `cwd`,
-    `max_files`; no repo-wide list). Typing filters them with the terminal
-    picker's fuzzy rule and runs `app-find` (fff) for the repo, 80 ms after
-    the last key. ⏎ or a click: `closeOverlay`, `open --no-focus <file>[:line]`,
-    `pane.focus` on the terminal it prints. The agent's screen is read without
-    history (`terminal.read` lines 0): for history herdr-core scrolls an idle
-    full-screen program such as pi.
+  - `herdr-nvim.pick` (`pick.js`): `exec bin/herdr-nvim pick-file --ctx …`,
+    which prints `{"terminal": "tN"}` (the picker started by herdr-core,
+    unlabeled, so no tab shows it) or `{"empty": "<why>"}`; then
+    `openOverlay({kind: "dialog", layout: column [{mod: herdr-nvim, props:
+    {bar: true}, 30px}, {terminal: tN}]})`. Props `{bar}` is the dialog's
+    title bar. A dialog focuses its first terminal; it closes when the picker
+    exits. `pick-file --list` prints the candidates instead (what the e2e
+    checks). `cmd-o` again while a picker opens or is open does nothing. The
+    agent's screen is read without history (`terminal.read` lines 0): for
+    history herdr-core scrolls an idle full-screen program such as pi back and
+    forth, which took 5-6 s per `cmd-o`.
   - props `{preview, tab, cwd}` → `preview.js`: the file rendered (a
     herdr-nvim mod pane is only ever this). Images are copied into
     `mods/herdr-nvim/.cache` (hidden, so writing there reloads no mod),
