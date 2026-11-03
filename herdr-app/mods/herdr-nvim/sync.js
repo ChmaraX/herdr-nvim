@@ -117,7 +117,7 @@ export class Sync {
   // read as nvim closing.
   async startSwap(tab, file, cx) {
     if (this.busy || this.swapping) return;
-    const { across } = await appConfig();
+    const { across } = await appConfig().catch(() => ({ across: "down" }));
     const at = place();
     if (file) {
       const terminal = nvimPanes(tab)[0];
@@ -166,17 +166,24 @@ export class Sync {
   act(cur, p, cx) {
     this.busy = true;
     cx.spawn(async (cx) => {
-      const mode = await treeMode();
-      let state = cur.files ? "open" : "close";
-      if (mode === "nvim" && cur.files) {
-        hidePanel(p);
-        cur.files = false;
-        state = cur.nvim ? "close" : "open";
+      // Whatever fails, the controller goes on: a stuck `busy` would stop
+      // every later look (the Files button would do nothing).
+      try {
+        const mode = await treeMode();
+        let state = cur.files ? "open" : "close";
+        if (mode === "nvim" && cur.files) {
+          hidePanel(p);
+          cur.files = false;
+          state = cur.nvim ? "close" : "open";
+        }
+        if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state);
+        cur.nvim = state === "open";
+      } catch (e) {
+        notify({ title: "herdr-nvim", body: `Could not open or close the tab's nvim: ${e?.message ?? e}`, level: "error" });
+      } finally {
+        this.busy = false;
+        cx.notify();
       }
-      if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state);
-      cur.nvim = state === "open";
-      this.busy = false;
-      cx.notify();
     });
   }
 
@@ -185,7 +192,8 @@ export class Sync {
   async toggle(at, state) {
     const out = await nvim("toggle", ["--state", state], at);
     if (out === null) return null;
-    const made = JSON.parse(out || "{}");
+    let made = {};
+    try { made = JSON.parse(out || "{}"); } catch {}
     this.expect = {
       tab: at.tab,
       opened: made.terminal ?? null,
