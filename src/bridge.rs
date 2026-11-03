@@ -272,15 +272,17 @@ fn finish_pick(handoff_path: &str) -> Result<()> {
 /// pick-file finisher above and (from a later task) `open-link`'s Ctrl+click
 /// handler — one behavior, two entry points.
 pub(crate) fn open_in_sidebar(ctx: &Ctx, path: &str, line: Option<u32>) -> Result<Opened> {
-    open_in_sidebar_at(ctx, path, line, None)
+    open_in_sidebar_at(ctx, path, line, None, true)
 }
 
-/// `open_in_sidebar` with a column too (the app's `open` entry point).
+/// `open_in_sidebar` with a column too (the app's `open` entry point), and
+/// without the focus when the caller gives it itself (`focus: false`).
 pub(crate) fn open_in_sidebar_at(
     ctx: &Ctx,
     path: &str,
     line: Option<u32>,
     col: Option<u32>,
+    focus: bool,
 ) -> Result<Opened> {
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
@@ -294,7 +296,9 @@ pub(crate) fn open_in_sidebar_at(
     let opened = host.ensure_sidebar(ctx)?;
 
     open_in_nvim(&socket, path, line, col, &config.sidebar)?;
-    host.focus(&opened.pane);
+    if focus {
+        host.focus(&opened.pane);
+    }
     Ok(opened)
 }
 
@@ -312,32 +316,26 @@ fn open_in_nvim(
     col: Option<u32>,
     sidebar: &crate::config::Sidebar,
 ) -> Result<()> {
-    // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
-    // path with spaces needs no escaping.
+    // Open (or focus) the file and jump to the line, in one client: what
+    // `--remote` does (`:drop` of the escaped path), then `cursor()`.
+    let mut expr = format!(
+        "execute('drop ' . fnameescape({}))",
+        daemon::vim_string_literal(path)
+    );
+    if let Some(line) = line {
+        expr.push_str(&format!(" . cursor({line}, {})", col.unwrap_or(1)));
+    }
     let status = daemon::nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
         .arg(socket)
-        .arg("--remote")
-        .arg(path)
+        .arg("--remote-expr")
+        .arg(&expr)
+        .stdout(std::process::Stdio::null())
         .status()
-        .context("failed to run nvim --server --remote")?;
+        .context("failed to run nvim --server --remote-expr")?;
     if !status.success() {
-        bail!("nvim --remote failed to open {path}");
-    }
-    // Jump to the line, if known.
-    if let Some(line) = line {
-        let status = daemon::nvim_cmd(sidebar)
-            .arg("--headless")
-            .arg("--server")
-            .arg(socket)
-            .arg("--remote-expr")
-            .arg(format!("cursor({line}, {})", col.unwrap_or(1)))
-            .status()
-            .context("failed to run nvim --server --remote-expr")?;
-        if !status.success() {
-            bail!("nvim --remote-expr failed to jump to line {line} in {path}");
-        }
+        bail!("nvim failed to open {path}");
     }
     Ok(())
 }

@@ -207,7 +207,10 @@ export class Tree {
   async revealCurrent(cx, arriving = false) {
     if (!this.place?.cwd) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
-    const { file, tab_root } = await current(this.place);
+    // Once the tree watches the tab's state file, it holds both (real paths,
+    // app.lua `write_state`): no process. Before, herdr-nvim answers.
+    const state = this.watching ? await this.nvimState() : null;
+    const { file, tab_root } = state?.cwd ? { file: state.file ?? null, tab_root: state.cwd } : await current(this.place);
     if (seq !== this.revealSeq) return;
     if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
     if (file && inside(file, this.model.root ?? "")) await this.reveal(file, cx);
@@ -263,7 +266,13 @@ export class Tree {
     // controller swaps them, sync.js `startSwap`).
     const where = tabOf(this.where());
     if (previewKind(row.abs) === "image") run(`herdr-nvim.swap:${where.tab}:${encodeURIComponent(row.abs)}`);
-    else await nvim("open", [row.abs], where);
+    else {
+      // The mod gives nvim the keyboard: no app round trips in herdr-nvim.
+      const out = await nvim("open", ["--no-focus", row.abs], where);
+      let terminal = null;
+      try { terminal = out && JSON.parse(out).terminal; } catch {}
+      if (terminal) run("pane.focus", { terminal });
+    }
     this.busy = false;
     cx.notify();
   }

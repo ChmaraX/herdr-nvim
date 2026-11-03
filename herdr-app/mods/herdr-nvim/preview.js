@@ -1,5 +1,5 @@
 // The preview: a file shown as what it is, in the tab's nvim's place
-// (`herdr-nvim app-preview` splits nvim's pane with this mod, props
+// (the controller, sync.js `startSwap`, splits nvim's pane with this mod, props
 // {preview: <file>, tab}, then closes nvim's pane; nvim keeps running).
 // Markdown is rendered, images and SVGs drawn. It reloads when the file
 // changes (saved in nvim, written by an agent). The pane header's Source
@@ -107,9 +107,4 @@ export class Preview {
       .text_color(t.foreground)
       .child(body);
   }
-}
-
-// The file tab `tab`'s preview shows, if it has one on screen.
-export function previewShown(tab) {
-  return (shared(SHOWN) ?? {})[tab] ?? null;
 }

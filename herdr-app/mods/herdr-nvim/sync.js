@@ -40,6 +40,9 @@ import { wanted } from "./sync-rule.js";
 import { mark } from "./timing.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
+// The preview each tab's Files closed: {[tab]: file}.
+const MEMORY = "herdr-nvim.preview-memory";
+
 export class Sync {
   constructor(cx) {
     this.kept = new Set(); // tabs whose tree the tree key hid, nvim kept
@@ -64,7 +67,7 @@ export class Sync {
   }
 
   // Whether the tab's nvim pane is open (a preview in its place counts:
-  // `app-preview` swaps them, nvim keeps running). Right after our own open
+  // the controller swaps them, nvim keeps running). Right after our own open
   // or close the app's terminal list may not show it yet: until it shows that
   // terminal there (or gone), the result of the action is assumed.
   nvimOf(tab) {
@@ -124,9 +127,10 @@ export class Sync {
     const { across } = await appConfig().catch(() => ({ across: "down" }));
     const at = place();
     if (file) {
+      // In nvim's place, or the preview's (another file to preview).
       const terminal = nvimPanes(tab)[0];
-      const old = panes().find((p) => p.terminal === terminal)?.pane;
-      // No nvim pane on screen: herdr-nvim puts the preview in its place.
+      const old = panes().find((p) => p.terminal === terminal)?.pane ?? previewPane(tab);
+      // Neither on screen: herdr-nvim puts the preview where nvim's pane goes.
       if (!old) return void (await nvim("app-preview", ["--file", file], at));
       this.swapping = { tab, old, to: "preview", before: this.panesOf(tab), at: Date.now() };
       run("pane.split", { direction: across, pane: old, mod: "herdr-nvim", props: { preview: file, tab, cwd: at?.cwd ?? null } });
@@ -192,9 +196,26 @@ export class Sync {
   }
 
   // Opens or closes the nvim of the tab `at` (a `place()`), not whichever
-  // tab is focused when the command runs.
+  // tab is focused when the command runs. Closing is done here: the mod
+  // knows the panes, so no process runs for it. A preview in nvim's place
+  // closes too and is remembered for the tab (shared, `MEMORY`): the next
+  // open shows it again (`toggle --preview`).
   async toggle(at, state) {
-    const out = await nvim("toggle", ["--state", state], at);
+    const memory = shared(MEMORY) ?? {};
+    if (state === "close") {
+      const terminal = nvimPanes(at.tab)[0] ?? null;
+      const pane = terminal && panes().find((p) => p.terminal === terminal)?.pane;
+      const preview = previewPane(at.tab);
+      if (pane || preview) {
+        if (preview) setShared(MEMORY, { ...memory, [at.tab]: (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null });
+        for (const p of [pane, preview]) if (p) run("pane.close", { pane: p });
+        this.expect = { tab: at.tab, opened: null, closed: terminal, preview: false, closedPreview: preview };
+        return { closed: terminal };
+      }
+    }
+    const remembered = state === "open" ? memory[at.tab] : null;
+    if (remembered) setShared(MEMORY, Object.fromEntries(Object.entries(memory).filter(([tab]) => tab !== at.tab)));
+    const out = await nvim("toggle", ["--state", state, ...(remembered ? ["--preview", remembered] : [])], at);
     if (out === null) return null;
     let made = {};
     try { made = JSON.parse(out || "{}"); } catch {}

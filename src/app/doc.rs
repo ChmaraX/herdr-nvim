@@ -143,7 +143,7 @@ pub(crate) fn pane_of(doc: &Doc, terminal: &str) -> Option<(String, String)> {
 }
 
 /// The preview pane of tab `raw` (a `herdr-nvim` mod pane with
-/// `props.preview`, put in nvim's place by `app-preview`): its block id and
+/// `props.preview`, put in nvim's place by the controller's swap): its block id and
 /// the file it shows.
 pub(crate) fn preview_of(doc: &Doc, raw: &str) -> Option<(String, String)> {
     let (_, t) = tab(doc, raw)?;

@@ -199,7 +199,7 @@ them, `?` lists them, and this table is that file's output
   same across split, by herdr-nvim). The preview reloads when its file
   changes on disk (saving in nvim). For the pair the preview counts as
   nvim's pane: Files closes it with the tree and the next Files shows it
-  again (remembered per tab in `<state dir>/app-preview/<tab key>`); a tab
+  again (remembered per tab in the shared `herdr-nvim.preview-memory`); a tab
   switch keeps each tab's. The swap keeps the size while nvim's pane is the
   one the install made; a pane the person split by hand may not keep it.
   Layouts without pane headers get no button. No keys.
@@ -290,8 +290,12 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   selects a path, or nvim's file for null), `herdr-nvim.keep-nvim` (the tree
   key's hide keeps nvim, 10 s), `herdr-nvim.tree-laid-out` (the tree's size
   changed), `herdr-nvim.previews` (the file each tab's preview shows, for its
-  header; only tabs with a preview), `herdr-nvim.preview-cache` (the image
+  header; only tabs with a preview), `herdr-nvim.preview-memory` (the
+  preview each tab's Files closed), `herdr-nvim.preview-cache` (the image
   copies, newest first).
+- **Timing** (`timing.js`): each `cmd-o` writes its steps and, for 15 s, how
+  often and how long the mod's copies rendered to
+  `mods/herdr-nvim/.cache/timing.log` (the newest 300 lines).
 - **`herdr-nvim-header`** (the layout's pane header, `pane-base.js` + one
   button): the button runs `herdr-nvim.swap:<tab>:<file>` (Preview) or
   `herdr-nvim.swap:<tab>:` (Source). It learns nvim's file from
@@ -303,13 +307,18 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   `plugin/`, `runtime-stamp`). Each install makes a new stamped runtime and
   points the wrapper at it; older ones stay while an nvim still runs them. It
   does:
-  - `open`: makes sure the tab's daemon and nvim pane exist, then
-    `nvim --remote` + `cursor(line, col)`, and `pane.focus {terminal}` once no
-    dialog is left to take the keyboard back.
-  - `toggle [--state open|close]`: finds the tab's pane by its label
-    (`terminal.list`); closes it with `pane.close`, or `pane.split {direction:
-    right, pane: <the tab's root node id from the core's herdr-app document>,
-    argv: [wrapper, sidebar, --cwd, dir]}`.
+  - `open [--no-focus]`: makes sure the tab's daemon and nvim pane exist,
+    then one `nvim --remote-expr` (`:drop` of the escaped path, then
+    `cursor(line, col)`), and `pane.focus {terminal}` once no dialog is left
+    to take the keyboard back. The tree passes `--no-focus` and focuses the
+    printed terminal itself (`run("pane.focus")`).
+  - `toggle [--state open|close] [--preview F]`: finds the tab's pane by its
+    label (`terminal.list`); opens with `pane.split {direction: right, pane:
+    <the tab's root node id from the core's herdr-app document>, argv:
+    [wrapper, sidebar, --cwd, dir]}`, or the preview of `F` there. The
+    controller closes panes itself (`run("pane.close")`); `toggle` closes
+    only for `tree = nvim`'s `cmd-e`. Daemons whose tab is gone are left to
+    the watcher, so a click never waits on them.
   - `sidebar [--refresh]` (in the new pane): reads its tab from its `herdr.space`/
     `herdr.tab` labels, with `--refresh` (a pane the mod opened) restarts a
     stale clean nvim, starts the tab's headless nvim daemon if needed

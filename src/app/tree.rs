@@ -88,7 +88,7 @@ pub fn current_cmd() -> Result<()> {
     }
     // The tree works with real paths (/private/tmp on macOS, not /tmp), so
     // one tab's folder is one tree whichever of its panes had the focus.
-    let real_root = std::fs::canonicalize(&ctx.cwd).unwrap_or_else(|_| ctx.cwd.clone());
+    let real_root = || std::fs::canonicalize(&ctx.cwd).unwrap_or_else(|_| ctx.cwd.clone());
     // What the tab's nvim last wrote (`app.lua` `write_state`); an nvim that
     // hasn't written yet is asked, once.
     let state: Value = std::fs::read_to_string(&watch)
@@ -117,13 +117,11 @@ pub fn current_cmd() -> Result<()> {
     let file = real("file").filter(|path| path.is_file());
     // The tab's folder for the tree: where the tab's nvim works (`:pwd`), which
     // doesn't move when another pane of the tab is focused or `cd`s.
-    let tab_root = real("cwd").unwrap_or_else(|| real_root.clone());
-    let mut out =
-        json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root});
-    if args.iter().any(|a| a == "--across") {
-        out["across"] = json!(sidebar::swap_direction());
-    }
-    println!("{out}");
+    let tab_root = real("cwd").unwrap_or_else(real_root);
+    println!(
+        "{}",
+        json!({"file": file, "watch": watch, "tab_root": tab_root})
+    );
     Ok(())
 }
 

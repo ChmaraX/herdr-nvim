@@ -119,8 +119,12 @@ pub(crate) fn split_location(text: &str) -> (String, Option<u32>, Option<u32>) {
 /// against the tab's folder. Prints `{"terminal": "<sidebar>"}`.
 pub(crate) fn open_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
-    let target = cli::positional(&args, &["--tab", "--space", "--ctx"])
-        .context("usage: herdr-nvim open [--tab <tab> [--space <space>]] <file>[:line[:col]]")?;
+    let target = cli::positional(&args, &["--tab", "--space", "--ctx"]).context(
+        "usage: herdr-nvim open [--tab <tab> [--space <space>]] [--no-focus] <file>[:line[:col]]",
+    )?;
+    // The tree focuses nvim itself (`pane.focus` from the mod, no app
+    // round trips).
+    let focus = !args.iter().any(|a| a == "--no-focus");
     let app_ctx = match cli::flag(&args, "--tab")?.map(str::to_owned) {
         Some(tab) => {
             let space = match cli::flag(&args, "--space")?.map(str::to_owned) {
@@ -144,7 +148,7 @@ pub(crate) fn open_cmd() -> Result<()> {
     if !path.is_file() {
         bail!("no such file: {}", path.display());
     }
-    let opened = bridge::open_in_sidebar_at(&ctx, &path.to_string_lossy(), line, col)?;
+    let opened = bridge::open_in_sidebar_at(&ctx, &path.to_string_lossy(), line, col, focus)?;
     let mut made = json!({"terminal": opened.pane});
     if let Some(notice) = opened.notice {
         made["notice"] = json!(notice);

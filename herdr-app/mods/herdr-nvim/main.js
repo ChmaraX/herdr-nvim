@@ -9,7 +9,7 @@
 // - an empty floating block, props {role: "sync"}: the controller that opens
 //   and closes the tab's nvim pane with the panel (sync.js);
 // - a pane with props {preview, tab}: the file rendered in the tab's nvim's
-//   place (preview.js; `herdr-nvim app-preview` puts it there);
+//   place (preview.js; the controller's swap puts it there, sync.js);
 // - a dialog with props {dialog}: the tree's new/rename/copy/delete prompts
 //   (dialog.js); with props {help}: its key list (keys-help.js); with props
 //   {bar}: the title of cmd-o's picker (pick.js);
