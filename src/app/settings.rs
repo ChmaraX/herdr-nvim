@@ -63,13 +63,22 @@ pub(crate) fn set_tree(mode: &str) -> Result<()> {
         other => bail!("tree is native or nvim, not {other:?}"),
     };
     let path = config::config_path().context("no config folder (HOME is not set)")?;
-    let text = fs::read_to_string(&path).unwrap_or_default();
+    // No file yet: start from nothing. Any other read error stops here: the
+    // file is the person's, never replaced by one holding only `[app]`.
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
     let updated = with_tree(&text, mode).with_context(|| format!("{}", path.display()))?;
     if updated != text {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        fs::write(&path, updated).with_context(|| format!("cannot write {}", path.display()))?;
+        // Whole or not at all: a temp file beside it, renamed over it.
+        let tmp = path.with_extension("toml.herdr-nvim.tmp");
+        fs::write(&tmp, updated).with_context(|| format!("cannot write {}", tmp.display()))?;
+        fs::rename(&tmp, &path).with_context(|| format!("cannot replace {}", path.display()))?;
     }
     println!("tree: {} ({})", mode.as_str(), path.display());
     Ok(())

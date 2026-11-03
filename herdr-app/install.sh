@@ -67,6 +67,8 @@ find_app_bin() {
   die "cannot find the Herdr app; pass --app-bin /Applications/Herdr.app/Contents/MacOS/Herdr"
 }
 
+case $tree in ''|native|nvim) ;; *) die "--tree is native or nvim, not $tree" ;; esac
+
 app_bin=$(find_app_bin)
 home=$(cd "$home" 2>/dev/null && pwd) || die "no Herdr app home at $home"
 export HERDR_APP_HOME=$home
@@ -186,10 +188,15 @@ else
   mv "$staged" "$root"
 fi
 
-# Each mod folder is made whole beside the live one (with its wrapper),
-# checked, then swapped in by a rename; the old one comes back if the swap
-# fails, so the app never loads half a copy and an uninstall always finds
-# a runtime.
+# Nothing of the person's changes until the install is known to fit: the
+# width and the layout herdr-nvim would edit, checked with the new runtime.
+run_root "$root" app-setup check --keys "$here/keys.json" ${panel_width:+--panel-width "$panel_width"} ||
+  die "nothing changed"
+
+# Each mod folder is made whole beside the live one (with its wrapper) and
+# checked; only then are they swapped in by renames, and the old ones come
+# back if a swap fails, so the app never loads half a copy (or one new mod
+# beside an old one) and an uninstall always finds a runtime.
 for m in "${mods[@]}"; do
   stage=$home/mods/.$m.new old=$home/mods/.$m.old
   new=$stage/$m # named as the mod, for the check
@@ -219,15 +226,27 @@ WRAPPER
     cp "$home/mods/pane/main.js" "$new/pane-base.js"
     "$app_bin" check "$new" >/dev/null 2>&1 || cp "$stage/pane-base.repo.js" "$new/pane-base.js"
   fi
-  "$app_bin" check "$new" || { rm -rf "$stage"; die "herdr-app check failed for $m; nothing replaced"; }
+  "$app_bin" check "$new" || {
+    for n in "${mods[@]}"; do rm -rf "$home/mods/.$n.new"; done
+    die "herdr-app check failed for $m; nothing replaced"
+  }
+done
+# Every mod staged and checked: now swap them in, all or none.
+swapped=()
+for m in "${mods[@]}"; do
+  stage=$home/mods/.$m.new old=$home/mods/.$m.old
   [ ! -e "$home/mods/$m" ] || mv "$home/mods/$m" "$old"
-  if mv "$new" "$home/mods/$m"; then
-    rm -rf "$old" "$stage"
+  if mv "$stage/$m" "$home/mods/$m"; then
+    swapped+=("$m")
   else
     [ ! -e "$old" ] || mv "$old" "$home/mods/$m"
-    die "could not put $m in place; the previous one is back"
+    for n in "${swapped[@]}"; do
+      rm -rf "$home/mods/$n" && mv "$home/mods/.$n.old" "$home/mods/$n" 2>/dev/null
+    done
+    die "could not put $m in place; the previous mods are back"
   fi
 done
+for m in "${mods[@]}"; do rm -rf "$home/mods/.$m.old" "$home/mods/.$m.new"; done
 retire_pick
 prune_runtimes "$root"
 

@@ -178,6 +178,26 @@ pub(crate) fn copy_of(shown: &str, personal: &[(String, Value)]) -> Result<Optio
     }
 }
 
+/// Everything `install` will need, checked without changing anything: the
+/// layout it would edit (the one on screen, else the person's copy of it, or
+/// the shipped one a clone would copy) takes herdr-nvim's patch, in memory.
+fn check_layout(home: &Path, panel_width: u32) -> Result<()> {
+    let shown = shown_layout()?;
+    let name = if shipped(home, &shown) {
+        copy_of(&shown, &personal_layouts(home))?.unwrap_or_else(|| shown.clone())
+    } else {
+        shown
+    };
+    let path = layout_path(home, &name);
+    let mut layout: Value = serde_json::from_str(
+        &fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?,
+    )
+    .with_context(|| format!("{} is not JSON", path.display()))?;
+    layout_patch::patch(&mut layout, panel_width)
+        .with_context(|| format!("herdr-nvim can't go into layout {name}"))?;
+    Ok(())
+}
+
 fn install_layout(home: &Path, panel_width: u32) -> Result<()> {
     let shown = shown_layout()?;
     let target = if shipped(home, &shown) {
@@ -249,7 +269,12 @@ pub fn setup_cmd() -> Result<()> {
         fs::write(&keys, "{}\n")?;
     }
     match args.first().map(String::as_str) {
+        // `install.sh` runs this before it changes anything.
+        Some("check") => check_layout(&home, panel_width(&args)?),
         Some("install") => {
+            // Checked first: nothing is written when the install can't finish.
+            let width = panel_width(&args)?;
+            check_layout(&home, width)?;
             let mut report = (Vec::new(), Vec::new());
             edit_json(&keys, &mut |value| {
                 report = merge_keys(value, &ours);
@@ -263,7 +288,7 @@ pub fn setup_cmd() -> Result<()> {
                 .1
                 .iter()
                 .for_each(|line| println!("keys: kept yours: {line}"));
-            install_layout(&home, panel_width(&args)?)?;
+            install_layout(&home, width)?;
             super::stale::report_after_install();
             Ok(())
         }
@@ -279,7 +304,7 @@ pub fn setup_cmd() -> Result<()> {
             uninstall_layouts(&home)
         }
         _ => bail!(
-            "usage: herdr-nvim app-setup install|uninstall --keys <keys.json> [--panel-width N]"
+            "usage: herdr-nvim app-setup check|install|uninstall --keys <keys.json> [--panel-width N]"
         ),
     }
 }
