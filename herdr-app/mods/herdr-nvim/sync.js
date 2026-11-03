@@ -42,7 +42,7 @@ import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPa
 // A Preview / Source swap in `tab` (the pane header, mods/herdr-nvim-header):
 // while it runs, and a moment after (the app's pane and terminal lists catch
 // up), the tab may show neither nvim nor its preview. Nothing is decided then.
-const SWAP_SETTLE_MS = 800, SWAP_MAX_MS = 10000;
+const SWAP_SETTLE_MS = 1500, SWAP_MAX_MS = 10000;
 function swapping(tab) {
   const s = shared("herdr-nvim.swap");
   if (!s || s.tab !== tab || Date.now() - s.at > SWAP_MAX_MS) return false;

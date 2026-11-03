@@ -9,10 +9,16 @@
 //
 // nvim's file comes from what the tab's nvim tells the tree (`app-current`'s
 // `watch` file, lua/herdr-nvim/app.lua `write_state`), watched for changes.
+//
+// The swap runs here, in the app, in one go: split this pane across its
+// parent with the other one (`across`, from `app-current --across`: both
+// nest in this pane's slot), then close this pane, so the new one has its
+// exact place and the app draws the change once. nvim keeps running: its
+// pane only attaches to the tab's daemon (`herdr-nvim sidebar`).
 
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { appHome, exec, notify, panes, props, readTextFile, setShared, shared, spaces, terminals, theme, watchFolder } from "herdr";
+import { appHome, exec, notify, panes, props, readTextFile, run, setShared, shared, spaces, terminals, theme, watchFolder } from "herdr";
 import Pane from "./pane-base.js";
 
 const KINDS = {
@@ -29,6 +35,8 @@ export default class Header extends Pane {
     super.init();
     this.file = null; // nvim's file, on herdr-nvim's nvim pane
     this.watching = null;
+    this.across = null; // the swap's split direction
+    this.cwd = null; // the tab's nvim's folder
     this.busy = false;
   }
 
@@ -58,16 +66,19 @@ export default class Header extends Pane {
   }
 
   // nvim's file, followed: the first look asks `app-current` where the tab's
-  // nvim writes it, then the header watches that file.
+  // nvim writes it (and the swap's direction and folder), then the header
+  // watches that file. The preview's header only needs the direction.
   follow(r, cx) {
     if (this.watching) return;
     this.watching = "starting";
     cx.spawn(async (cx) => {
-      const out = await exec(bin(), ["app-current", "--ctx", this.ctxOf(r)]).catch(() => null);
+      const out = await exec(bin(), ["app-current", "--across", "--ctx", this.ctxOf(r)]).catch(() => null);
       const at = out?.code === 0 ? JSON.parse(out.stdout) : null;
+      this.across = at?.across ?? null;
+      this.cwd = at?.tab_root ?? null;
       this.file = at?.file ?? null;
       cx.notify();
-      if (!at?.watch) return;
+      if (r.role !== "nvim" || !at?.watch) return;
       this.watching = at.watch;
       for (;;) {
         await watchFolder(dirname(at.watch));
@@ -81,16 +92,29 @@ export default class Header extends Pane {
 
   swap(r, cx) {
     if (this.busy) return;
+    const pane = props()?.pane;
+    // For herdr-nvim's controller (sync.js): mid-swap, the tab shows neither
+    // pane for a moment; that is not nvim closing (which would hide the tree).
+    const mark = { tab: r.tab, at: Date.now(), done: null };
+    if (this.across && this.cwd && pane) {
+      setShared("herdr-nvim.swap", mark);
+      if (r.role === "nvim") {
+        run("pane.split", { direction: this.across, pane, mod: "herdr-nvim", props: { preview: this.file, tab: r.tab, cwd: this.cwd } });
+      } else {
+        run("pane.split", { direction: this.across, pane, argv: [bin(), "sidebar", "--cwd", this.cwd] });
+      }
+      run("pane.close", { pane });
+      setShared("herdr-nvim.swap", { ...mark, done: Date.now() });
+      return;
+    }
+    // Not known yet (app-current still running or failed): herdr-nvim does it.
     this.busy = true;
     cx.notify();
     const args = r.role === "nvim" ? ["app-preview", "--file", this.file] : ["app-source"];
-    // For herdr-nvim's controller (sync.js): mid-swap, the tab shows neither
-    // pane for a moment; that is not nvim closing (which would hide the tree).
-    const swap = { tab: r.tab, at: Date.now(), done: null };
-    setShared("herdr-nvim.swap", swap);
+    setShared("herdr-nvim.swap", mark);
     cx.spawn(async (cx) => {
       const out = await exec(bin(), [...args, "--ctx", this.ctxOf(r)]).catch((e) => ({ code: 1, stderr: String(e) }));
-      setShared("herdr-nvim.swap", { ...swap, done: Date.now() });
+      setShared("herdr-nvim.swap", { ...mark, done: Date.now() });
       if (out.code !== 0) notify({ title: `herdr-nvim ${args[0]} failed`, body: (out.stderr || out.stdout || "").trim().slice(-400), level: "error" });
       this.busy = false;
       cx.notify();
@@ -100,7 +124,7 @@ export default class Header extends Pane {
   render(cx) {
     const head = super.render(cx);
     const r = this.role();
-    if (r?.role === "nvim") this.follow(r, cx);
+    if (r) this.follow(r, cx);
     const label =
       r?.role === "nvim" ? (kindOf(this.file) ? "Preview" : null)
       : r?.role === "preview" ? (kindOf(r.file) === "image" ? "nvim" : "Source")

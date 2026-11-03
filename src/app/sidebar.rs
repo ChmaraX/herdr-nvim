@@ -171,7 +171,7 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
             "direction": split,
             "pane": anchor,
             "mod": super::layout_patch::MOD,
-            "props": {"preview": file, "tab": raw},
+            "props": {"preview": file, "tab": raw, "cwd": ctx.cwd},
         }),
     )?;
     if let Some(pane) = old_preview {
@@ -208,6 +208,23 @@ fn across(doc: &doc::Doc, raw: &str, pane: &str, fallback: &'static str) -> &'st
         Some("column") => "right",
         _ => fallback,
     }
+}
+
+/// The direction to split the tab's nvim pane (else its preview) in for a
+/// swap that keeps its place (`across`); the pane header swaps them itself.
+pub(crate) fn swap_direction(ctx: &Ctx) -> Result<&'static str> {
+    let fallback = direction(config::load().sidebar.position);
+    let Some(doc) = doc::read()? else {
+        return Ok(fallback);
+    };
+    let raw = raw_tab(&ctx.tab);
+    let pane = find(&ctx.tab)?
+        .and_then(|terminal| doc::pane_of(&doc, &terminal).map(|(pane, _)| pane))
+        .or_else(|| doc::preview_of(&doc, raw).map(|(pane, _)| pane));
+    Ok(match pane {
+        Some(pane) => across(&doc, raw, &pane, fallback),
+        None => fallback,
+    })
 }
 
 /// What Files closed in this tab was a preview of `file`: the next Files

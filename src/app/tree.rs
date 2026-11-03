@@ -72,7 +72,8 @@ pub fn find_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim app-current --ctx <tab>`.
+/// `herdr-nvim app-current [--across] --ctx <tab>`; `--across` adds the
+/// direction the pane header splits in for a swap (`sidebar::swap_direction`).
 pub fn current_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
@@ -113,10 +114,12 @@ pub fn current_cmd() -> Result<()> {
     // The tab's folder for the tree: where the tab's nvim works (`:pwd`), which
     // doesn't move when another pane of the tab is focused or `cd`s.
     let tab_root = real("cwd").unwrap_or_else(|| real_root.clone());
-    println!(
-        "{}",
-        json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root})
-    );
+    let mut out =
+        json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root});
+    if args.iter().any(|a| a == "--across") {
+        out["across"] = json!(sidebar::swap_direction(&ctx)?);
+    }
+    println!("{out}");
     Ok(())
 }
 
