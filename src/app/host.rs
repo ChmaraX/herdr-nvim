@@ -5,9 +5,9 @@
 //! app splits a whole tab in one command (`app::sidebar`).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::{
@@ -140,19 +140,17 @@ impl Herdr for AppHost {
         Ok(doc::tab_infos(&doc))
     }
 
-    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
-        let output = rpc::hc()
-            .args(["read", pane, "--lines", &lines.to_string()])
-            .stdin(Stdio::null())
-            .output()
-            .context("failed to run hc read")?;
-        if !output.status.success() {
-            bail!(
-                "hc read {pane} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    /// The screen only, whatever `lines` asks: for history herdr-core scrolls
+    /// a full-screen program (pi's chat) back and forth while it is idle,
+    /// which took 5-6 s per `cmd-o` and moved the agent's view. The agent's
+    /// session log is where the older files come from.
+    fn read_pane(&mut self, pane: &str, _lines: u32) -> Result<String> {
+        let read = rpc::call("terminal.read", json!({"terminal": pane, "lines": 0}))?;
+        Ok(read
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned())
     }
 
     fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {

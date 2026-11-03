@@ -20,8 +20,10 @@ mod sessions;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod trace;
 
 fn main() {
+    trace::begin();
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
     // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
     // Must happen before anything spawns a child or a thread.
