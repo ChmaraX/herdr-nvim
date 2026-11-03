@@ -35,20 +35,40 @@ export async function pick(at) {
     width: 820,
     height: 470,
     layout: { type: "column", children: [
-      { type: "block", size: { px: 30 }, content: { mod: "herdr-nvim", props: { bar: true } } },
+      { type: "block", size: { px: 38 }, content: { mod: "herdr-nvim", props: { bar: true } } },
       { type: "block", content: { terminal: result.terminal } },
     ] },
   });
   shown = result.terminal;
 }
 
-// The dialog's title bar.
+// One key as a keycap: a small rounded box, as gitview draws its keys
+// (herdr-gitview mods/gitview/chrome.js `keycap`), so both read alike.
+function keycap(t, k) {
+  const symbol = k.length === 1 && !/[a-z0-9]/i.test(k);
+  return div().flex_none().min_w(18).h(18).px(5).flex().items_center().justify_center()
+    .rounded(4).border_1().border_color(t.border).bg(t.raised)
+    .when(!symbol, (e) => e.font_family("JetBrains Mono"))
+    .text_size(symbol ? 12 : 10.5).text_color(t.foreground).child(k);
+}
+
+function keyChip(t, caps, label) {
+  return h_flex().flex_none().gap(5).items_center()
+    .child(h_flex().flex_none().gap(2).children(caps.map((k) => keycap(t, k))))
+    .child(div().flex_none().text_size(11.5).text_color(t.dim).child(label));
+}
+
+// The dialog's title bar: its name, then the picker's keys as keycaps (the
+// picker draws no hint line of its own in the app).
 export class PickBar {
   render() {
     const t = theme();
-    return h_flex().size_full().px(12).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12.5)
+    return h_flex().size_full().px(14).gap(14).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12.5)
       .child(div().text_color(t.foreground).font_semibold().child("Open file from agent output"))
       .child(div().flex_1())
-      .child(div().text_color(t.dim).child("⏎ open in nvim · esc close"));
+      .child(keyChip(t, ["↑", "↓"], "move"))
+      .child(keyChip(t, ["⏎"], "open in nvim"))
+      .child(keyChip(t, ["^U"], "clear"))
+      .child(keyChip(t, ["esc"], "close"));
   }
 }

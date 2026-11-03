@@ -492,7 +492,25 @@ const LIST_TOP: u16 = 3;
 /// chrome is subtracted (Herdr's popup draws the surrounding frame and title,
 /// so the picker itself is borderless).
 fn viewport_rows(rows: u16) -> usize {
-    (rows.saturating_sub(CHROME_ROWS)).max(1) as usize
+    // In the app: no hint line, its bottom pad, nor the top pad.
+    let chrome = if hint_line() {
+        CHROME_ROWS
+    } else {
+        CHROME_ROWS - 3
+    };
+    (rows.saturating_sub(chrome)).max(1) as usize
+}
+
+/// The blank row above the query: inside the TUI's popup frame, not under the
+/// app dialog's title bar.
+fn top_pad() -> u16 {
+    u16::from(hint_line())
+}
+
+/// Whether the picker draws its own key hints: not in the Herdr app, whose
+/// dialog shows them as keycaps in its title bar (`pick.js` `PickBar`).
+fn hint_line() -> bool {
+    std::env::var("HERDR_NVIM_HOST").map_or(true, |host| host.trim() != "app")
 }
 
 /// One styled run of text in the right-hand metadata cluster.
@@ -536,7 +554,7 @@ fn render(
     let prompt = format!("› {query}");
     queue!(
         out,
-        MoveTo(PAD_X, 1),
+        MoveTo(PAD_X, top_pad()),
         SetForegroundColor(AMBER),
         Print("› "),
         ResetColor,
@@ -547,7 +565,7 @@ fn render(
     if count_col > prompt.chars().count() + PAD_X as usize {
         queue!(
             out,
-            MoveTo(count_col as u16, 1),
+            MoveTo(count_col as u16, top_pad()),
             SetAttribute(Attribute::Dim),
             Print(&count),
             SetAttribute(Attribute::Reset)
@@ -559,7 +577,7 @@ fn render(
     let viewport = viewport_rows(rows);
     let (first, count_rows) = scroll_window(cursor, visible.len(), viewport);
     for screen in 0..viewport {
-        let row = LIST_TOP + screen as u16;
+        let row = LIST_TOP - 1 + top_pad() + screen as u16;
         if screen < count_rows {
             let m = &visible[first + screen];
             queue!(out, MoveTo(PAD_X, row)).context("row move")?;
@@ -576,15 +594,17 @@ fn render(
     }
 
     // Keybind hint on the second-to-last row (one blank bottom-pad row below).
-    let hint = "↑↓ move  ⏎ open  ^u clear  esc close";
-    queue!(
-        out,
-        MoveTo(PAD_X, rows.saturating_sub(2)),
-        SetAttribute(Attribute::Dim),
-        Print(hint),
-        SetAttribute(Attribute::Reset)
-    )
-    .context("hint line")?;
+    if hint_line() {
+        let hint = "↑↓ move  ⏎ open  ^u clear  esc close";
+        queue!(
+            out,
+            MoveTo(PAD_X, rows.saturating_sub(2)),
+            SetAttribute(Attribute::Dim),
+            Print(hint),
+            SetAttribute(Attribute::Reset)
+        )
+        .context("hint line")?;
+    }
 
     out.flush().context("flushing overlay")?;
     Ok(())
