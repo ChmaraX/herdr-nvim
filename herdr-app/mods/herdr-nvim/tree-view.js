@@ -41,7 +41,7 @@ export class Tree {
   constructor(cx) {
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
-    this.scrolledTo = null; // the selection last scrolled into view
+    this.scrolledTo = null; // the selected row last scrolled into view (`scrollKey`)
     this.model = new TreeModel();
     this.place = null;
     this.selected = 0;
@@ -83,6 +83,9 @@ export class Tree {
     const moved = next.tab !== this.place?.tab || next.machine !== this.place?.machine || (!this.rootTab && next.cwd);
     this.place = next;
     if (!moved) return;
+    // Until the new tab's state file is known, none is read (the old tab's
+    // would put its file and folder in this one).
+    this.watching = null;
     if (next.machine || !next.cwd) {
       this.rootTab = next.tab;
       this.tabRoot = null;
@@ -170,6 +173,7 @@ export class Tree {
       const { file, watch } = await current(where);
       if (this.currentGen !== gen) return;
       this.watching = watch;
+      this.watchingTab = where.tab;
       this.readTreeKey();
       if (file) await this.reveal(file, cx);
       if (!watch) return;
@@ -209,7 +213,7 @@ export class Tree {
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
     // Once the tree watches the tab's state file, it holds both (real paths,
     // app.lua `write_state`): no process. Before, herdr-nvim answers.
-    const state = this.watching ? await this.nvimState() : null;
+    const state = this.watching && this.watchingTab === this.place.tab ? await this.nvimState() : null;
     const { file, tab_root } = state?.cwd ? { file: state.file ?? null, tab_root: state.cwd } : await current(this.place);
     if (seq !== this.revealSeq) return;
     if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
@@ -536,13 +540,17 @@ export class Tree {
       .when(Boolean(mark), (el) => el.child(div().text_size(11).text_color(markColor).child(mark)));
   }
 
+  scrollKey(row) {
+    return `${this.filter ? "find" : `tree:${this.model.root}`}:${row?.abs}`;
+  }
+
   // A click on a row (the list reports its key, the row's path): select it,
   // take the keyboard, open it.
   clicked(key, cx) {
     const rows = this.rows(), at = rows.findIndex((r) => r.abs === key);
     if (at < 0) return;
     this.selected = at;
-    this.scrolledTo = at; // already on screen: it was clicked
+    this.scrolledTo = this.scrollKey(rows[at]); // already on screen: it was clicked
     this.handle.focus();
     cx.spawn(async (cx) => this.openRow(rows[at], cx));
   }
@@ -569,8 +577,12 @@ export class Tree {
       if (at >= 0) { this.selected = at; this.revealing = null; }
     }
     this.selected = Number.isInteger(this.selected) ? Math.min(this.selected, Math.max(0, rows.length - 1)) : 0;
-    if (this.selected !== this.scrolledTo && rows.length) {
-      this.scrolledTo = this.selected;
+    // The selected row, by what it is (the list, the root, its path): a new
+    // selection, a find starting or ending, or rows moving under the same
+    // index each bring it into view; a scroll alone moves nothing.
+    const key = rows.length ? this.scrollKey(rows[this.selected]) : null;
+    if (key && key !== this.scrolledTo) {
+      this.scrolledTo = key;
       this.scroll.scroll_to_item(this.selected);
     }
     const empty = this.place?.machine ? `This space is on ${this.place.machine}; herdr-nvim runs nvim on this computer.`

@@ -46,6 +46,7 @@ const MEMORY = "herdr-nvim.preview-memory";
 export class Sync {
   constructor(cx) {
     this.kept = new Set(); // tabs whose tree the tree key hid, nvim kept
+    this.expects = new Map(); // tab -> what our own open/close will show (nvimOf)
     cx.spawn(async (cx) => {
       await treeMode();
       for (;;) {
@@ -70,15 +71,17 @@ export class Sync {
   // the controller swaps them, nvim keeps running). Right after our own open
   // or close the app's terminal list may not show it yet: until it shows that
   // terminal there (or gone), the result of the action is assumed.
+  // Each tab's own expectation, kept until that tab's lists show it: a look
+  // at another tab meanwhile doesn't drop it.
   nvimOf(tab) {
-    const seen = nvimPanes(tab), e = this.expect, preview = previewPane(tab);
-    if (e?.tab === tab) {
+    const seen = nvimPanes(tab), e = this.expects.get(tab), preview = previewPane(tab);
+    if (e) {
       if (e.opened && !seen.includes(e.opened)) return true;
       if (e.preview && !preview) return true;
       if (e.closed && seen.includes(e.closed)) return seen.length > 1 || Boolean(preview);
       if (e.closedPreview && preview === e.closedPreview) return seen.length > 0;
+      this.expects.delete(tab);
     }
-    this.expect = null;
     return seen.length > 0 || Boolean(preview);
   }
 
@@ -209,7 +212,7 @@ export class Sync {
       if (pane || preview) {
         if (preview) setShared(MEMORY, { ...memory, [at.tab]: (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null });
         for (const p of [pane, preview]) if (p) run("pane.close", { pane: p });
-        this.expect = { tab: at.tab, opened: null, closed: terminal, preview: false, closedPreview: preview };
+        this.expects.set(at.tab, { opened: null, closed: terminal, preview: false, closedPreview: preview });
         return { closed: terminal };
       }
     }
@@ -219,13 +222,12 @@ export class Sync {
     if (out === null) return null;
     let made = {};
     try { made = JSON.parse(out || "{}"); } catch {}
-    this.expect = {
-      tab: at.tab,
+    this.expects.set(at.tab, {
       opened: made.terminal ?? null,
       closed: made.closed ?? null,
       preview: Boolean(made.preview),
       closedPreview: made.closed_preview ?? null,
-    };
+    });
     return made;
   }
 

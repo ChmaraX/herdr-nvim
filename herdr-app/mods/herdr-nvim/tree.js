@@ -8,13 +8,11 @@ export const PER_FOLDER = 500;
 
 // One process per folder: its entries ("d"/"f" + name), then an "x" record,
 // then the names git ignores there (`check-ignore -z`, nothing outside a repo).
-const LIST = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+const LIST = 'dir=$1; shift; n=0; for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
   + 'name=${p##*/}; [ "$name" = .git ] && continue; '
-  + 'if [ -d "$p" ] && [ ! -L "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; '
-  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$1" || exit 1; printf "x\\0x\\0"; '
-  + 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
-  + 'name=${p##*/}; [ "$name" = .git ] && continue; printf "%s\\0" "$name"; '
-  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done | git -C "$1" check-ignore -z --stdin 2>/dev/null; exit 0';
+  + 'if [ -d "$p" ] && [ ! -L "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; set -- "$@" "$name"; '
+  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$dir" || exit 1; printf "x\\0x\\0"; '
+  + '[ "$#" -gt 0 ] && printf "%s\\0" "$@" | git -C "$dir" check-ignore -z --stdin 2>/dev/null; exit 0';
 
 // {entries: folders first, then by name; ignored: the names git ignores}.
 export async function listFolder(path) {
@@ -28,12 +26,14 @@ export async function listFolder(path) {
   return { entries, ignored };
 }
 
-// A folder's repo top (null outside one), asked once per folder.
+// A folder's repo top (null outside one).
 const tops = new Map();
+// Only a repo found is kept: a folder may become one (`git init`).
 async function topOf(cwd) {
   if (!tops.has(cwd)) {
     const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd }).catch(() => null);
-    tops.set(cwd, top?.code === 0 ? top.stdout.trim() : null);
+    if (top?.code !== 0) return null;
+    tops.set(cwd, top.stdout.trim());
   }
   return tops.get(cwd);
 }
