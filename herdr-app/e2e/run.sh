@@ -775,11 +775,13 @@ say "r on a modified buffer: renamed to zz-dirty.txt, still modified with its ed
 tree_key text:q
 # Nothing outside the tab's folder through a symlink in it.
 mkdir -p "$root/outside"; ln -s "$root/outside" "$demo/link"
-out=$("$wrapper" fs "{\"op\":\"create\",\"path\":\"$demo/link/escape.txt\"}" --ctx "$ctx_a" 2>&1 || true)
+# As the tree sends it (ops.js fsOp: the tab's folder as root): answered
+# {outside} for the tree to ask the person, nothing made.
+out=$("$wrapper" fs "{\"op\":\"create\",\"root\":\"$demo\",\"path\":\"$demo/link/escape.txt\"}" --ctx "$ctx_a" 2>&1 || true)
 echo "$out" | grep -q 'outside' || fail "create through a symlink to outside the tab's folder was not refused: $out"
 [ ! -e "$root/outside/escape.txt" ] || fail "a file was made outside the tab's folder through a symlink"
 rm "$demo/link"
-say "fs: a create through a symlink in the tab's folder to elsewhere is refused (outside)"
+say "fs: a create through a symlink in the tab's folder to elsewhere is not done; the tree is told to ask (outside)"
 # No focused terminal and no folder from the mod: the tab's folder from the
 # app's document, never this process's own folder.
 "$wrapper" daemons stop "$space:$tab_b" --force >/dev/null
