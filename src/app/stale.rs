@@ -61,6 +61,10 @@ pub(crate) fn plan(current: Option<&str>, look: &Probe) -> Plan {
 }
 
 /// Pure: the notice for a stale daemon that was kept.
+/// What nvim itself shows (one line; the toast has `dirty_notice`).
+const SHORT_NOTICE: &str =
+    "herdr-nvim: kept the old version for your unsaved work; save (:wa), then reopen nvim";
+
 pub(crate) fn dirty_notice(look: &Probe) -> String {
     let count = |n: Option<u32>, what: &str| match n {
         Some(0) => None,
@@ -106,10 +110,17 @@ pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<Option<String>> {
         }
         Plan::KeepDirty => {
             let notice = dirty_notice(&look);
+            // In nvim, one line that fits beside the ruler: a longer message
+            // waits at a hit-enter prompt, and no request gets past that (the
+            // tree's operations would fail). The app's toast says it all;
+            // `g:herdr_nvim_kept` keeps the whole line.
             let expr = format!(
-                "luaeval(\"vim.api.nvim_create_autocmd('UIEnter', {{once = true, callback = \
-                 function() vim.schedule(function() vim.notify(_A, vim.log.levels.WARN) end) end}})\", {})",
-                daemon::vim_string_literal(&notice)
+                "luaeval(\"(function(m) vim.g.herdr_nvim_kept = m; \
+                 vim.api.nvim_create_autocmd('UIEnter', {{once = true, callback = \
+                 function() vim.schedule(function() local w = vim.o.columns - 25; \
+                 if vim.fn.strdisplaywidth(m) > w then m = vim.fn.strcharpart(m, 0, w) .. '…' end; \
+                 vim.api.nvim_echo({{{{m, 'WarningMsg'}}}}, true, {{}}) end) end}}) end)(_A)\", {})",
+                daemon::vim_string_literal(SHORT_NOTICE)
             );
             let socket = registry::socket_path(tab);
             let _ = daemon::remote_expr_within(&socket, &expr, &sidebar, ASK_WITHIN);

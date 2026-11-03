@@ -710,10 +710,7 @@ sidebar_a=$(sidebar_of "$tab_a")
 sleep 1.5
 alive "$pid_a" || fail "a stale nvim with an unsaved buffer was restarted"
 shot 23-stale-unsaved-kept-toast
-# On nvim's screen (its notice may wait at a hit-enter prompt, which no
-# request gets past).
-screen_has() { hc read "$(sidebar_of "$tab_a")" --lines 0 2>/dev/null | grep -q -- "$1"; }
-poll 10 screen_has 'before the last install' ||
+poll 10 eval_has "$sock_a" 'get(g:, "herdr_nvim_kept", "")' 'unsaved work' ||
   fail "nvim did not say why it was kept"
 say "a stale nvim with an unsaved buffer was kept ($pid_a), with a toast and a message in nvim (shot 23)"
 nvim_eval "$sock_a" 'execute("bwipeout!")' >/dev/null
