@@ -82,7 +82,7 @@ cleanup() {
   done
   # Daemons of this run only: their sockets are in this run's folder.
   for s in "$root"/run/app/*.sock; do
-    [ -S "$s" ] && nvim --headless --server "$s" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
+    [ -S "$s" ] && perl -e 'alarm 5; exec @ARGV' nvim --headless --server "$s" --remote-send '<C-\><C-n><cmd>qa!<cr>' >/dev/null 2>&1
   done
   rm -rf "$root"
 }
@@ -117,6 +117,8 @@ sock_of() { ls "$root"/run/app/*"${2:0:12}".sock 2>/dev/null | head -1; } # sock
 bounded() { perl -e 'alarm shift; exec @ARGV' "$@"; } # bounded <seconds> <command...>
 nvim_eval() { bounded 5 nvim --headless --server "$1" --remote-expr "$2" 2>/dev/null; }
 daemon_pid() { nvim_eval "$1" 'getpid()'; }
+eval_has() { nvim_eval "$1" "$2" | grep -q -- "$3"; } # eval_has <socket> <expr> <pattern>
+eval_is() { [ "$(nvim_eval "$1" "$2")" = "$3" ]; }    # eval_is <socket> <expr> <value>
 nvim_at() { [ "$(nvim_eval "$1" 'expand("%:t") . ":" . line(".")')" = "$2" ]; } # nvim_at <socket> <file:line>
 alive() { kill -0 "$1" 2>/dev/null; }
 
@@ -171,7 +173,8 @@ shown_layout() { H status | jget layout; }
 shown_is() { [ "$(shown_layout)" = "$1" ]; }
 ldiff() { "$py" "$here/layout_diff.py" "$@" | tee -a "$log"; } # ldiff BEFORE AFTER --expect JSON | --same BEFORE AFTER
 no_change='{"changed": {}, "added": [], "removed": []}'
-in_slot='{"changed": {"files": ["content"], "panel": ["size"], "root": ["floating"]}, "added": [], "removed": []}'
+# The tab block's (`main`) content: its pane header, herdr-nvim's own one.
+in_slot='{"changed": {"files": ["content"], "main": ["content"], "panel": ["size"], "root": ["floating"]}, "added": [], "removed": []}'
 installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
 echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
@@ -187,7 +190,7 @@ echo "$again" | grep -q 'already uses herdr-nvim' || fail "a second install is n
 say "second install: $again"
 layouts_installed=$(layouts_now)
 ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$in_slot" ||
-  fail "main-copy differs from main elsewhere than the files slot, the panel width and the controller"
+  fail "main-copy differs from main elsewhere than the files slot, the pane header, the panel width and the controller"
 "$py" -c 'import json,sys; l=json.load(open(sys.argv[1]))
 def find(n,i): return n if n.get("id")==i else next((x for c in n.get("children",[]) for x in [find(c,i)] if x), None)
 print("  files:", json.dumps(find(l,"files")["content"]), " panel:", find(l,"panel")["size"], " floating:", json.dumps(l["floating"]))' "$layouts/main-copy.json" | tee -a "$log"
@@ -427,7 +430,7 @@ shot 13-move-confirm
 tree_key enter
 poll 10 test -f "$demo/src/deep/notes.md" || fail "m: notes.md not moved into src/deep"
 [ ! -e "$demo/src/notes.md" ] || fail "m left src/notes.md"
-poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'expand(\"%:p\")' | grep -q 'src/deep/notes.md'" || fail "nvim's buffer did not follow the move"
+poll 10 eval_has "$sock_a" 'expand("%:p")' 'src/deep/notes.md' || fail "nvim's buffer did not follow the move"
 say "Tab marked notes.md, m moved it into src/deep after the confirm; nvim's buffer followed"
 
 open_in_nvim "$demo/src/copied.txt"
@@ -544,7 +547,7 @@ poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"liv
 keys 14:cmd
 poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
 sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
-poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'maparg(\"<leader>e\",\"n\",0,1).desc' | grep -qx 'Edit something'" ||
+poll 10 eval_is "$sock_a" 'maparg("<leader>e","n",0,1).desc' 'Edit something' ||
   fail "a <leader>e that opens no explorer was taken over"
 say "an nvim whose <leader>e is 'Edit something' keeps it"
 
@@ -650,7 +653,7 @@ keys 14:cmd
 poll 15 sidebar_of "$tab_a" || fail "tree=nvim: cmd-e did not open nvim"
 sock_a=$(sock_of "$space" "$tab_a")
 panel_is hidden || fail "tree=nvim: the Files panel showed"
-poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'join(map(nvim_list_wins(), {_,w -> getbufvar(winbufnr(w), \"&filetype\")}), \",\")' | grep -q netrw" ||
+poll 10 eval_has "$sock_a" 'join(map(nvim_list_wins(), {_,w -> getbufvar(winbufnr(w), "&filetype")}), ",")' netrw ||
   fail "tree=nvim: nvim's own explorer did not open"
 sleep 0.8
 shot 17-tree-nvim-mode
@@ -680,7 +683,7 @@ echo old-e2e > "$stamp_file"
 "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
 keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
 sock_a=$(sock_of "$space" "$tab_a"); poll 10 test -S "$sock_a" || fail "no daemon socket"
-poll 10 sh -c "[ \"\$(nvim --headless --server $sock_a --remote-expr '\$HERDR_NVIM_RUNTIME_STAMP' 2>/dev/null)\" = old-e2e ]" ||
+poll 10 eval_is "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP' old-e2e ||
   fail "the daemon did not record old-e2e"
 keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
 old_pid=$(daemon_pid "$sock_a")
@@ -693,7 +696,7 @@ say "install: reported 1 of 2 nvims stale, stopped none (tab A's $old_pid still 
 keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
 sidebar_a=$(sidebar_of "$tab_a")
 poll 10 sh -c "! kill -0 $old_pid" || fail "reopening did not restart the stale nvim"
-poll 10 sh -c "[ \"\$(nvim --headless --server $sock_a --remote-expr '\$HERDR_NVIM_RUNTIME_STAMP' 2>/dev/null)\" = $real_stamp ]" ||
+poll 10 eval_is "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP' "$real_stamp" ||
   fail "the restarted nvim is not on the installed runtime"
 pid_a=$(daemon_pid "$sock_a")
 say "reopening the pair restarted the stale clean nvim ($old_pid -> $pid_a) on runtime $real_stamp"
@@ -707,7 +710,10 @@ sidebar_a=$(sidebar_of "$tab_a")
 sleep 1.5
 alive "$pid_a" || fail "a stale nvim with an unsaved buffer was restarted"
 shot 23-stale-unsaved-kept-toast
-poll 10 sh -c "nvim --headless --server $sock_a --remote-expr 'execute(\"messages\")' 2>/dev/null | grep -q 'before the last install'" ||
+# On nvim's screen (its notice may wait at a hit-enter prompt, which no
+# request gets past).
+screen_has() { hc read "$(sidebar_of "$tab_a")" --lines 0 2>/dev/null | grep -q -- "$1"; }
+poll 10 screen_has 'before the last install' ||
   fail "nvim did not say why it was kept"
 say "a stale nvim with an unsaved buffer was kept ($pid_a), with a toast and a message in nvim (shot 23)"
 nvim_eval "$sock_a" 'execute("bwipeout!")' >/dev/null
@@ -783,7 +789,7 @@ say "fs: a create through a symlink in the tab's folder to elsewhere is refused 
 (cd / && "$wrapper" toggle --state open --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null) ||
   fail "toggle with only a space and a tab failed"
 sock_b=$(sock_of "$space" "$tab_b"); poll 10 test -S "$sock_b" || fail "no daemon for tab B"
-poll 10 sh -c "[ \"\$(nvim --headless --server $sock_b --remote-expr 'getcwd()' 2>/dev/null)\" = '$real_demo' ]" ||
+poll 10 eval_is "$sock_b" 'getcwd()' "$real_demo" ||
   fail "tab B's nvim did not start in the tab's folder ($(nvim_eval "$sock_b" 'getcwd()'))"
 pid_b=$(daemon_pid "$sock_b")
 (cd / && "$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null)
@@ -918,7 +924,7 @@ echo "$uninstalled" | grep -q 'not stopping .*1 unsaved buffer' || fail "uninsta
 alive "$pid_d" || fail "uninstall stopped an nvim with unsaved work without --force"
 [ -x "$runtime_d/bin/herdr-nvim" ] || fail "uninstall removed the runtime a kept nvim runs"
 say "uninstall: listed and kept the nvim with an unsaved buffer ($pid_d), and its runtime"
-nvim --headless --server "$sock_d" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
+bounded 5 nvim --headless --server "$sock_d" --remote-send '<C-\><C-n><cmd>qa!<cr>' >/dev/null 2>&1
 poll 10 sh -c "! kill -0 $pid_d" || fail "the kept nvim did not quit"
 H do space.close "{\"id\":\"$space_d\",\"confirmed\":true}" >/dev/null
 [ "$(layouts_now)" = "$layouts_installed" ] || fail "uninstall deleted or added a layout: $(layouts_now)"
@@ -995,11 +1001,11 @@ json.dump(k, open(sys.argv[1], "w"), indent=2)
 PY
 H do layout.switch '{"name":"mine"}' >/dev/null; poll 10 shown_is mine || fail "no switch to mine"
 cp "$layouts/mine.json" "$root/before-mine.json"; cp "$HERDR_APP_HOME/keys.json" "$root/before-keys.json"; before=$(layouts_now)
-install_into mine '^layout: mine: Files now opens'
+install_into mine '^layout: mine: Files opens'
 grep -q '^keys: kept yours: global cmd-o is "app.palette"' "$log" || fail "the install did not report the key it kept"
 grep -q '"cmd-o": "app.palette"' "$HERDR_APP_HOME/keys.json" || fail "the install replaced the person's cmd-o"
 [ "$(layouts_now)" = "$before" ] || fail "the install made a layout: $(layouts_now)"
-ldiff "$root/before-mine.json" "$layouts/mine.json" --expect '{"changed": {"files": ["content"], "root": ["floating"]}, "added": [], "removed": []}' ||
+ldiff "$root/before-mine.json" "$layouts/mine.json" --expect '{"changed": {"files": ["content"], "main": ["content"], "root": ["floating"]}, "added": [], "removed": []}' ||
   fail "mine: wrong changes (its width and Changes are the person's)"
 uninstall_back mine "$root/before-mine.json" "$before"
 ldiff --same "$root/before-keys.json" "$HERDR_APP_HOME/keys.json" || fail "uninstall did not put keys.json back"
@@ -1009,7 +1015,7 @@ say "10c: a personal layout edited in place, its width and Changes kept, cmd-o k
 # standard side panel is added beside the tab, and works.
 H do layout.clone '{"name":"terminals"}' >/dev/null; poll 10 shown_is terminals-copy || fail "no terminals-copy"
 cp "$layouts/terminals-copy.json" "$root/before-terminals-copy.json"; before=$(layouts_now)
-install_into terminals-copy '^layout: terminals-copy: Files now opens'
+install_into terminals-copy '^layout: terminals-copy: Files opens'
 ldiff "$root/before-terminals-copy.json" "$layouts/terminals-copy.json" \
   --expect '{"changed": {"root": ["floating"]}, "added": ["files", "herdr-nvim-row", "panel", "panel-body"], "removed": []}' ||
   fail "terminals-copy: wrong changes"
