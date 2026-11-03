@@ -142,6 +142,22 @@ pub(crate) fn pane_of(doc: &Doc, terminal: &str) -> Option<(String, String)> {
     })
 }
 
+/// The preview pane of tab `raw` (a `herdr-nvim` mod pane with
+/// `props.preview`, put in nvim's place by `app-preview`): its block id and
+/// the file it shows.
+pub(crate) fn preview_of(doc: &Doc, raw: &str) -> Option<(String, String)> {
+    let (_, t) = tab(doc, raw)?;
+    node::walk(&t.root).find_map(|n| {
+        if n.pointer("/content/mod").and_then(Value::as_str) != Some(super::layout_patch::MOD) {
+            return None;
+        }
+        let file = n
+            .pointer("/content/props/preview")
+            .and_then(Value::as_str)?;
+        Some((node::id(n)?.to_owned(), file.to_owned()))
+    })
+}
+
 /// The terminal the pane (block id) `pane` shows, in any tab.
 pub(crate) fn terminal_of_pane(doc: &Doc, pane: &str) -> Option<String> {
     doc.spaces

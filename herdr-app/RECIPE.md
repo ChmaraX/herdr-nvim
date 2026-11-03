@@ -28,6 +28,15 @@ their layout).
   as tall as the tab, and the tab's other panes keep their arrangement on its
   left (the tab area is shared half and half; drag the divider). Its header
   reads `nvim · <file>`. nvim's own file explorer is not opened.
+- **Preview** (`herdr-nvim-header`, the app's pane header plus one button):
+  on the nvim pane's header, while nvim's file is markdown, an image or an
+  SVG, a **Preview** button (11.5px, medium, a 1px `border` pill, `hover`
+  on hover) at the right end, always shown. The preview pane takes nvim's
+  place: markdown rendered (`TextView.markdown`, selectable, scrolling),
+  an image or SVG fitted with 14px around it; its header reads
+  `Preview · <file>` with a **Source** button (**nvim** for an image or an
+  SVG). A file it can't show reads "Too big to preview (N MB)." or "The file
+  is gone." in `dim`.
 - **Picker** (`cmd-o`, the `herdr-nvim.pick` command): an 820×470 dialog titled "Open file from agent
   output" on a 30px `chrome` bar with a `border` line and a `dim` hint; under
   it herdr-nvim's terminal picker: the files the agent's session log shows it
@@ -174,6 +183,19 @@ them, `?` lists them, and this table is that file's output
   `{"terminal": "tN"}`; the panel opens with it). It needs no herdr-nvim mod
   copy on screen.
 
+- **Preview / Source** swap in place (`herdr-nvim app-preview --file F`,
+  `app-source`): the preview splits nvim's pane, then nvim's pane closes,
+  so the preview has nvim's exact place; Source does the reverse. nvim
+  keeps running meanwhile (its daemon), with its buffers, cursor, undo and
+  unsaved edits. Enter on an image or SVG in the tree opens the preview
+  directly; markdown and everything else open in nvim. Opening any file in
+  nvim (the tree, `cmd-o`, `open`) while the preview shows brings nvim back
+  with it. The preview reloads when its file changes on disk (saving in
+  nvim). For the pair the preview counts as nvim's pane: Files closes it
+  with the tree and the next Files shows it again (remembered per tab in
+  `<state dir>/app-preview/<tab key>`); a tab switch keeps each tab's.
+  Layouts without pane headers get no button. No keys.
+
 ## Built from
 
 ### Layout footprint
@@ -193,6 +215,12 @@ screen (`src/app/layout_patch.rs`, `src/app/setup.rs`):
   props: {role: "sync"}}, edge: "bottom", align: "end"}`: an empty floating
   block (0×0, invisible) whose mod copy is always rendered. A hidden block's
   copy is not rendered at all, so the tree itself can't see the panel close;
+- every pane header that is the app's own (`content.pane.header.content`
+  `{mod: "pane"}` on a tab block) becomes `{mod: "herdr-nvim-header",
+  props: {replaces: <old>}}`; uninstall puts the old one back. The header's
+  `pane-base.js` is the app's shipped `mods/pane/main.js` as the install
+  found it (a mod can't import another mod's files), else the repo's copy:
+  a later app update to the shipped header reaches it at the next install;
 - the stack's parent (`panel`) gets `size: {px: 300}` (`install.sh
   --panel-width N`), only if its width is still the shipped 368 or the
   width a previous install set; a person's drag resizes it as before.

@@ -2,12 +2,14 @@
 // full-height pane of the tab backed by that tab's persistent daemon) and a
 // native file tree beside it, opened and closed together.
 //
-// One mod, four roles, chosen by where it is shown:
+// One mod, five roles, chosen by where it is shown:
 // - the side panel's `files` slot (the tab bar's Files button shows it): the
 //   file tree (tree-view.js), with the keyboard when `pane.go` or
 //   cmd-shift-e gives it (mod.json "focusable");
 // - an empty floating block, props {role: "sync"}: the controller that opens
 //   and closes the tab's nvim pane with the panel (sync.js);
+// - a pane with props {preview, tab}: the file rendered in the tab's nvim's
+//   place (preview.js; `herdr-nvim app-preview` puts it there);
 // - a dialog with props {dialog}: the tree's new/rename/copy/delete prompts
 //   (dialog.js); with props {help}: its key list (keys-help.js); with props
 //   {bar}: the title of cmd-o's picker (pick.js);
@@ -23,13 +25,15 @@ import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Dialog } from "./dialog.js";
 import { KeyHelp } from "./keys-help.js";
 import { PickBar } from "./pick.js";
+import { Preview } from "./preview.js";
 import { Sync } from "./sync.js";
 import { Tree } from "./tree-view.js";
 
 export default class HerdrNvim extends View {
   init(_props, cx) {
-    const { overlay, role, dialog, help, bar } = props() ?? {};
-    if (bar) this.part = new PickBar();
+    const { overlay, role, dialog, help, bar, preview } = props() ?? {};
+    if (preview) this.part = new Preview(props(), cx);
+    else if (bar) this.part = new PickBar();
     else if (help) this.part = new KeyHelp(cx);
     else if (dialog) this.part = new Dialog(cx);
     else if (overlay) {

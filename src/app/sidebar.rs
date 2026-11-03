@@ -71,7 +71,8 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
 
 /// Split the whole tab and run the sidebar in the new pane: `pane.split`
 /// accepts any node of the tab, so splitting its root node puts the sidebar
-/// beside all of its panes, full height.
+/// beside all of its panes, full height. A preview showing in nvim's place
+/// (`app-preview`) is swapped back instead: nvim takes the preview's pane.
 ///
 /// A stale daemon (an older runtime's) is restarted first, or kept with a
 /// notice when it has unsaved work (`stale`).
@@ -82,9 +83,17 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
             None
         });
     let config = config::load();
-    let root = doc::read()?
-        .and_then(|doc| doc::root_of(&doc, raw_tab(&ctx.tab)))
-        .with_context(|| format!("tab {} is not in the app's layout", raw_tab(&ctx.tab)))?;
+    let doc = doc::read()?;
+    let preview = doc
+        .as_ref()
+        .and_then(|doc| doc::preview_of(doc, raw_tab(&ctx.tab)));
+    let anchor = match &preview {
+        Some((pane, _)) => pane.clone(),
+        None => doc
+            .as_ref()
+            .and_then(|doc| doc::root_of(doc, raw_tab(&ctx.tab)))
+            .with_context(|| format!("tab {} is not in the app's layout", raw_tab(&ctx.tab)))?,
+    };
     let mut argv = vec![
         cli::self_command()?.to_string_lossy().into_owned(),
         "sidebar".to_owned(),
@@ -99,7 +108,7 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
         "pane.split",
         &json!({
             "direction": direction(config.sidebar.position),
-            "pane": root,
+            "pane": anchor,
             "argv": argv,
         }),
     )?;
@@ -111,10 +120,80 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     // The sidebar labels itself too; doing it here as well means a toggle
     // right after this one already finds it.
     label(&terminal, raw_tab(&ctx.tab))?;
+    if let Some((pane, _)) = preview {
+        cli::app_do("pane.close", &json!({"pane": pane}))?;
+    }
+    forget_preview(&ctx.tab);
     Ok(Opened {
         pane: terminal,
         notice,
     })
+}
+
+/// Show `file` rendered (the `herdr-nvim` mod's preview role) in nvim's
+/// place: split nvim's pane (else a preview's, else the whole tab) with the
+/// preview, then close what it replaces. nvim's daemon keeps running, with
+/// its buffers, cursor and undo; `open` brings it back. Returns the
+/// preview's pane, if the app named it.
+pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
+    let config = config::load();
+    let doc = doc::read()?.context("the app's layout is unknown")?;
+    let raw = raw_tab(&ctx.tab);
+    let nvim = find(&ctx.tab)?;
+    let nvim_pane = nvim
+        .as_deref()
+        .and_then(|terminal| doc::pane_of(&doc, terminal))
+        .map(|(pane, _)| pane);
+    let old_preview = doc::preview_of(&doc, raw).map(|(pane, _)| pane);
+    let anchor = match nvim_pane.clone().or_else(|| old_preview.clone()) {
+        Some(pane) => pane,
+        None => doc::root_of(&doc, raw)
+            .with_context(|| format!("tab {raw} is not in the app's layout"))?,
+    };
+    let made = cli::app_do(
+        "pane.split",
+        &json!({
+            "direction": direction(config.sidebar.position),
+            "pane": anchor,
+            "mod": super::layout_patch::MOD,
+            "props": {"preview": file, "tab": raw},
+        }),
+    )?;
+    if let Some(pane) = old_preview {
+        cli::app_do("pane.close", &json!({"pane": pane}))?;
+    }
+    if let Some(pane) = nvim_pane {
+        cli::app_do("pane.close", &json!({"pane": pane}))?;
+    }
+    forget_preview(&ctx.tab);
+    // The preview's pane (`true` when the app didn't name it).
+    let pane = made.get("pane").cloned().filter(|p| !p.is_null());
+    let mut out = json!({"preview": pane.unwrap_or(json!(true))});
+    if let Some(terminal) = nvim {
+        out["closed"] = json!(terminal);
+    }
+    Ok(out)
+}
+
+/// What Files closed in this tab was a preview of `file`: the next Files
+/// opens that preview again.
+fn remember_preview(tab: &str, file: &str) {
+    let path = crate::state::preview_memory_path(tab);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, file);
+}
+
+fn forget_preview(tab: &str) {
+    let _ = crate::state::remove_file_if_exists(&crate::state::preview_memory_path(tab));
+}
+
+/// The preview Files closed in this tab, if its file is still there.
+fn remembered_preview(tab: &str) -> Option<String> {
+    std::fs::read_to_string(crate::state::preview_memory_path(tab))
+        .ok()
+        .filter(|file| std::path::Path::new(file).is_file())
 }
 
 fn label(terminal: &str, tab: &str) -> Result<()> {
@@ -203,31 +282,82 @@ pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
 
 /// `herdr-nvim toggle [--state open|close] [--ctx JSON]`: open or close this
 /// tab's nvim pane. With `--state` it is idempotent: the Files panel's
-/// controller says what it wants, never "the other way round". Prints
-/// `{"terminal": "tN"}` (open) or `{"closed": "tN"}`.
+/// controller says what it wants, never "the other way round". A preview in
+/// nvim's place (`app-preview`) counts as the open pane: closing closes it
+/// and remembers it, the next open shows it again. Prints
+/// `{"terminal": "tN"}` (nvim opened), `{"preview": pane}` (preview opened)
+/// or `{"closed": "tN"}`.
 pub fn toggle_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let want = want_from_args(&args)?;
     let ctx = ctx(&cli::read_ctx(&args)?)?;
     // Best-effort: a reap failure must never block a toggle.
     let _ = watch::reconcile();
+    let terminal = find(&ctx.tab)?;
+    let preview = doc::read()?.and_then(|doc| doc::preview_of(&doc, raw_tab(&ctx.tab)));
+    let shown = terminal.is_some() || preview.is_some();
     // What changed, for the caller to wait on: the pane's terminal, opened
     // (`terminal`) or closed (`closed`).
-    let made = match (find(&ctx.tab)?, want) {
-        (Some(terminal), Want::Flip | Want::Close) => {
-            close(&terminal)?;
-            json!({"closed": terminal})
-        }
-        (None, Want::Flip | Want::Open) => {
-            let opened = open(&ctx)?;
-            match opened.notice {
-                Some(notice) => json!({"terminal": opened.pane, "notice": notice}),
-                None => json!({"terminal": opened.pane}),
+    let made = match (shown, want) {
+        (true, Want::Flip | Want::Close) => {
+            let mut made = json!({});
+            if let Some((pane, file)) = preview {
+                cli::app_do("pane.close", &json!({"pane": pane}))?;
+                remember_preview(&ctx.tab, &file);
+                made["closed_preview"] = json!(pane);
             }
+            if let Some(terminal) = terminal {
+                close(&terminal)?;
+                made["closed"] = json!(terminal);
+            }
+            made
         }
-        (Some(terminal), Want::Open) => json!({"terminal": terminal}),
-        (None, Want::Close) => json!({}),
+        (false, Want::Flip | Want::Open) => match remembered_preview(&ctx.tab) {
+            Some(file) => open_preview(&ctx, &file)?,
+            None => {
+                let opened = open(&ctx)?;
+                match opened.notice {
+                    Some(notice) => json!({"terminal": opened.pane, "notice": notice}),
+                    None => json!({"terminal": opened.pane}),
+                }
+            }
+        },
+        (true, Want::Open) => match terminal {
+            Some(terminal) => json!({"terminal": terminal}),
+            None => json!({"preview": preview.map_or(json!(true), |(pane, _)| json!(pane))}),
+        },
+        (false, Want::Close) => json!({}),
     };
+    println!("{made}");
+    Ok(())
+}
+
+/// `herdr-nvim app-preview --file <path> --ctx JSON` (the header's Preview
+/// button, Enter on an image in the tree): the file rendered in nvim's place.
+pub fn preview_cmd() -> Result<()> {
+    let args: Vec<String> = env::args().skip(2).collect();
+    let file = cli::flag(&args, "--file")?
+        .context("usage: herdr-nvim app-preview --file <path> --ctx JSON")?;
+    let ctx = ctx(&cli::read_ctx(&args)?)?;
+    let file = crate::pathkey::absolute(file, &ctx.cwd);
+    if !file.is_file() {
+        anyhow::bail!("no such file: {}", file.display());
+    }
+    println!("{}", open_preview(&ctx, &file.to_string_lossy())?);
+    Ok(())
+}
+
+/// `herdr-nvim app-source --ctx JSON` (the preview's Source button): nvim
+/// back in the preview's place, as it was, with the keyboard.
+pub fn source_cmd() -> Result<()> {
+    let args: Vec<String> = env::args().skip(2).collect();
+    let ctx = ctx(&cli::read_ctx(&args)?)?;
+    let opened = ensure_open(&ctx)?;
+    focus(&opened.pane)?;
+    let mut made = json!({"terminal": opened.pane});
+    if let Some(notice) = opened.notice {
+        made["notice"] = json!(notice);
+    }
     println!("{made}");
     Ok(())
 }

@@ -37,7 +37,7 @@ import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
-import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, showFiles, takeKeepNvim } from "./panel.js";
+import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
 export class Sync {
   constructor(cx) {
@@ -58,17 +58,20 @@ export class Sync {
     });
   }
 
-  // Whether the tab's nvim pane is open. Right after our own open or close the
-  // app's terminal list may not show it yet: until it shows that terminal
-  // there (or gone), the result of the action is assumed.
+  // Whether the tab's nvim pane is open (a preview in its place counts:
+  // `app-preview` swaps them, nvim keeps running). Right after our own open
+  // or close the app's terminal list may not show it yet: until it shows that
+  // terminal there (or gone), the result of the action is assumed.
   nvimOf(tab) {
-    const seen = nvimPanes(tab), e = this.expect;
+    const seen = nvimPanes(tab), e = this.expect, preview = previewPane(tab);
     if (e?.tab === tab) {
       if (e.opened && !seen.includes(e.opened)) return true;
-      if (e.closed && seen.includes(e.closed)) return seen.length > 1;
+      if (e.preview && !preview) return true;
+      if (e.closed && seen.includes(e.closed)) return seen.length > 1 || Boolean(preview);
+      if (e.closedPreview && preview === e.closedPreview) return seen.length > 0;
     }
     this.expect = null;
-    return seen.length > 0;
+    return seen.length > 0 || Boolean(preview);
   }
 
   // Each render: what the tab looks like now, what that change asks for
@@ -126,7 +129,13 @@ export class Sync {
     const out = await nvim("toggle", ["--state", state], at);
     if (out === null) return null;
     const made = JSON.parse(out || "{}");
-    this.expect = { tab: at.tab, opened: made.terminal ?? null, closed: made.closed ?? null };
+    this.expect = {
+      tab: at.tab,
+      opened: made.terminal ?? null,
+      closed: made.closed ?? null,
+      preview: Boolean(made.preview),
+      closedPreview: made.closed_preview ?? null,
+    };
     return made;
   }
 
@@ -151,6 +160,12 @@ export class Sync {
     try {
       const mode = await treeMode();
       let terminal = nvimPanes(f.tab)[0];
+      // A preview in nvim's place: the tree beside it, the keyboard stays.
+      if (!terminal && previewPane(f.tab)) {
+        if (!p.files) showFiles(p);
+        this.prev = { tab: f.tab, files: true, other: false, nvim: true };
+        return;
+      }
       if (!terminal) terminal = (await this.toggle(at, "open"))?.terminal;
       if (!terminal) return;
       if (mode === "nvim") return run("pane.focus", { terminal });

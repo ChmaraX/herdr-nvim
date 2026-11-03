@@ -8,6 +8,7 @@
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
+import { previewKind } from "./preview.js";
 import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./ops.js";
 import { openDialog } from "./dialog.js";
@@ -249,7 +250,9 @@ export class Tree {
     }
     this.busy = true;
     cx.notify();
-    await nvim("open", [row.abs], tabOf(this.where()));
+    // nvim can't show an image: the preview takes nvim's place instead.
+    if (previewKind(row.abs) === "image") await nvim("app-preview", ["--file", row.abs], tabOf(this.where()));
+    else await nvim("open", [row.abs], tabOf(this.where()));
     this.busy = false;
     cx.notify();
   }

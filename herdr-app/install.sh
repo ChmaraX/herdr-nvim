@@ -34,7 +34,7 @@ app_bin=${HERDR_APP_BIN:-}
 panel_width=
 tree=
 force=
-mods=(herdr-nvim)
+mods=(herdr-nvim herdr-nvim-header)
 
 die() { echo "herdr-nvim: $*" >&2; exit 1; }
 
@@ -115,10 +115,11 @@ run_root() {
 }
 
 # Whether mods/<m> is herdr-nvim's own: the wrapper this script writes is in
-# it. Any other folder of that name is someone else's and is never replaced.
+# it (herdr-nvim), or the mark file (the others). Any other folder of that
+# name is someone else's and is never replaced.
 MARK="# Written by herdr-nvim's herdr-app/install.sh"
 ours() {
-  grep -qsF "$MARK" "$home/mods/$1/bin/herdr-nvim"
+  grep -qsF "$MARK" "$home/mods/$1/bin/herdr-nvim" || grep -qsF "$MARK" "$home/mods/$1/.herdr-nvim"
 }
 mine_or_absent() {
   [ ! -e "$home/mods/$1" ] || ours "$1" ||
@@ -208,6 +209,15 @@ export HERDR_APP_HOME='$home'
 exec '$root/bin/herdr-nvim' "\$@"
 WRAPPER
     chmod +x "$new/bin/herdr-nvim"
+  else
+    echo "$MARK" > "$new/.herdr-nvim"
+  fi
+  # The header is the app's own pane header plus a button: built on this
+  # app's shipped one when it loads, else on the copy in this repo.
+  if [ "$m" = herdr-nvim-header ] && [ -f "$home/mods/pane/main.js" ]; then
+    cp "$new/pane-base.js" "$stage/pane-base.repo.js"
+    cp "$home/mods/pane/main.js" "$new/pane-base.js"
+    "$app_bin" check "$new" >/dev/null 2>&1 || cp "$stage/pane-base.repo.js" "$new/pane-base.js"
   fi
   "$app_bin" check "$new" || { rm -rf "$stage"; die "herdr-app check failed for $m; nothing replaced"; }
   [ ! -e "$home/mods/$m" ] || mv "$home/mods/$m" "$old"

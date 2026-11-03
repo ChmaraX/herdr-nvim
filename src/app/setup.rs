@@ -203,7 +203,7 @@ fn install_layout(home: &Path, panel_width: u32) -> Result<()> {
     if edit_json(&layout_path(home, &target), &mut |layout| {
         layout_patch::patch(layout, panel_width)
     })? {
-        println!("layout: {target}: Files now opens herdr-nvim's tree and the tab's nvim together");
+        println!("layout: {target}: Files opens herdr-nvim's tree and the tab's nvim together; pane headers carry nvim's Preview / Source button");
     } else {
         println!("layout: {target}: already uses herdr-nvim for Files");
     }

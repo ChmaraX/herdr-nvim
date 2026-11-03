@@ -11,6 +11,12 @@
 //!   rendered, so the slot can't see the panel close; a floating block that
 //!   draws nothing is always on screen, at no size.
 //!
+//! * every pane header that is the app's own (`"header": {"content": {"mod":
+//!   "pane"}}` in a tab block's `pane` look) becomes `herdr-nvim-header`, the
+//!   same header plus the Preview / Source button on the tab's nvim; the old
+//!   content is kept in its `props.replaces`. A layout without pane headers
+//!   gets none (no button there).
+//!
 //! It also narrows the panel (the `files` stack's parent) to `panel_width`
 //! unless someone set a width of their own in the file: it changes only the
 //! shipped width or the width a previous install set, and keeps the width it
@@ -29,6 +35,39 @@ use super::node;
 pub(crate) const MOD: &str = "herdr-nvim";
 pub(crate) const SLOT: &str = "files";
 pub(crate) const SYNC: &str = "herdr-nvim-sync";
+/// herdr-nvim's pane header, and the app's own one it stands in for.
+pub(crate) const HEADER: &str = "herdr-nvim-header";
+const SHIPPED_HEADER: &str = "pane";
+
+/// The `content` of every pane header in the layout (tab blocks' `pane`
+/// look).
+fn headers(layout: &mut Value) -> Vec<&mut Value> {
+    fn visit<'a>(node: &'a mut Value, out: &mut Vec<&'a mut Value>) {
+        let Some(object) = node.as_object_mut() else {
+            return;
+        };
+        let mut children = None;
+        for (key, value) in object.iter_mut() {
+            match key.as_str() {
+                "content" => {
+                    if let Some(header) = value.pointer_mut("/pane/header/content") {
+                        out.push(header);
+                    }
+                }
+                "children" => children = Some(value),
+                _ => {}
+            }
+        }
+        if let Some(list) = children.and_then(Value::as_array_mut) {
+            for child in list {
+                visit(child, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(layout, &mut out);
+    out
+}
 /// The ids of the standard side panel (Herdr's `main`; the tab bar's Files
 /// button names them), used when a layout has no `files` slot of its own.
 const PANEL: &str = "panel";
@@ -198,6 +237,12 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         }
         props["panel_width"] = json!(panel_width);
     }
+    for header in headers(layout) {
+        if header.get("mod").and_then(Value::as_str) == Some(SHIPPED_HEADER) {
+            let old = header.clone();
+            *header = json!({"mod": HEADER, "props": {"replaces": old}});
+        }
+    }
     let floating = layout
         .as_object_mut()
         .context("the layout is not an object")?
@@ -252,6 +297,15 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
                     }
                 }
             }
+        }
+    }
+    for header in headers(layout) {
+        if header.get("mod").and_then(Value::as_str) == Some(HEADER) {
+            *header = header
+                .pointer("/props/replaces")
+                .filter(|old| !old.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!({"mod": SHIPPED_HEADER}));
         }
     }
     if let Some(root) = layout.as_object_mut() {

@@ -1,7 +1,7 @@
 // The side panel that holds herdr-nvim's tree, as `layout()` describes it, and
 // the commands the tab bar's Files button runs on it (mods/tabs/main.js).
 
-import { run, setShared, shared, terminals } from "herdr";
+import { panes, run, setShared, shared, terminals } from "herdr";
 
 // The nodes from the root to the tree's block (the `files` slot), or null.
 function slotPath(node, trail = []) {
@@ -46,6 +46,12 @@ export function hidePanel(p) {
 // The live herdr-nvim pane terminals of a tab.
 export function nvimPanes(tab) {
   return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
+}
+
+// Whether a preview shows in the tab's nvim's place (`app-preview`): a
+// herdr-nvim mod pane of the tab. For the pair it counts as nvim's pane.
+export function previewPane(tab) {
+  return panes().find((p) => p.tab === tab && p.terminal === null && p.mod === "herdr-nvim")?.pane ?? null;
 }
 
 // Make the tree the app's focused block, the one way the app has: `pane.go`

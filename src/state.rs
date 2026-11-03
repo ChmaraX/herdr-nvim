@@ -139,6 +139,13 @@ pub(crate) fn current_file_path(tab: &str) -> PathBuf {
         .join(format!("{}.json", tab_key(tab)))
 }
 
+/// The file a Herdr app tab's preview showed when Files closed it, so Files
+/// opens the preview again (`sidebar::toggle_cmd`):
+/// `<state dir>/app-preview/<tab key>`.
+pub(crate) fn preview_memory_path(tab: &str) -> PathBuf {
+    state_dir().join("app-preview").join(tab_key(tab))
+}
+
 fn path_for_key(key: &str) -> PathBuf {
     state_dir().join(format!("{key}.json"))
 }
