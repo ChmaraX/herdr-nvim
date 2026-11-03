@@ -137,6 +137,12 @@ export class Tree {
         while (this.rootGen === gen) {
           const changed = await watchFolder(root);
           if (this.rootGen !== gen) return;
+          // Hidden (Files closed): no listing or git status for every change
+          // (a build makes many); it catches up once when shown (`render`).
+          if (!panelState(layout())?.files) {
+            this.stale = true;
+            continue;
+          }
           const { marks } = await this.model.reloadChanged(changed);
           if (marks === "none") continue; // nothing the tree shows changed
           cx.notify();
@@ -564,6 +570,14 @@ export class Tree {
 
   render(cx) {
     this.follow(cx);
+    if (this.stale) {
+      this.stale = false;
+      const gen = this.rootGen;
+      cx.spawn(async (cx) => {
+        await this.model.reload().catch(() => {});
+        if (this.rootGen === gen) cx.notify();
+      });
+    }
     const reveal = shared("herdr-nvim.reveal");
     if (reveal && reveal.n !== this.revealed) {
       this.revealed = reveal.n;
@@ -597,7 +611,14 @@ export class Tree {
     return v_flex().id("herdr-nvim-files").size_full().min_h(0).rounded(10).overflow_hidden()
       // The controller hands this tree the keyboard with `pane.go`, which
       // needs it laid out: say when it is.
-      .on_size_change(() => setShared("herdr-nvim.tree-laid-out", (shared("herdr-nvim.tree-laid-out") ?? 0) + 1))
+      // At most every 250 ms: a set redraws every mod copy in the window, and a
+      // drag resizes this on every frame. The first size after a show counts.
+      .on_size_change(() => {
+        const now = Date.now();
+        if (now - (this.laidOutAt ?? 0) < 250) return;
+        this.laidOutAt = now;
+        setShared("herdr-nvim.tree-laid-out", (shared("herdr-nvim.tree-laid-out") ?? 0) + 1);
+      })
       .bg(t.background).border_1().border_color(focusedNow ? t.accent : t.border).text_color(t.foreground).text_size(13)
       // The rows as they are at the press, not as this render saw them.
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, this.rows(), cx))

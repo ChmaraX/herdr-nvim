@@ -261,7 +261,9 @@ fn send_quit(socket: &Path, sidebar: &Sidebar) -> Result<()> {
         .arg("--server")
         .arg(socket)
         .arg("--remote-send")
-        .arg("<cmd>qa!<cr>")
+        // Out of whatever waits for input first (a half-typed command, a
+        // prompt), or `qa!` would be its next keys.
+        .arg("<C-\\><C-n><Cmd>qa!<CR>")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

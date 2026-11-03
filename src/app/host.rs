@@ -45,6 +45,10 @@ impl HostOps for App {
         super::sidebar::ensure_open(ctx)
     }
 
+    fn shown_sidebar(&self, ctx: &Ctx) -> Option<String> {
+        super::sidebar::find(&ctx.tab).ok().flatten()
+    }
+
     /// An image (or SVG) goes to the controller's swap (sync.js
     /// `startSwap`): rendered in nvim's place, nvim kept running.
     fn preview(&self, ctx: &Ctx, path: &str) -> Result<bool> {
@@ -76,13 +80,6 @@ impl HostOps for App {
 
     fn sidebar_identity(&self) -> Result<(String, String, PathBuf)> {
         let (tab, pane, cwd) = super::sidebar::identity()?;
-        // Opened by the mod (the controller's swap), not by `sidebar::open`,
-        // which checks before it splits: check here, before the daemon is used.
-        if std::env::args().any(|arg| arg == "--refresh") {
-            if let Err(error) = super::stale::refresh_on_open(tab.as_str(), &cwd) {
-                eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
-            }
-        }
         Ok((tab.as_str().to_owned(), pane, cwd))
     }
 
@@ -97,6 +94,9 @@ impl HostOps for App {
                 std::time::Duration::from_secs(2),
             );
         }
+        // This process becomes nvim's screen next (exec): its `hc connect`
+        // would be left a zombie.
+        rpc::disconnect();
     }
 }
 

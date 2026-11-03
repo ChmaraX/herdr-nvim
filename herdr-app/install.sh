@@ -251,5 +251,8 @@ retire_pick
 prune_runtimes "$root"
 
 "$wrapper" app-setup install --keys "$here/keys.json" ${panel_width:+--panel-width "$panel_width"}
+# The watcher that stops gone tabs' nvims runs the old runtime until it ends:
+# end it; the next nvim pane starts it again on this one.
+hc kill herdr-nvim-watch >/dev/null 2>&1 || true
 [ -z "$tree" ] || "$wrapper" app-config tree "$tree"
 echo "herdr-nvim: installed in $home (Files or cmd-e: the file tree with the tab's nvim; cmd-shift-e: into the tree; cmd-o: files from the agent)"

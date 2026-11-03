@@ -289,12 +289,27 @@ pub(crate) fn open_in_sidebar_at(
     if host.preview(ctx, path)? {
         return Ok(Opened::default());
     }
+    let config = config::load();
+    // nvim's pane is open: its daemon runs, the open is the check (bounded,
+    // unstuck if needed): no health check first.
+    if let Some(pane) = host.shown_sidebar(ctx) {
+        open_in_nvim(
+            &daemon::registry::socket_path(&ctx.tab),
+            path,
+            line,
+            col,
+            &config.sidebar,
+        )?;
+        if focus {
+            host.focus(&pane);
+        }
+        return Ok(Opened { pane, notice: None });
+    }
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
-    let config = config::load();
     let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
 
     let opened = host.ensure_sidebar(ctx)?;
@@ -313,6 +328,9 @@ pub(crate) fn open_in_sidebar_at(
 /// a buffer literally named `+5` and leaves the cursor on line 1), so `+<line>`
 /// only works when *launching* nvim, not against a running server. `--remote-expr`
 /// is also mode-independent (works even mid-insert) and needs no path escaping.
+/// How long nvim gets to open a file.
+const OPEN_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
+
 fn open_in_nvim(
     socket: &Path,
     path: &str,
@@ -331,17 +349,13 @@ fn open_in_nvim(
         Some(line) => format!("[{open}, cursor({line}, {})]", col.unwrap_or(1)),
         None => format!("[{open}]"),
     };
-    let status = daemon::nvim_cmd(sidebar)
-        .arg("--headless")
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote-expr")
-        .arg(&expr)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .context("failed to run nvim --server --remote-expr")?;
-    if !status.success() {
-        bail!("nvim failed to open {path}");
+    // Bounded: a daemon waiting for input (a half-typed command, a swap-file
+    // prompt) is unstuck and asked once more, never waited on forever.
+    if daemon::remote_expr_within(socket, &expr, sidebar, OPEN_WITHIN).is_none()
+        && daemon::unstuck(socket, sidebar)
+        && daemon::remote_expr_within(socket, &expr, sidebar, OPEN_WITHIN).is_none()
+    {
+        bail!("the tab's nvim did not open {path} (waiting at a prompt?)");
     }
     Ok(())
 }

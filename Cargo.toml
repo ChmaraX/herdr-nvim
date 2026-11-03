@@ -15,6 +15,10 @@ crossterm = "0.28"
 # cost, not a user-facing one.
 fff-search = "0.10.6"
 
+[target.'cfg(unix)'.dependencies]
+# tcflush: keys typed into an nvim pane before nvim attaches are dropped.
+libc = "0.2"
+
 [[example]]
 name = "fff_cold"
 

@@ -21,6 +21,32 @@ mod state;
 #[cfg(test)]
 mod test_support;
 
+/// The app's commands its mods wait on (`exec`, no timeout of its own): each
+/// ends within `deadline`, whatever it waits for, so a mod is never left
+/// waiting (the controller would stay busy, the Files button dead).
+const SHORT: &[&str] = &[
+    "toggle",
+    "open",
+    "fs",
+    "app-find",
+    "app-current",
+    "app-reveal",
+    "app-preview",
+    "app-agents",
+    "app-send",
+    "pick-file",
+    "open-link",
+    "app-config",
+];
+
+fn deadline(after: std::time::Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        eprintln!("herdr-nvim: gave up after {}s", after.as_secs());
+        std::process::exit(124);
+    });
+}
+
 fn main() {
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
     // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
@@ -31,6 +57,9 @@ fn main() {
     // The one place that asks which Herdr this is (`host`).
     let host = host::choose();
     let app = host == host::Host::App;
+    if app && SHORT.contains(&mode.as_str()) {
+        deadline(std::time::Duration::from_secs(30));
+    }
     let code = match (mode.as_str(), app) {
         ("toggle", false) => run(maneuver::toggle_cmd),
         ("toggle", true) => run(app::sidebar::toggle_cmd),

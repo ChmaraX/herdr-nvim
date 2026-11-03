@@ -78,6 +78,11 @@ pub trait HostOps: Sync {
     fn show_pick(&self, pick: Pick) -> Result<()>;
     /// The tab's nvim pane, opened if it isn't.
     fn ensure_sidebar(&self, ctx: &Ctx) -> Result<Opened>;
+    /// The tab's nvim pane if it is open: its daemon runs then, and a file
+    /// can go straight to it.
+    fn shown_sidebar(&self, _ctx: &Ctx) -> Option<String> {
+        None
+    }
     /// Show `path` rendered instead of in nvim, when this host can and nvim
     /// can't show it (an image in the Herdr app). Whether it did.
     fn preview(&self, _ctx: &Ctx, _path: &str) -> Result<bool> {

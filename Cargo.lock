@@ -467,6 +467,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "fff-search",
+ "libc",
  "regex",
  "serde",
  "serde_json",

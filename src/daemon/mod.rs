@@ -274,6 +274,16 @@ fn health(socket: &Path, sidebar: &Sidebar) -> Health {
     }
 }
 
+/// For a daemon that didn't answer: `unstick` it if it still listens.
+/// Whether it was worth asking again.
+pub(crate) fn unstuck(socket: &Path, sidebar: &Sidebar) -> bool {
+    if !registry::listening(socket) {
+        return false;
+    }
+    unstick(socket, sidebar);
+    true
+}
+
 /// Back to normal mode, whatever was waiting for input (bounded: 2 s).
 fn unstick(socket: &Path, sidebar: &Sidebar) {
     let Ok(mut child) = nvim_cmd(sidebar)
@@ -298,7 +308,9 @@ fn unstick(socket: &Path, sidebar: &Sidebar) {
 }
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
-/// the trimmed stdout, or `None` if the daemon is unreachable.
+/// the trimmed stdout, or `None` if the daemon is unreachable. Unbounded, so
+/// tests only: everything else uses `remote_expr_within`.
+#[cfg(test)]
 pub(crate) fn remote_expr(socket: &Path, expr: &str, sidebar: &Sidebar) -> Option<String> {
     let output = nvim_cmd(sidebar)
         .arg("--headless")
@@ -408,6 +420,13 @@ pub fn sidebar_cmd() -> Result<()> {
 
 #[cfg(unix)]
 fn attach_remote_ui(socket: &Path, sidebar: &Sidebar) -> Result<()> {
+    // Keys typed into the pane while it started were meant for something
+    // else (the tree's `d`, `d`, `y` are nvim commands too): they don't reach
+    // nvim as commands once it attaches.
+    // SAFETY: tcflush on our own stdin; failure (not a tty) changes nothing.
+    unsafe {
+        libc::tcflush(0, libc::TCIFLUSH);
+    }
     use std::os::unix::process::CommandExt;
 
     let error = nvim_cmd(sidebar)

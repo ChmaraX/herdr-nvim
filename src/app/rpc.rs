@@ -123,6 +123,13 @@ thread_local! {
     static CONNECTION: std::cell::RefCell<Option<Rpc>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Ends this command's connection now (`hc connect` exits and is waited
+/// for), e.g. before the process becomes another program, which would
+/// leave it a zombie.
+pub(crate) fn disconnect() {
+    CONNECTION.with(|slot| drop(slot.borrow_mut().take()));
+}
+
 /// One call on this command's connection, made on first use (and again
 /// once if the core dropped it).
 pub(crate) fn call(method: &str, params: Value) -> Result<Value> {

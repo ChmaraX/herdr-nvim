@@ -287,7 +287,8 @@ pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
 /// `herdr-nvim toggle [--state open|close] [--preview <file>] [--ctx JSON]`:
 /// open or close this tab's nvim pane. With `--state` it is idempotent: the
 /// Files panel's controller says what it wants, never "the other way round".
-/// A preview in nvim's place counts as the open pane, and closing closes it;
+/// A preview in nvim's place counts as the open pane: closing closes it, and
+/// `--state open` puts nvim back in its place (the preview's Source);
 /// `--preview` (what the controller remembered Files closed) opens that
 /// preview instead of nvim. Prints `{"terminal": "tN"}` (nvim opened),
 /// `{"preview": pane}` (preview opened) or `{"closed": "tN"}`. Daemons whose
@@ -326,9 +327,14 @@ pub fn toggle_cmd() -> Result<()> {
                 }
             }
         },
+        // A preview alone: nvim back in its place (`open` swaps it), which is
+        // the preview's Source.
         (true, Want::Open) => match terminal {
             Some(terminal) => json!({"terminal": terminal}),
-            None => json!({"preview": preview.map_or(json!(true), |(pane, _)| json!(pane))}),
+            None => {
+                let opened = open(&ctx)?;
+                json!({"terminal": opened.pane})
+            }
         },
         (false, Want::Close) => json!({}),
     };

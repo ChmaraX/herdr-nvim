@@ -38,7 +38,7 @@ their layout).
   SVG). A file it can't show reads "Too big to preview (N MB)." or "The file
   is gone." in `dim`.
 - **Picker** (`cmd-o`, the `herdr-nvim.pick` command): an 820×470 dialog titled "Open file from agent
-  output" on a 30px `chrome` bar with a `border` line and a `dim` hint; under
+  output" on a 38px `chrome` bar with the picker's keys as keycaps; under
   it herdr-nvim's terminal picker: the files the agent's session log shows it
   touched (newest first), then uncommitted git changes, with `+N -M` diff
   stats and ages; typing fuzzy-searches the whole repo.
@@ -186,14 +186,15 @@ them, `?` lists them, and this table is that file's output
 - **Preview / Source** swap in place: the pane header's button (and an
   image or SVG opened any way: Enter in the tree, `cmd-o`, `herdr-nvim open`
   from gitview or a link, which nvim can't show) asks herdr-nvim's controller for the swap
-  (`herdr-nvim.swap:<tab>:<file>`; no file: Source). The controller splits
-  the old pane across the split that made nvim's slot (`app-config`'s
-  `across`: down for a side nvim), so both nest in the slot, and closes the
-  old pane once the new one is in the tab: the new one has the old one's
-  exact size. A new pane that doesn't come in 3 s closes nothing and says
-  so. nvim keeps running meanwhile (its daemon), with its buffers, cursor,
-  undo and unsaved edits; Source's new pane runs `herdr-nvim sidebar
-  --refresh`, which restarts a stale clean nvim first, as Files does. Until
+  (`herdr-nvim.swap:<tab>:<file>`; no file: Source). For Preview the
+  controller splits the old pane across the split that made nvim's slot
+  (`app-config`'s `across`: down for a side nvim), so both nest in the
+  slot, and closes the old pane once the new preview is in the tab: the
+  preview has the old pane's exact size. One that doesn't come in 5 s
+  closes nothing and says so. Source is `toggle --state open`: herdr-nvim
+  puts nvim in the preview's place the same way (after restarting a stale
+  clean nvim, as Files does). nvim keeps running meanwhile (its daemon),
+  with its buffers, cursor, undo and unsaved edits. Until
   the swap is done the controller decides nothing else, so the moment with
   neither pane never closes the tree. Opening any file in nvim (the tree,
   `cmd-o`, `open`) while the preview shows brings nvim back with it (the
@@ -275,10 +276,10 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     which prints `{"terminal": "tN"}` (the picker started by herdr-core,
     unlabeled, so no tab shows it) or `{"empty": "<why>"}`; then
     `openOverlay({kind: "dialog", layout: column [{mod: herdr-nvim, props:
-    {bar: true}, 30px}, {terminal: tN}]})`. Props `{bar}` is the dialog's
+    {bar: true}, 38px}, {terminal: tN}]})`. Props `{bar}` is the dialog's
     title bar. A dialog focuses its first terminal; it closes when the picker
-    exits. `pick-file --list` prints the candidates instead (what the e2e
-    checks). The dialog is modal (a click beside it doesn't close it, so its picker never runs on unseen); `cmd-o` again while a picker starts does nothing, and one still running from before is ended first, so a lost one never blocks `cmd-o`. The
+    exits. `pick-file --list` prints the candidates instead (for checking
+    by hand). The dialog is modal (a click beside it doesn't close it, so its picker never runs on unseen); `cmd-o` again while a picker starts does nothing, and one still running from before is ended first, so a lost one never blocks `cmd-o`. The
     agent's screen is read without history (`terminal.read` lines 0): for
     history herdr-core scrolls an idle full-screen program such as pi back and
     forth, which took 5-6 s per `cmd-o`.
@@ -325,11 +326,16 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     them for `cmd-e`'s `tree = nvim` toggle and when the mod's lists don't
     show the pane yet. Daemons whose tab is gone are left to
     the watcher, so a click never waits on them.
-  - `sidebar [--refresh]` (in the new pane): reads its tab from its `herdr.space`/
-    `herdr.tab` labels, with `--refresh` (a pane the mod opened) restarts a
-    stale clean nvim, starts the tab's headless nvim daemon if needed
+  - `sidebar` (in the new pane): reads its tab from its `herdr.space`/
+    `herdr.tab` labels, starts the tab's headless nvim daemon if needed
     (socket `…/herdr-nvim/app/<space12>_<tab12>.sock`, `titlestring` "nvim ·
-    %t"), starts the watcher, and execs `nvim --remote-ui`.
+    %t"), starts the watcher, drops keys typed into the pane meanwhile,
+    and execs `nvim --remote-ui`.
+  - Every command a mod waits on ends within 30 s. A daemon is never waited
+    on forever: a check gets 2 s, an open 4 s; one that listens but doesn't
+    answer (a half-typed command, a prompt) gets `<C-\><C-n>` and one more
+    try, and is never replaced by a second nvim on its socket. An open file
+    goes straight to a running nvim pane's daemon (the open is the check).
   - `pick-file`: finds the agent's session log from `terminal.get` (its
     status report or program for the kind, its folder, its process's age from
     `ps -o etime=`; `PI_CODING_AGENT_DIR` / `CLAUDE_CONFIG_DIR` move the
