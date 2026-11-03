@@ -37,7 +37,6 @@ import { bin, nvim, place } from "./lib.js";
 import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
-import { mark } from "./timing.js";
 import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
 // The preview each tab's Files closed: {[tab]: file}.
@@ -64,10 +63,7 @@ export class Sync {
         // window's), never for one the person has left meanwhile.
         const [verb, tab] = command.split(":");
         if (tab && focused()?.tab !== tab) continue;
-        if (verb === "pick") {
-          mark("cmd-o reached the controller", true);
-          cx.spawn(async () => pick(place()));
-        }
+        if (verb === "pick") pick(place());
         else if (verb === "swap") await this.startSwap(tab, decodeURIComponent(command.split(":").slice(2).join(":")), cx);
         else if (verb === "reveal") await this.reveal(cx);
         else if (verb === "toggle") await this.toggleTree(cx);

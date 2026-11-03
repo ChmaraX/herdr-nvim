@@ -12,7 +12,7 @@
 //   place (preview.js; the controller's swap puts it there, sync.js);
 // - a dialog with props {dialog}: the tree's new/rename/copy/delete prompts
 //   (dialog.js); with props {help}: its key list (keys-help.js); with props
-//   {bar}: the title of cmd-o's picker (pick.js);
+//   {pick}: cmd-o's picker (pick.js);
 // - an overlay, `mod.open:herdr-nvim` (cmd-e): does exactly what the Files
 //   button does, then closes; with `tree = "nvim"`, or without the slot in
 //   this layout, it toggles the tab's nvim alone.
@@ -24,17 +24,16 @@ import { treeMode } from "./ops.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Dialog } from "./dialog.js";
 import { KeyHelp } from "./keys-help.js";
-import { PickBar } from "./pick.js";
+import { Picker } from "./pick.js";
 import { Preview } from "./preview.js";
 import { Sync } from "./sync.js";
 import { Tree } from "./tree-view.js";
-import { timed } from "./timing.js";
 
 export default class HerdrNvim extends View {
   init(_props, cx) {
-    const { overlay, role, dialog, help, bar, preview } = props() ?? {};
+    const { overlay, role, dialog, help, pick, preview } = props() ?? {};
     if (preview) this.part = new Preview(props(), cx);
-    else if (bar) this.part = new PickBar();
+    else if (pick) this.part = new Picker(cx);
     else if (help) this.part = new KeyHelp(cx);
     else if (dialog) this.part = new Dialog(cx);
     else if (overlay) {
@@ -52,11 +51,8 @@ export default class HerdrNvim extends View {
   }
 
   render(cx) {
-    const name = this.sync ? "controller" : this.part?.constructor?.name ?? "overlay";
-    return timed(name, () => {
-      if (this.part) return this.part.render(cx);
-      this.sync?.look(cx);
-      return div();
-    });
+    if (this.part) return this.part.render(cx);
+    this.sync?.look(cx);
+    return div();
   }
 }

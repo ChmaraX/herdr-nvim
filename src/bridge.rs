@@ -123,16 +123,23 @@ fn start_pick() -> Result<()> {
     crate::trace::step("pick-file: read the agent's screen");
 
     let cwd = snapshot.cwd;
-    let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
-        path.is_file()
-    });
+    // `--session`: the agent's files and git's changes only, without every
+    // repo file (the app's picker searches the repo itself, `app-find`).
+    let repo = !env::args().any(|arg| arg == "--session");
+    let candidates = gather_candidates_with(
+        snapshot.agent_session.as_ref(),
+        &text,
+        &cwd,
+        &|path| path.is_file(),
+        repo,
+    );
     crate::trace::step("pick-file: candidates gathered");
 
     if env::args().any(|arg| arg == "--list") {
         let session = snapshot.agent_session.map(|s| s.value);
         println!(
             "{}",
-            serde_json::json!({"agent": target, "session": session, "candidates": candidates})
+            serde_json::json!({"agent": target, "session": session, "cwd": cwd, "max_files": config.picker.max_files, "candidates": candidates})
         );
         return Ok(());
     }
@@ -167,6 +174,17 @@ pub(crate) fn gather_candidates(
     scrape_text: &str,
     cwd: &Path,
     exists: &dyn Fn(&Path) -> bool,
+) -> Vec<Candidate> {
+    gather_candidates_with(agent_session, scrape_text, cwd, exists, true)
+}
+
+/// `gather_candidates`, with or without every repo file (`repo`).
+pub(crate) fn gather_candidates_with(
+    agent_session: Option<&herdr::AgentSession>,
+    scrape_text: &str,
+    cwd: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+    repo: bool,
 ) -> Vec<Candidate> {
     let exists_str = |p: &str| {
         let path = Path::new(p);
@@ -224,6 +242,7 @@ pub(crate) fn gather_candidates(
     // (the default view stays session-only). Empty for non-git cwds.
     let repo_files = toplevel
         .as_deref()
+        .filter(|_| repo)
         .and_then(|top| gitscan::list_repo_files(top).ok())
         .unwrap_or_default();
 
