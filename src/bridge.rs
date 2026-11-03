@@ -104,42 +104,29 @@ pub fn target_agent_pane(
 /// the picker (the host's own way: a TUI popup, or the app's dialog).
 /// `--list` prints the candidates instead.
 fn start_pick() -> Result<()> {
-    crate::trace::step("pick-file: start");
     let host = host::ops();
     let ctx = host.ctx()?;
     let config = config::load();
     let mut herdr = host.herdr();
-    crate::trace::step("pick-file: ctx and config");
 
     let target = match target_agent_pane(&mut *herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane) {
         Ok(target) => target,
         Err(error) => return host.show_pick(Pick::NoAgent(error)),
     };
-    crate::trace::step("pick-file: target agent");
     let snapshot = herdr.pane_snapshot(&target)?;
-    crate::trace::step("pick-file: pane snapshot (terminal.get, session log)");
     let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
     let text = herdr.read_pane(&target, lines)?;
-    crate::trace::step("pick-file: read the agent's screen");
 
     let cwd = snapshot.cwd;
-    // `--session`: the agent's files and git's changes only, without every
-    // repo file (the app's picker searches the repo itself, `app-find`).
-    let repo = !env::args().any(|arg| arg == "--session");
-    let candidates = gather_candidates_with(
-        snapshot.agent_session.as_ref(),
-        &text,
-        &cwd,
-        &|path| path.is_file(),
-        repo,
-    );
-    crate::trace::step("pick-file: candidates gathered");
+    let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
+        path.is_file()
+    });
 
     if env::args().any(|arg| arg == "--list") {
         let session = snapshot.agent_session.map(|s| s.value);
         println!(
             "{}",
-            serde_json::json!({"agent": target, "session": session, "cwd": cwd, "max_files": config.picker.max_files, "candidates": candidates})
+            serde_json::json!({"agent": target, "session": session, "candidates": candidates})
         );
         return Ok(());
     }
@@ -157,10 +144,7 @@ fn start_pick() -> Result<()> {
         max_files: config.picker.max_files,
     };
     let handoff = write_handoff(&handoff)?;
-    crate::trace::step("pick-file: handoff written");
-    let shown = host.show_pick(Pick::Ready { handoff, cwd });
-    crate::trace::step("pick-file: picker started");
-    shown
+    host.show_pick(Pick::Ready { handoff, cwd })
 }
 
 /// Gather candidates from all three layers given the pane's already-fetched
@@ -175,17 +159,6 @@ pub(crate) fn gather_candidates(
     cwd: &Path,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<Candidate> {
-    gather_candidates_with(agent_session, scrape_text, cwd, exists, true)
-}
-
-/// `gather_candidates`, with or without every repo file (`repo`).
-pub(crate) fn gather_candidates_with(
-    agent_session: Option<&herdr::AgentSession>,
-    scrape_text: &str,
-    cwd: &Path,
-    exists: &dyn Fn(&Path) -> bool,
-    repo: bool,
-) -> Vec<Candidate> {
     let exists_str = |p: &str| {
         let path = Path::new(p);
         if path.is_absolute() {
@@ -196,7 +169,6 @@ pub(crate) fn gather_candidates_with(
     };
 
     let session_text = agent_session.and_then(|s| sessions::load_session_text(s, cwd));
-    crate::trace::step("candidates: session log read");
     let agent_name = agent_session.map(|s| s.agent.as_str()).unwrap_or("");
     // No session text mines nothing, like an agent without a parser.
     let mined =
@@ -206,18 +178,15 @@ pub(crate) fn gather_candidates_with(
 
     // git paths are `<toplevel>/<path>`; canonical so they match the mined
     // and scraped paths below.
-    crate::trace::step("candidates: session mined");
     let toplevel = gitscan::toplevel(cwd).map(|top| pathkey::canonical(&top));
     let git_dirty = toplevel
         .as_deref()
         .and_then(|top| gitscan::dirty_paths(top).ok())
         .unwrap_or_default();
-    crate::trace::step("candidates: git status");
     let git_committed = match (&toplevel, mined.first_op_unix) {
         (Some(top), Some(since)) => gitscan::committed_since(top, since).unwrap_or_default(),
         _ => HashSet::new(),
     };
-    crate::trace::step("candidates: git log since the session began");
     let in_git_worktree = |path: &str| {
         toplevel
             .as_deref()
@@ -237,12 +206,10 @@ pub(crate) fn gather_candidates_with(
         .as_deref()
         .and_then(|top| gitscan::diff_numstat_by_path(top).ok())
         .unwrap_or_default();
-    crate::trace::step("candidates: git diff --numstat");
     // Whole-worktree file list, used only to widen search once the user types
     // (the default view stays session-only). Empty for non-git cwds.
     let repo_files = toplevel
         .as_deref()
-        .filter(|_| repo)
         .and_then(|top| gitscan::list_repo_files(top).ok())
         .unwrap_or_default();
 
