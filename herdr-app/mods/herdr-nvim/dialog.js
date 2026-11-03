@@ -44,6 +44,13 @@ export class Dialog {
     cx.spawn(async () => {
       const result = await fsOp(d.place, request);
       if (!result) return;
+      // Outside the tab's folder as the file system resolves it (a symlink
+      // in it to elsewhere, which the path alone doesn't show): ask first.
+      if (result.outside) {
+        return openDialog({ kind: "confirm", place: d.place, title: "Outside this tab's folder",
+          detail: `${result.error}. Do it anyway?`,
+          action: { type: "request", request: { ...request, outside: true } } });
+      }
       const show = result.path ?? result.paths?.[0] ?? request.dir;
       const n = (shared("herdr-nvim.reveal")?.n ?? 0) + 1;
       setShared("herdr-nvim.reveal", { tab: d.place.tab, path: show ?? null, n });

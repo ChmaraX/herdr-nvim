@@ -43,7 +43,12 @@ pub fn fs_cmd() -> Result<()> {
     let result: Value =
         serde_json::from_str(&out).with_context(|| format!("nvim answered {out:?}"))?;
     println!("{result}");
-    if let Some(error) = result.get("error").and_then(Value::as_str) {
+    // `outside`: not done yet, the tree asks the person first (exit 0).
+    if let Some(error) = result
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|_| result.get("outside").is_none())
+    {
         bail!("{error}");
     }
     Ok(())

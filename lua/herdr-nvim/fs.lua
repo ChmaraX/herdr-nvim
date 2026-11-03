@@ -31,6 +31,13 @@ end
 -- deepest existing folder, with the rest appended (a file, or one still to
 -- be made; a link itself is the link, not what it points to).
 local function real(path)
+  -- A symlink is itself, where its folder is: renaming or deleting it
+  -- touches only the link, wherever it points.
+  local stat = uv.fs_lstat(path)
+  if stat and stat.type == "link" then
+    local dir = uv.fs_realpath(vim.fs.dirname(path)) or vim.fs.dirname(path)
+    return (dir .. "/" .. vim.fs.basename(path)):gsub("//+", "/")
+  end
   if vim.fn.isdirectory(path) == 1 then return uv.fs_realpath(path) or path end
   local dir, rest = vim.fs.dirname(path), { vim.fs.basename(path) }
   while not uv.fs_realpath(dir) and dir ~= vim.fs.dirname(dir) do
@@ -46,7 +53,10 @@ local function check_inside(req, ...)
   if req.outside then return end
   local root = real(norm(req.root or error("no root")))
   for _, path in ipairs({ ... }) do
-    if not under(real(norm(path)), root) then error(("%s is outside %s"):format(path, root)) end
+    if not under(real(norm(path)), root) then
+      -- Not an error the person can only read: the tree asks them instead.
+      error({ outside = path, message = ("%s is outside %s"):format(path, root) })
+    end
   end
 end
 
@@ -253,7 +263,9 @@ function M.run(json)
     return vim.json.encode({ error = "unknown request" })
   end
   local done, result = pcall(ops[req.op], req)
-  if not done then
+  if not done and type(result) == "table" and result.outside then
+    result = { error = result.message, outside = result.outside }
+  elseif not done then
     result = { error = tostring(result):gsub("^[^:]+:%d+: ", "") }
   end
   return vim.json.encode(result)
