@@ -12,15 +12,19 @@ const WATCH_MS = 15000;
 let lines = null, writing = null, since = 0;
 const renders = new Map(); // name -> {n, ms, max}
 
+// One write at a time; lines added meanwhile go in the next one.
+let dirty = false;
 async function flush() {
+  dirty = true;
   if (writing) return;
-  writing = (async () => {
-    const dir = `${appHome()}/mods/herdr-nvim/.cache`;
-    await fs.mkdir(dir, { recursive: true }).catch(() => {});
+  writing = true;
+  const dir = `${appHome()}/mods/herdr-nvim/.cache`;
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
+  while (dirty) {
+    dirty = false;
     await fs.writeFile(`${appHome()}/${FILE}`, lines.slice(-KEEP).join("\n") + "\n").catch(() => {});
-  })();
-  await writing;
-  writing = null;
+  }
+  writing = false;
 }
 
 function stamp() {

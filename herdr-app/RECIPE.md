@@ -291,7 +291,8 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   key's hide keeps nvim, 10 s), `herdr-nvim.tree-laid-out` (the tree's size
   changed), `herdr-nvim.previews` (the file each tab's preview shows, for its
   header; only tabs with a preview), `herdr-nvim.preview-memory` (the
-  preview each tab's Files closed), `herdr-nvim.preview-cache` (the image
+  preview each tab's Files closed; cleared when Files closes nvim, or nvim
+  is back on screen any other way; only tabs that exist), `herdr-nvim.preview-cache` (the image
   copies, newest first).
 - **Timing** (`timing.js`): each `cmd-o` writes its steps and, for 15 s, how
   often and how long the mod's copies rendered to
@@ -317,7 +318,8 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     <the tab's root node id from the core's herdr-app document>, argv:
     [wrapper, sidebar, --cwd, dir]}`, or the preview of `F` there. The
     controller closes panes itself (`run("pane.close")`); `toggle` closes
-    only for `tree = nvim`'s `cmd-e`. Daemons whose tab is gone are left to
+    them for `cmd-e`'s `tree = nvim` toggle and when the mod's lists don't
+    show the pane yet. Daemons whose tab is gone are left to
     the watcher, so a click never waits on them.
   - `sidebar [--refresh]` (in the new pane): reads its tab from its `herdr.space`/
     `herdr.tab` labels, with `--refresh` (a pane the mod opened) restarts a

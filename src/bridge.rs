@@ -316,15 +316,17 @@ fn open_in_nvim(
     col: Option<u32>,
     sidebar: &crate::config::Sidebar,
 ) -> Result<()> {
-    // Open (or focus) the file and jump to the line, in one client: what
-    // `--remote` does (`:drop` of the escaped path), then `cursor()`.
-    let mut expr = format!(
-        "execute('drop ' . fnameescape({}))",
+    // Open (or focus) the file and jump to the line, in one client: exactly
+    // what `--remote` does (`nvim_command('drop ' .. fnameescape(path))`, not
+    // silenced as `execute()` would), then `cursor()`.
+    let open = format!(
+        "nvim_command('drop ' . fnameescape({}))",
         daemon::vim_string_literal(path)
     );
-    if let Some(line) = line {
-        expr.push_str(&format!(" . cursor({line}, {})", col.unwrap_or(1)));
-    }
+    let expr = match line {
+        Some(line) => format!("[{open}, cursor({line}, {})]", col.unwrap_or(1)),
+        None => format!("[{open}]"),
+    };
     let status = daemon::nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")

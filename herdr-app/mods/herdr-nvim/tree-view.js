@@ -93,10 +93,10 @@ export class Tree {
     }
     this.rootTab = next.tab;
     cx.spawn(async (cx) => {
-      const { tab_root } = await current(next);
+      const now = await current(next);
       if (this.place?.tab !== next.tab) return;
-      this.adopt(next.tab, tab_root ?? next.cwd, cx);
-      this.watchCurrent(next, cx);
+      this.adopt(next.tab, now.tab_root ?? next.cwd, cx);
+      this.watchCurrent(next, cx, now);
     });
   }
 
@@ -138,6 +138,7 @@ export class Tree {
           const changed = await watchFolder(root);
           if (this.rootGen !== gen) return;
           const { marks } = await this.model.reloadChanged(changed);
+          if (marks === "none") continue; // nothing the tree shows changed
           cx.notify();
           if (marks === "later" && !this.marksDue) {
             this.marksDue = true;
@@ -167,10 +168,11 @@ export class Tree {
   // The file the tab's nvim shows: selected (and its folders opened) whenever
   // it changes, without taking the keyboard. One loop at a time: the next
   // call ends this one (`currentGen`).
-  watchCurrent(where, cx) {
+  watchCurrent(where, cx, known = null) {
     const gen = (this.currentGen = (this.currentGen ?? 0) + 1);
     cx.spawn(async (cx) => {
-      const { file, watch } = await current(where);
+      // `known`: what `follow` just asked for this tab (no second process).
+      const { file, watch } = known ?? (await current(where));
       if (this.currentGen !== gen) return;
       this.watching = watch;
       this.watchingTab = where.tab;
@@ -184,11 +186,13 @@ export class Tree {
       while (this.currentGen === gen) {
         const changed = await watchFolder(dirname(watch));
         if (this.currentGen !== gen) return;
-        if (changed.length && !changed.some((p) => p === watch || p === dirname(watch))) continue;
+        // Its own file, or the temp file nvim renames over it.
+        if (changed.length && !changed.some((p) => p.startsWith(watch) || p === dirname(watch))) continue;
         const now = await this.nvimState();
-        if (now.file && now.file !== this.current) await this.reveal(now.file, cx);
-        // nvim took the keyboard, maybe: draw the focus again.
-        else if (now.focus !== seen.focus) cx.notify();
+        if (now.file && now.file !== seen.file) await this.reveal(now.file, cx);
+        // nvim took the keyboard, maybe: draw the focus again (a file
+        // outside the root reveals nothing, so this is its own check).
+        if (now.focus !== seen.focus) cx.notify();
         seen = now;
       }
     });
@@ -197,7 +201,10 @@ export class Tree {
   // What the tab's nvim tells the tree, one JSON file (lua/herdr-nvim/app.lua
   // `write_state`): {file, cwd, tree_key, leader, focus}; {} before it wrote.
   async nvimState() {
-    const text = this.watching ? await readTextFile(this.watching).catch(() => null) : null;
+    // Only the shown tab's file: right after a switch the old one is no
+    // answer for this tab.
+    const ours = this.watching && this.watchingTab === this.place?.tab;
+    const text = ours ? await readTextFile(this.watching).catch(() => null) : null;
     try { return (text && JSON.parse(text)) || {}; } catch { return {}; }
   }
 

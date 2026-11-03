@@ -43,6 +43,14 @@ import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPa
 // The preview each tab's Files closed: {[tab]: file}.
 const MEMORY = "herdr-nvim.preview-memory";
 
+// Sets (or, with null, clears) a tab's entry; tabs that are gone drop out.
+function remember(tab, file) {
+  const tabs = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const kept = Object.entries(shared(MEMORY) ?? {}).filter(([t]) => t !== tab && tabs.has(t));
+  if (file) kept.push([tab, file]);
+  setShared(MEMORY, Object.fromEntries(kept));
+}
+
 export class Sync {
   constructor(cx) {
     this.kept = new Set(); // tabs whose tree the tree key hid, nvim kept
@@ -99,6 +107,9 @@ export class Sync {
     // `at`: the whole tab context, fixed now; actions on `cur` use it after
     // their awaits, whichever tab is focused by then.
     const cur = { tab: f.tab, at: place(f), files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
+    // nvim itself on screen (back by any way, cmd-o, open): no preview for
+    // Files to bring back.
+    if ((shared(MEMORY) ?? {})[f.tab] && nvimPanes(f.tab).length) remember(f.tab, null);
     const prev = this.prev;
     this.prev = cur;
     const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && takeKeepNvim(cur.tab);
@@ -210,14 +221,15 @@ export class Sync {
       const pane = terminal && panes().find((p) => p.terminal === terminal)?.pane;
       const preview = previewPane(at.tab);
       if (pane || preview) {
-        if (preview) setShared(MEMORY, { ...memory, [at.tab]: (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null });
+        // What Files closes now is what it opens next: the preview, or nvim.
+        remember(at.tab, preview ? (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null : null);
         for (const p of [pane, preview]) if (p) run("pane.close", { pane: p });
         this.expects.set(at.tab, { opened: null, closed: terminal, preview: false, closedPreview: preview });
         return { closed: terminal };
       }
     }
     const remembered = state === "open" ? memory[at.tab] : null;
-    if (remembered) setShared(MEMORY, Object.fromEntries(Object.entries(memory).filter(([tab]) => tab !== at.tab)));
+    if (remembered) remember(at.tab, null);
     const out = await nvim("toggle", ["--state", state, ...(remembered ? ["--preview", remembered] : [])], at);
     if (out === null) return null;
     let made = {};

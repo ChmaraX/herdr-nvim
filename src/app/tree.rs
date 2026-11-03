@@ -81,10 +81,15 @@ pub fn find_cmd() -> Result<()> {
 pub fn current_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
-    let watch = state::current_file_path(&ctx.tab);
+    let mut watch = state::current_file_path(&ctx.tab);
     if let Some(dir) = watch.parent() {
-        // The tree watches this folder before nvim first writes into it.
+        // The tree watches this folder before nvim first writes into it,
+        // by its real path: the paths a folder watch reports are real
+        // (/private/tmp on macOS), and the mods compare them with this one.
         std::fs::create_dir_all(dir)?;
+        if let (Ok(real), Some(name)) = (std::fs::canonicalize(dir), watch.file_name()) {
+            watch = real.join(name);
+        }
     }
     // The tree works with real paths (/private/tmp on macOS, not /tmp), so
     // one tab's folder is one tree whichever of its panes had the focus.

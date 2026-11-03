@@ -76,7 +76,7 @@ export default class Header extends Pane {
         // The folder holds every tab's file: only this tab's matters (a
         // batch naming the folder itself may be anything).
         const changed = await watchFolder(dirname(at.watch));
-        if (changed.length && !changed.some((p) => p === at.watch || p === dirname(at.watch))) continue;
+        if (changed.length && !changed.some((p) => p.startsWith(at.watch) || p === dirname(at.watch))) continue;
         const text = await readTextFile(at.watch).catch(() => null);
         let file = null;
         try { file = (text && JSON.parse(text).file) || null; } catch {}

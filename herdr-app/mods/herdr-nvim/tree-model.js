@@ -38,19 +38,27 @@ export class TreeModel {
     this.root = root;
     this.marksAt = 0;
     this.entries = new Map(); // folder -> [{name, dir}]
+    this.loads = new Map(); // folder -> the latest listing's number
     this.ignored = new Map(); // folder -> Set of ignored names
     this.open = new Set();
     this.marks = {};
   }
 
   // Lists `folder` (and which of its entries git ignores).
+  // The latest listing of a folder wins, whichever finishes first; one that
+  // changed nothing changes no rows. Returns whether it changed any.
   async load(folder) {
-    const root = this.root;
+    const root = this.root, seq = (this.loads.get(folder) ?? 0) + 1;
+    this.loads.set(folder, seq);
     const { entries, ignored } = await listFolder(folder);
-    if (this.root !== root) return;
+    if (this.root !== root || this.loads.get(folder) !== seq) return false;
+    const same = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir);
+    const was = this.ignored.get(folder);
+    if (same(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
     this.entries.set(folder, entries);
     this.ignored.set(folder, ignored);
     this.version++;
+    return true;
   }
 
   async reload() {
@@ -76,9 +84,23 @@ export class TreeModel {
       await this.reload();
       return { marks: "done" };
     }
+    // Paths inside a folder git ignores (target/, node_modules/: a build) or
+    // inside .git change nothing the tree shows unless ignored files show.
+    const unseen = (path) => {
+      if (path.includes("/.git/") || path.endsWith("/.git")) return true;
+      if (this.showIgnored || !path.startsWith(`${root}/`)) return false;
+      let folder = root;
+      for (const part of path.slice(root.length + 1).split("/")) {
+        if (this.ignored.get(folder)?.has(part)) return true;
+        folder = `${folder}/${part}`;
+      }
+      return false;
+    };
+    const seen = changed.filter((path) => !unseen(path));
+    if (!seen.length) return { marks: "none" };
     const listed = new Set([root, ...this.open]);
     const touched = new Set();
-    for (const path of changed) for (const folder of [dirname(path), path]) if (listed.has(folder)) touched.add(folder);
+    for (const path of seen) for (const folder of [dirname(path), path]) if (listed.has(folder)) touched.add(folder);
     await each(touched, (folder) => this.load(folder).catch(() => {}));
     if (Date.now() - this.marksAt < GIT_EVERY_MS) return { marks: "later" };
     await this.refreshMarks();
@@ -138,8 +160,10 @@ export class TreeModel {
     let folder = this.root;
     for (const part of parts.slice(0, -1)) {
       folder = `${folder}/${part}`;
-      this.open.add(folder);
-      this.version++;
+      if (!this.open.has(folder)) {
+        this.open.add(folder);
+        this.version++;
+      }
       if (!this.entries.has(folder)) await this.load(folder).catch(() => {});
     }
     const name = parts[parts.length - 1];
