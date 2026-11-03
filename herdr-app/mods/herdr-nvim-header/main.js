@@ -11,6 +11,7 @@
 // `watch` file, lua/herdr-nvim/app.lua `write_state`), watched for changes.
 
 import { div } from "gpui-kit";
+import { h_flex } from "gpui-base";
 import { appHome, exec, notify, panes, props, readTextFile, shared, spaces, terminals, theme, watchFolder } from "herdr";
 import Pane from "./pane-base.js";
 
@@ -101,26 +102,42 @@ export default class Header extends Pane {
       : null;
     if (!label) return head;
     const t = theme();
-    return head.child(
-      div()
-        .id(`hn-swap-${props()?.pane}`)
-        .flex_none()
-        .px(8)
-        .h(20)
-        .flex()
-        .items_center()
-        .rounded(5)
-        .border_1()
-        .border_color(t.border)
-        .text_size(11.5)
-        .font_medium()
-        .text_color(this.busy ? t.dim : t.foreground)
-        .hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          this.swap(r, cx);
-        })
-        .child(label),
-    );
+    // Its own slot at the right end, outside the shipped header: that one's
+    // hover buttons (split, zoom, close) and its truncation never cover or
+    // push away the button.
+    return h_flex()
+      .size_full()
+      .child(div().flex_1().min_w(0).h_full().child(head))
+      .child(
+        h_flex()
+          .flex_none()
+          .h_full()
+          .pr(8)
+          .pl(4)
+          .items_center()
+          .bg(t.background)
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            div()
+              .id(`hn-swap-${props()?.pane}`)
+              .px(8)
+              .h(20)
+              .flex()
+              .items_center()
+              .rounded(5)
+              .border_1()
+              .border_color(t.border)
+              .text_size(11.5)
+              .font_medium()
+              .text_color(this.busy ? t.dim : t.foreground)
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.swap(r, cx);
+              })
+              .child(label),
+          ),
+      );
   }
 }

@@ -104,10 +104,19 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     if config.app.tree == crate::config::TreeMode::Nvim {
         argv.push("--explore".to_owned());
     }
+    let split = match (&preview, &doc) {
+        (Some((pane, _)), Some(doc)) => across(
+            doc,
+            raw_tab(&ctx.tab),
+            pane,
+            direction(config.sidebar.position),
+        ),
+        _ => direction(config.sidebar.position),
+    };
     let made = cli::app_do(
         "pane.split",
         &json!({
-            "direction": direction(config.sidebar.position),
+            "direction": split,
             "pane": anchor,
             "argv": argv,
         }),
@@ -145,15 +154,21 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
         .and_then(|terminal| doc::pane_of(&doc, terminal))
         .map(|(pane, _)| pane);
     let old_preview = doc::preview_of(&doc, raw).map(|(pane, _)| pane);
-    let anchor = match nvim_pane.clone().or_else(|| old_preview.clone()) {
-        Some(pane) => pane,
-        None => doc::root_of(&doc, raw)
-            .with_context(|| format!("tab {raw} is not in the app's layout"))?,
+    let (anchor, split) = match nvim_pane.clone().or_else(|| old_preview.clone()) {
+        Some(pane) => {
+            let split = across(&doc, raw, &pane, direction(config.sidebar.position));
+            (pane, split)
+        }
+        None => (
+            doc::root_of(&doc, raw)
+                .with_context(|| format!("tab {raw} is not in the app's layout"))?,
+            direction(config.sidebar.position),
+        ),
     };
     let made = cli::app_do(
         "pane.split",
         &json!({
-            "direction": direction(config.sidebar.position),
+            "direction": split,
             "pane": anchor,
             "mod": super::layout_patch::MOD,
             "props": {"preview": file, "tab": raw},
@@ -173,6 +188,26 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
         out["closed"] = json!(terminal);
     }
     Ok(out)
+}
+
+/// The direction to split `pane` in so the new pane can take its exact
+/// place: across its parent (down in a row, right in a column). The app
+/// splits along a row by adding a sibling, which shares the row out again;
+/// across, it nests both in `pane`'s own slot, which keeps its size when
+/// `pane` then closes.
+fn across(doc: &doc::Doc, raw: &str, pane: &str, fallback: &'static str) -> &'static str {
+    let parent = doc::tab(doc, raw).and_then(|(_, t)| {
+        let trail = super::node::path_to(&t.root, &|n| super::node::id(n) == Some(pane))?;
+        trail
+            .len()
+            .checked_sub(2)
+            .and_then(|at| trail.get(at).copied())
+    });
+    match parent.and_then(|p| p.get("type")).and_then(Value::as_str) {
+        Some("row") => "down",
+        Some("column") => "right",
+        _ => fallback,
+    }
 }
 
 /// What Files closed in this tab was a preview of `file`: the next Files
