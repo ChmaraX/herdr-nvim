@@ -808,6 +808,90 @@ keys 14:cmd; poll 10 panel_is files || fail "cmd-e did not show the tree"
 keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
 pid_a=$pid_fresh
 
+# --- 6f. Preview / Source: the rendered file in nvim's exact place ----------
+# What the pane header's buttons run (mods/herdr-nvim-header): herdr-nvim.swap.
+# tab_shape: tab A's split tree with sizes, nvim's pane or the preview as SLOT.
+tab_shape() {
+  "$py" - "$tab_a" <<'PY'
+import json, subprocess, sys
+out = subprocess.run(["hc", "connect"], capture_output=True, text=True, timeout=5,
+    input='{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"doc.get","params":{"name":"herdr-app"}}\n').stdout
+doc = next(json.loads(l) for l in out.splitlines() if json.loads(l).get("id") == 2)["result"]["value"]
+tab = next(t for s in doc["spaces"] for t in s["tabs"] if t["id"] == sys.argv[1])
+labels = {t["address"]: t.get("labels", {}) for t in json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True, timeout=5).stdout)["terminals"]}
+def walk(n):
+    c = n.get("content") or {}
+    slot = c.get("mod") == "herdr-nvim" or labels.get(c.get("terminal"), {}).get("herdr-nvim.sidebar")
+    kids = [walk(k) for k in n.get("children", [])]
+    if n.get("type") in ("row", "column") and len(kids) == 1: return kids[0] | {"size": n.get("size")}
+    return {"type": n.get("type"), "what": "SLOT" if slot else c.get("terminal"), "size": n.get("size"), "kids": kids}
+print(json.dumps(walk(tab["root"]), sort_keys=True))
+PY
+}
+preview_pane() { "$py" - "$tab_a" <<'PY'
+import json, subprocess, sys
+out = subprocess.run(["hc", "connect"], capture_output=True, text=True, timeout=5,
+    input='{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"doc.get","params":{"name":"herdr-app"}}\n').stdout
+doc = next(json.loads(l) for l in out.splitlines() if json.loads(l).get("id") == 2)["result"]["value"]
+tab = next(t for s in doc["spaces"] for t in s["tabs"] if t["id"] == sys.argv[1])
+def walk(n):
+    c = n.get("content") or {}
+    if c.get("mod") == "herdr-nvim" and c.get("props", {}).get("preview"): return c["props"]["preview"]
+    return next((f for f in map(walk, n.get("children", [])) if f), None)
+f = walk(tab["root"]); print(f or ""); sys.exit(0 if f else 1)
+PY
+}
+no_sidebar() { ! sidebar_of "$tab_a" >/dev/null; }
+has_preview() { preview_pane >/dev/null; }
+no_preview() { ! preview_pane >/dev/null; }
+preview_is() { preview_pane | grep -q "$1"; }
+enc() { "$py" -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe="-_.!~*()"))' "$1"; }
+"$wrapper" open "$demo/src/notes.md" --ctx "{\"space\":\"$space\",\"tab\":\"$tab_a\",\"terminal\":\"$agent_a\",\"cwd\":\"$demo\"}" >/dev/null
+poll 15 sidebar_of "$tab_a" || fail "open did not bring tab A's nvim back"
+poll 10 panel_is files || fail "the tree did not come with nvim"
+sleep 1
+shape=$(tab_shape)
+pid_prev=$(daemon_pid "$sock_a")
+for round in 1 2; do
+  H do "herdr-nvim.swap:$tab_a:$(enc "$demo/src/notes.md")" >/dev/null
+  poll 10 has_preview || fail "Preview ($round) put no preview in nvim's place"
+  poll 5 no_sidebar || fail "Preview ($round) left nvim's pane beside the preview"
+  sleep 0.8
+  [ "$(tab_shape)" = "$shape" ] || fail "Preview ($round) changed the layout: $(tab_shape) vs $shape"
+  panel_is files || fail "Preview ($round) closed the tree"
+  [ $round = 1 ] && shot 26-preview-in-nvims-place
+  H do "herdr-nvim.swap:$tab_a:" >/dev/null
+  poll 15 sidebar_of "$tab_a" || fail "Source ($round) did not bring nvim back"
+  poll 5 no_preview || fail "Source ($round) left the preview"
+  sleep 0.8
+  [ "$(tab_shape)" = "$shape" ] || fail "Source ($round) changed the layout: $(tab_shape) vs $shape"
+  [ "$(daemon_pid "$sock_a")" = "$pid_prev" ] || fail "Source ($round) gave nvim a new daemon"
+  nvim_at "$sock_a" notes.md:1 || nvim_eval "$sock_a" 'expand("%:t")' | grep -q notes.md || fail "Source ($round): nvim is not on notes.md"
+  panel_is files || fail "Source ($round) closed the tree"
+done
+say "Preview / Source twice: the preview takes nvim's exact place and back, same layout and sizes, same daemon $pid_prev, the tree shown throughout"
+shot 26-source-nvim-back
+# Files with a preview: closes it with the tree, and opens it again.
+H do "herdr-nvim.swap:$tab_a:$(enc "$demo/src/notes.md")" >/dev/null
+poll 10 has_preview || fail "Preview (for Files) did not show"
+files_button_off
+poll 10 panel_is hidden || fail "Files did not hide the panel"
+poll 10 no_preview || fail "Files off left the preview"
+files_button
+poll 10 panel_is files || fail "Files did not show the panel again"
+poll 10 has_preview || fail "Files on did not bring the preview back"
+say "Files closes the preview with the tree, and opens it again"
+# An image, opened as any file is (gitview, cmd-o, links): rendered, not in nvim.
+"$py" -c 'import base64,sys; open(sys.argv[1],"wb").write(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))' "$demo/dot.png"
+"$wrapper" open --tab "$tab_a" "$demo/dot.png" | grep -q '"preview"' || fail "open of an image did not go to the preview"
+poll 10 preview_is dot.png || fail "the image's preview did not show"
+say "open of an image: rendered in nvim's place"
+shot 27-image-preview
+H do "herdr-nvim.swap:$tab_a:" >/dev/null
+poll 15 sidebar_of "$tab_a" || fail "Source after the image did not bring nvim back"
+[ "$(daemon_pid "$sock_a")" = "$pid_prev" ] || fail "nvim lost its daemon through the previews"
+keys 14:cmd; pair_off || fail "cmd-e did not close the pair after the previews"
+
 # --- 7. closing tab B stops its daemon ----------------------------------------
 H do tab.close "{\"id\":\"$tab_b\",\"confirmed\":true}" >/dev/null
 poll 15 sh -c "! kill -0 $pid_b" || fail "tab B's daemon $pid_b survived its tab"
