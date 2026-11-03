@@ -54,12 +54,20 @@ pub fn ensure_daemon(
     cwd: &Path,
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
-    if daemon_healthy(&socket, &config.sidebar) {
-        // Also (re)register an already-running daemon, so one spawned before
-        // the Windows marker existed still becomes discoverable.
-        #[cfg(windows)]
-        registry::register_daemon(tab)?;
-        return Ok(socket);
+    match health(&socket, &config.sidebar) {
+        Health::Up => {
+            // Also (re)register an already-running daemon, so one spawned
+            // before the Windows marker existed still becomes discoverable.
+            #[cfg(windows)]
+            registry::register_daemon(tab)?;
+            return Ok(socket);
+        }
+        // Never a second nvim on its socket: it may hold unsaved work.
+        Health::Stuck => bail!(
+            "tab {tab}'s nvim is running but doesn't answer (waiting at a prompt?); kept: \
+             stop it with `herdr-nvim daemons stop` if it stays like this"
+        ),
+        Health::Down => {}
     }
 
     #[cfg(not(windows))]
@@ -81,7 +89,7 @@ pub fn ensure_daemon(
 
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     loop {
-        if daemon_healthy(&socket, &config.sidebar) {
+        if answers(&socket, &config.sidebar, ANSWER_WITHIN) {
             return Ok(socket);
         }
         if Instant::now() >= deadline {
@@ -231,8 +239,62 @@ pub(crate) fn detach_command(command: &mut Command) {
     }
 }
 
-fn daemon_healthy(socket: &Path, sidebar: &Sidebar) -> bool {
-    remote_expr(socket, "1+1", sidebar).as_deref() == Some("2")
+/// How long a running daemon gets to answer before it counts as stuck.
+const ANSWER_WITHIN: Duration = Duration::from_secs(2);
+
+/// A tab's daemon: answering, not there (nothing listens on its socket), or
+/// there but not answering.
+#[derive(Debug, PartialEq, Eq)]
+enum Health {
+    Up,
+    Down,
+    Stuck,
+}
+
+fn answers(socket: &Path, sidebar: &Sidebar, within: Duration) -> bool {
+    remote_expr_within(socket, "1+1", sidebar, within).as_deref() == Some("2")
+}
+
+/// Never waits forever: nvim answers no request while a normal-mode command
+/// waits for its next key (a stray `g`, `z`, `"` typed into it) or a prompt
+/// waits for an answer. `<C-\><C-n>` is input, which nvim takes even then,
+/// and ends both; it is sent only to a daemon that listens but doesn't answer.
+fn health(socket: &Path, sidebar: &Sidebar) -> Health {
+    if answers(socket, sidebar, ANSWER_WITHIN) {
+        return Health::Up;
+    }
+    if !registry::listening(socket) {
+        return Health::Down;
+    }
+    unstick(socket, sidebar);
+    if answers(socket, sidebar, ANSWER_WITHIN) {
+        Health::Up
+    } else {
+        Health::Stuck
+    }
+}
+
+/// Back to normal mode, whatever was waiting for input (bounded: 2 s).
+fn unstick(socket: &Path, sidebar: &Sidebar) {
+    let Ok(mut child) = nvim_cmd(sidebar)
+        .arg("--headless")
+        .arg("--server")
+        .arg(socket)
+        .arg("--remote-send")
+        .arg("<C-\\><C-n>")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let deadline = Instant::now() + ANSWER_WITHIN;
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        sleep(Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Evaluate a vimscript expression on the daemon via `--remote-expr`, returning
@@ -309,7 +371,7 @@ pub(crate) fn vim_string_literal(s: &str) -> String {
 /// the daemon first spawned cannot be treated as current.
 fn refresh_daemon_pane_id(socket: &Path, pane: &str, sidebar: &Sidebar) -> Result<()> {
     let expr = format!("setenv('HERDR_PANE_ID', {})", vim_string_literal(pane));
-    remote_expr(socket, &expr, sidebar).with_context(|| {
+    remote_expr_within(socket, &expr, sidebar, ANSWER_WITHIN).with_context(|| {
         format!("failed to update nvim daemon with current sidebar pane id {pane}")
     })?;
     Ok(())
@@ -474,6 +536,45 @@ mod tests {
             daemon.eval("getpid()"),
             daemon.pid.to_string(),
             "second ensure_daemon must reuse the daemon, not spawn a new one"
+        );
+    }
+
+    #[test]
+    fn a_daemon_left_waiting_for_a_keys_second_half_is_unstuck_not_replaced() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
+        let daemon = TestDaemon::spawn("wS", &config);
+        // `g` waits for its second key; until then nvim answers no request
+        // (what froze the app's tree and sidebar: every check hung).
+        let sent = nvim_cmd(&config.sidebar)
+            .args(["--headless", "--server"])
+            .arg(&daemon.socket)
+            .args(["--remote-send", "g"])
+            .status()
+            .expect("remote-send");
+        assert!(sent.success());
+        assert!(
+            !answers(&daemon.socket, &config.sidebar, Duration::from_millis(500)),
+            "g must block it"
+        );
+
+        let started = Instant::now();
+        let socket =
+            ensure_daemon("wS", &plugin_root, &config, &plugin_root).expect("ensure_daemon");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "bounded, never forever"
+        );
+        assert_eq!(socket, daemon.socket);
+        assert_eq!(
+            daemon.eval("getpid()"),
+            daemon.pid.to_string(),
+            "the same nvim, unstuck: no second daemon on its socket"
         );
     }
 

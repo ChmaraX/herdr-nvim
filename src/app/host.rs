@@ -90,10 +90,11 @@ impl HostOps for App {
         super::watch::ensure_running();
         if crate::config::load().app.tree == crate::config::TreeMode::Nvim {
             // nvim's own explorer, once this window is attached (UIEnter).
-            let _ = daemon::remote_expr(
+            let _ = daemon::remote_expr_within(
                 socket,
                 "luaeval(\"require('herdr-nvim.app').explore_on_ui()\")",
                 sidebar,
+                std::time::Duration::from_secs(2),
             );
         }
     }

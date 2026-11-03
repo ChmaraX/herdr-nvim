@@ -192,7 +192,7 @@ pub(crate) fn stop_keys_with(
 }
 
 /// Whether a process listens on the daemon's socket (it may still not answer).
-fn listening(socket: &Path) -> bool {
+pub(crate) fn listening(socket: &Path) -> bool {
     #[cfg(unix)]
     {
         std::os::unix::net::UnixStream::connect(socket).is_ok()
