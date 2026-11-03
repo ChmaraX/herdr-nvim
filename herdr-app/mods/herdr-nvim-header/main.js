@@ -97,14 +97,30 @@ export default class Header extends Pane {
     // pane for a moment; that is not nvim closing (which would hide the tree).
     const mark = { tab: r.tab, at: Date.now(), done: null };
     if (this.across && this.cwd && pane) {
+      this.busy = true;
       setShared("herdr-nvim.swap", mark);
+      const before = new Set(panes().filter((p) => p.tab === r.tab).map((p) => p.pane));
       if (r.role === "nvim") {
         run("pane.split", { direction: this.across, pane, mod: "herdr-nvim", props: { preview: this.file, tab: r.tab, cwd: this.cwd } });
       } else {
         run("pane.split", { direction: this.across, pane, argv: [bin(), "sidebar", "--cwd", this.cwd] });
       }
-      run("pane.close", { pane });
-      setShared("herdr-nvim.swap", { ...mark, done: Date.now() });
+      cx.spawn(async (cx) => {
+        // Close this pane only once the new one is in the tab: closed first,
+        // its slot would be gone and the new pane shared into the row (a
+        // terminal's pane comes a moment after its split).
+        const deadline = Date.now() + 3000;
+        let made = null;
+        while (!made && Date.now() < deadline) {
+          made = panes().find((p) => p.tab === r.tab && !before.has(p.pane)) ?? null;
+          if (!made) await cx.sleep(25);
+        }
+        if (made) run("pane.close", { pane });
+        else notify({ title: "herdr-nvim", body: "The new pane did not show up; nothing was closed.", level: "error" });
+        setShared("herdr-nvim.swap", { ...mark, done: Date.now() });
+        this.busy = false;
+        cx.notify();
+      });
       return;
     }
     // Not known yet (app-current still running or failed): herdr-nvim does it.
