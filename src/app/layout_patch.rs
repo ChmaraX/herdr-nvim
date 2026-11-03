@@ -35,6 +35,18 @@ use super::node;
 pub(crate) const MOD: &str = "herdr-nvim";
 pub(crate) const SLOT: &str = "files";
 pub(crate) const SYNC: &str = "herdr-nvim-sync";
+/// Whether a floating block is herdr-nvim's controller: its id and its
+/// content, so a block of someone else's that happens to use the id is never
+/// taken for it (nor removed by an uninstall).
+fn is_controller(floating: &Value) -> bool {
+    floating.get("id").and_then(Value::as_str) == Some(SYNC)
+        && floating.pointer("/content/mod").and_then(Value::as_str) == Some(MOD)
+        && floating
+            .pointer("/content/props/role")
+            .and_then(Value::as_str)
+            == Some("sync")
+}
+
 /// herdr-nvim's pane header, and the app's own one it stands in for.
 pub(crate) const HEADER: &str = "herdr-nvim-header";
 const SHIPPED_HEADER: &str = "pane";
@@ -223,10 +235,15 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         .and_then(Value::as_f64);
     let mut was = None;
     if let Some(node) = panel.as_deref().and_then(|id| node::find_mut(layout, id)) {
+        // Free: no size at all, or the shipped width, or the one we set. Any
+        // other size (another px, a weight) is the person's own.
         let now = px(node);
-        let free = now.is_none() || now == Some(SHIPPED_PANEL_PX) || (now.is_some() && now == ours);
+        let free = node.get("size").is_none()
+            || now == Some(SHIPPED_PANEL_PX)
+            || (now.is_some() && now == ours);
         if free && now != Some(f64::from(panel_width)) {
-            was = Some(node.pointer("/size/px").cloned().unwrap_or(Value::Null));
+            // The whole size it had (null: none), put back as it was.
+            was = Some(node.get("size").cloned().unwrap_or(Value::Null));
             node["size"] = json!({"px": panel_width});
         }
     }
@@ -249,10 +266,13 @@ pub(crate) fn patch(layout: &mut Value, panel_width: u32) -> Result<bool> {
         .entry("floating")
         .or_insert_with(|| json!([]));
     if let Some(list) = floating.as_array_mut() {
-        if !list
+        let taken = list
             .iter()
-            .any(|f| f.get("id").and_then(Value::as_str) == Some(SYNC))
-        {
+            .find(|f| f.get("id").and_then(Value::as_str) == Some(SYNC));
+        if taken.is_some_and(|f| !is_controller(f)) {
+            bail!("this layout already has a floating block named {SYNC} that isn't herdr-nvim's controller: rename it first");
+        }
+        if taken.is_none() {
             list.push(
                 json!({"id": SYNC, "content": {"mod": MOD, "props": {"role": "sync"}},
                 "edge": "bottom", "align": "end"}),
@@ -289,9 +309,12 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
                 panel.as_deref().and_then(|id| node::find_mut(layout, id)),
             ) {
                 if px(node) == Some(ours) {
-                    match props.get("panel_width_was").filter(|was| was.is_number()) {
-                        Some(was) => node["size"] = json!({"px": was}),
-                        None => {
+                    // The size it had: an object, or a bare px number (what
+                    // installs before this one kept), or none.
+                    match props.get("panel_width_was") {
+                        Some(was) if was.is_object() => node["size"] = was.clone(),
+                        Some(was) if was.is_number() => node["size"] = json!({"px": was}),
+                        _ => {
                             node.as_object_mut().map(|n| n.shift_remove("size"));
                         }
                     }
@@ -310,7 +333,7 @@ pub(crate) fn restore(layout: &mut Value) -> bool {
     }
     if let Some(root) = layout.as_object_mut() {
         if let Some(list) = root.get_mut("floating").and_then(Value::as_array_mut) {
-            list.retain(|f| f.get("id").and_then(Value::as_str) != Some(SYNC));
+            list.retain(|f| !is_controller(f));
             if list.is_empty() {
                 root.shift_remove("floating");
             }
@@ -341,7 +364,7 @@ mod tests {
             value
                 .pointer("/children/0/children/0/children/0/content")
                 .unwrap(),
-            &json!({"mod": "herdr-nvim", "props": {"replaces": {"mod": "files"}, "panel_width_was": 368.0, "panel_width": 300}})
+            &json!({"mod": "herdr-nvim", "props": {"replaces": {"mod": "files"}, "panel_width_was": {"px": 368.0}, "panel_width": 300}})
         );
         assert_eq!(value.pointer("/children/0/size/px").unwrap(), 300);
         assert_eq!(value["floating"][0]["id"], SYNC);
@@ -371,6 +394,55 @@ mod tests {
             .is_none());
         assert!(restore(&mut value));
         assert_eq!(value.pointer("/children/0/size/px").unwrap(), 420.0);
+    }
+
+    #[test]
+    fn a_panel_sized_by_weight_keeps_its_size_through_install_and_uninstall() {
+        for size in [json!({"weight": 2}), json!({"px": 420.0, "weight": 1})] {
+            let mut value = layout();
+            value["children"][0]["size"] = size.clone();
+            let text = serde_json::to_string_pretty(&value).unwrap();
+            patch(&mut value, 300).unwrap();
+            assert_eq!(
+                value["children"][0]["size"], size,
+                "install keeps the person's size"
+            );
+            assert!(restore(&mut value));
+            assert_eq!(serde_json::to_string_pretty(&value).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn a_width_an_older_install_kept_as_a_number_is_put_back() {
+        let mut value = layout();
+        patch(&mut value, 300).unwrap();
+        value["children"][0]["children"][0]["children"][0]["content"]["props"]["panel_width_was"] =
+            json!(368.0);
+        assert!(restore(&mut value));
+        assert_eq!(value["children"][0]["size"], json!({"px": 368.0}));
+    }
+
+    #[test]
+    fn a_floating_block_of_someone_elses_named_like_the_controller_is_left_alone() {
+        let mut value = layout();
+        let theirs = json!({"id": SYNC, "content": {"mod": "clock"}, "edge": "top"});
+        value["floating"] = json!([theirs.clone()]);
+        assert!(
+            patch(&mut value, 300).is_err(),
+            "install refuses instead of taking it"
+        );
+        let mut value = layout();
+        patch(&mut value, 300).unwrap();
+        value["floating"]
+            .as_array_mut()
+            .unwrap()
+            .push(theirs.clone());
+        restore(&mut value);
+        assert_eq!(
+            value["floating"],
+            json!([theirs]),
+            "uninstall removes only the controller"
+        );
     }
 
     #[test]
