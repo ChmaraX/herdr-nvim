@@ -278,7 +278,7 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     {bar: true}, 30px}, {terminal: tN}]})`. Props `{bar}` is the dialog's
     title bar. A dialog focuses its first terminal; it closes when the picker
     exits. `pick-file --list` prints the candidates instead (what the e2e
-    checks). `cmd-o` again while a picker opens or is open does nothing. The
+    checks). The dialog is modal (a click beside it doesn't close it, so its picker never runs on unseen); `cmd-o` again while a picker starts does nothing, and one still running from before is ended first, so a lost one never blocks `cmd-o`. The
     agent's screen is read without history (`terminal.read` lines 0): for
     history herdr-core scrolls an idle full-screen program such as pi back and
     forth, which took 5-6 s per `cmd-o`.

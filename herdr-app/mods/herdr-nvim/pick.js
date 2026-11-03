@@ -7,16 +7,23 @@
 
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { notify, openOverlay, terminals, theme } from "herdr";
+import { hc, notify, openOverlay, terminals, theme } from "herdr";
 import { nvim } from "./lib.js";
 
 // `at`: the tab, as `place()` captured it when the key was pressed.
-// One picker at a time: cmd-o again while one opens or is open does nothing
-// (the dialog closes itself when its picker exits).
+// One picker at a time. cmd-o again while one starts does nothing; a picker
+// still running from before (its dialog gone some way) is ended first, so a
+// lost one never blocks cmd-o. The dialog is modal: a click beside it
+// doesn't close it while the picker runs on; Esc and ⏎ end the picker, and
+// the dialog closes with it.
 let starting = false, shown = null;
 
 export async function pick(at) {
-  if (starting || (shown && terminals().some((t) => t.address === shown && t.state === "live"))) return;
+  if (starting) return;
+  if (shown && terminals().some((t) => t.address === shown && t.state === "live")) {
+    await hc(["kill", shown]).catch(() => null);
+  }
+  shown = null;
   starting = true;
   let out = null;
   try {
@@ -32,6 +39,7 @@ export async function pick(at) {
   }
   openOverlay({
     kind: "dialog",
+    modal: true,
     width: 820,
     height: 470,
     layout: { type: "column", children: [
