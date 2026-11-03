@@ -104,14 +104,11 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     if config.app.tree == crate::config::TreeMode::Nvim {
         argv.push("--explore".to_owned());
     }
-    let split = match (&preview, &doc) {
-        (Some((pane, _)), Some(doc)) => across(
-            doc,
-            raw_tab(&ctx.tab),
-            pane,
-            direction(config.sidebar.position),
-        ),
-        _ => direction(config.sidebar.position),
+    // In a preview's place: across, so nvim takes the preview's exact slot
+    // (`swap_direction`); else beside the whole tab.
+    let split = match preview {
+        Some(_) => swap_direction(),
+        None => direction(config.sidebar.position),
     };
     let made = cli::app_do(
         "pane.split",
@@ -155,10 +152,7 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
         .map(|(pane, _)| pane);
     let old_preview = doc::preview_of(&doc, raw).map(|(pane, _)| pane);
     let (anchor, split) = match nvim_pane.clone().or_else(|| old_preview.clone()) {
-        Some(pane) => {
-            let split = across(&doc, raw, &pane, direction(config.sidebar.position));
-            (pane, split)
-        }
+        Some(pane) => (pane, swap_direction()),
         None => (
             doc::root_of(&doc, raw)
                 .with_context(|| format!("tab {raw} is not in the app's layout"))?,
@@ -190,41 +184,19 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
     Ok(out)
 }
 
-/// The direction to split `pane` in so the new pane can take its exact
-/// place: across its parent (down in a row, right in a column). The app
-/// splits along a row by adding a sibling, which shares the row out again;
-/// across, it nests both in `pane`'s own slot, which keeps its size when
-/// `pane` then closes.
-fn across(doc: &doc::Doc, raw: &str, pane: &str, fallback: &'static str) -> &'static str {
-    let parent = doc::tab(doc, raw).and_then(|(_, t)| {
-        let trail = super::node::path_to(&t.root, &|n| super::node::id(n) == Some(pane))?;
-        trail
-            .len()
-            .checked_sub(2)
-            .and_then(|at| trail.get(at).copied())
-    });
-    match parent.and_then(|p| p.get("type")).and_then(Value::as_str) {
-        Some("row") => "down",
-        Some("column") => "right",
-        _ => fallback,
+/// The direction to split nvim's pane (or its preview) in for a swap that
+/// keeps its place: across the split that made the slot, so both nest in
+/// the slot and the new pane keeps its size when the old one closes (along
+/// it, the app shares the row out again). The slot
+/// is always made by splitting the whole tab in `direction(position)`, so
+/// across it is the other one. Not read from the layout: a header asks when
+/// its pane is new, which is mid-swap, while it still shares a nested split
+/// with the pane it replaces (and that answer would be the wrong way).
+pub(crate) fn swap_direction() -> &'static str {
+    match direction(config::load().sidebar.position) {
+        "right" => "down",
+        _ => "right",
     }
-}
-
-/// The direction to split the tab's nvim pane (else its preview) in for a
-/// swap that keeps its place (`across`); the pane header swaps them itself.
-pub(crate) fn swap_direction(ctx: &Ctx) -> Result<&'static str> {
-    let fallback = direction(config::load().sidebar.position);
-    let Some(doc) = doc::read()? else {
-        return Ok(fallback);
-    };
-    let raw = raw_tab(&ctx.tab);
-    let pane = find(&ctx.tab)?
-        .and_then(|terminal| doc::pane_of(&doc, &terminal).map(|(pane, _)| pane))
-        .or_else(|| doc::preview_of(&doc, raw).map(|(pane, _)| pane));
-    Ok(match pane {
-        Some(pane) => across(&doc, raw, &pane, fallback),
-        None => fallback,
-    })
 }
 
 /// What Files closed in this tab was a preview of `file`: the next Files

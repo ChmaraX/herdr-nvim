@@ -117,7 +117,7 @@ pub fn current_cmd() -> Result<()> {
     let mut out =
         json!({"file": file, "watch": watch, "real_root": real_root, "tab_root": tab_root});
     if args.iter().any(|a| a == "--across") {
-        out["across"] = json!(sidebar::swap_direction(&ctx)?);
+        out["across"] = json!(sidebar::swap_direction());
     }
     println!("{out}");
     Ok(())
