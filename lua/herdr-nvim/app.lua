@@ -234,14 +234,17 @@ local function real(path)
 end
 
 -- The current file for the tree to follow (real files only), and the folder.
+-- A main window on something that isn't a file (`:help`, a terminal, a new
+-- buffer) has no current file: the tree keeps its selection and the pane
+-- header offers no Preview. A floating window (a picker, a hover) changes
+-- nothing: the window under it still shows the file.
 local function write_current()
+  if vim.api.nvim_win_get_config(0).relative ~= "" then return end
   local name = vim.api.nvim_buf_get_name(0)
   local cwd = real(vim.fn.getcwd())
-  if name == "" or vim.bo.buftype ~= "" or vim.fn.filereadable(name) == 0 then
-    if cwd ~= M.state.cwd then M.write_state({ cwd = cwd }) end
-    return
-  end
-  M.write_state({ file = real(name), cwd = cwd })
+  local file = (name ~= "" and vim.bo.buftype == "" and vim.fn.filereadable(name) == 1) and real(name) or vim.NIL
+  if file == M.state.file and cwd == M.state.cwd then return end
+  M.write_state({ file = file, cwd = cwd })
 end
 
 -- Whether an explorer window is already on screen.
