@@ -341,5 +341,10 @@ Issue: :Herdr is not recognized ~
 Issue: The sidebar daemon does not start ~
 - Make sure `sidebar.nvim_bin` points at a working nvim >= 0.10 (see the
   plugin README for the herdr-side config).
+- If the sidebar pane opens and immediately disappears, `nvim` was not found
+  on the PATH herdr gave the pane. herdr passes on the PATH of the herdr
+  server process, which lacks your Homebrew prefix when the server was
+  started from a systemd unit or over SSH. Set an absolute path:
+  `nvim_bin = "/home/linuxbrew/.linuxbrew/bin/nvim"`.
 
 vim:tw=78:ts=8:et:ft=help:norl:

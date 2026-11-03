@@ -45,9 +45,25 @@ pub(crate) fn augmented_path_dirs(
         prepend.push(PathBuf::from(dir));
     }
 
+    // Homebrew on Linux. Its prefix depends on how it was installed: the
+    // tarball install (the default on Linux) uses `~/.linuxbrew`, the
+    // system-wide "linuxbrew" one uses `/home/linuxbrew/.linuxbrew`, and some
+    // distributions ship it under `/opt` or `/usr/local`. None of these are
+    // on the minimal PATH that a herdr server inherits when it is started
+    // from a systemd unit or over SSH, so a bare `nvim` spawn fails there.
+    // `$HOME/.linuxbrew/bin` is added below, with the other home dirs.
+    for dir in [
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/opt/linuxbrew/bin",
+        "/usr/local/linuxbrew/bin",
+    ] {
+        prepend.push(PathBuf::from(dir));
+    }
+
     if let Some(home) = home {
         prepend.push(home.join(".local/bin"));
         prepend.push(home.join(".cargo/bin"));
+        prepend.push(home.join(".linuxbrew/bin"));
     }
 
     let mut combined: Vec<PathBuf> = Vec::new();
@@ -106,6 +122,19 @@ mod tests {
         let dirs = augmented_path_dirs(&[], Some(Path::new("/home/u")), None);
         assert!(dirs.contains(&p("/home/u/.local/bin")));
         assert!(dirs.contains(&p("/home/u/.cargo/bin")));
+    }
+
+    #[test]
+    fn includes_linuxbrew_dirs() {
+        // Homebrew on Linux installs into a prefix that is not on the minimal
+        // PATH a herdr server inherits when started from a systemd unit or
+        // over SSH. Without these, a bare `nvim` spawn fails with "No such
+        // file or directory".
+        let dirs = augmented_path_dirs(&[], Some(Path::new("/home/u")), None);
+        assert!(dirs.contains(&p("/home/linuxbrew/.linuxbrew/bin")));
+        assert!(dirs.contains(&p("/opt/linuxbrew/bin")));
+        assert!(dirs.contains(&p("/usr/local/linuxbrew/bin")));
+        assert!(dirs.contains(&p("/home/u/.linuxbrew/bin")));
     }
 
     #[test]

@@ -245,6 +245,22 @@ afterward. The most common failure is `daemon-healthy` FAIL: the nvim daemon
 did not start. Make sure that `sidebar.nvim_bin` points at a working nvim ≥
 0.10.
 
+If the sidebar pane opens and immediately disappears, herdr's log shows the
+plugin pane exiting with code 1 and no error on screen. That is what a failed
+daemon spawn looks like: `nvim` could not be found. herdr hands plugin panes
+the PATH of the herdr server process, which is not necessarily yours — a
+server started from a systemd unit, or over SSH, inherits a minimal PATH
+without your Homebrew prefix. Either set an absolute path:
+
+```toml
+[sidebar]
+nvim_bin = "/home/linuxbrew/.linuxbrew/bin/nvim"  # your Homebrew prefix
+```
+
+or make sure the daemon inherits a PATH that has `nvim` on it. The plugin
+prepends the common Homebrew prefixes (including Linux's) to the PATH it
+spawns nvim with, so a Homebrew-installed nvim is found either way.
+
 ## Tests
 
 ```sh
