@@ -48,6 +48,11 @@ export function nvimPanes(tab) {
   return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
 }
 
+// Whether the app lists a terminal as ended.
+export function ended(address) {
+  return terminals().some((t) => t.address === address && t.state !== "live");
+}
+
 // The tab's preview pane, if one shows in its nvim's place: a herdr-nvim mod
 // pane of the tab. herdr-nvim opens a mod pane only as a preview (always
 // with `props.preview`, which is how the Rust side, `doc::preview_of`, finds

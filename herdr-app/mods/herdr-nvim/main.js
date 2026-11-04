@@ -14,13 +14,13 @@
 //   (dialog.js); with props {help}: its key list (keys-help.js); with props
 //   {bar}: the title of cmd-o's picker (pick.js);
 // - an overlay, `mod.open:herdr-nvim` (cmd-e): does exactly what the Files
-//   button does, then closes; with `tree = "nvim"`, or without the slot in
-//   this layout, it toggles the tab's nvim alone.
+//   button does, then closes (with `tree = "nvim"` the controller turns that
+//   into nvim alone, as for the button); without the slot in this layout, it
+//   toggles the tab's nvim alone.
 
 import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props } from "herdr";
 import { nvim, place } from "./lib.js";
-import { treeMode } from "./ops.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Dialog } from "./dialog.js";
 import { KeyHelp } from "./keys-help.js";
@@ -38,11 +38,9 @@ export default class HerdrNvim extends View {
     else if (dialog) this.part = new Dialog(cx);
     else if (overlay) {
       cx.spawn(async () => {
-        const p = panelState(layout()), at = place();
-        if (!p || (await treeMode()) === "nvim") {
-          if (p?.files) hidePanel(p);
-          await nvim("toggle", [], at);
-        } else if (p.files) hidePanel(p);
+        const p = panelState(layout());
+        if (!p) await nvim("toggle", [], place());
+        else if (p.files) hidePanel(p);
         else showFiles(p);
         closeOverlay(overlay);
       });

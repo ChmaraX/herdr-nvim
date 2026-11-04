@@ -8,7 +8,8 @@
 //   panel follows the tab, open where the tab has its nvim pane, closed where
 //   it has none. nvim panes are per tab, the panel is per window.
 // - the panel opened or closed on the same tab (Files button, cmd-e): the
-//   tab's nvim pane follows the panel. Switching the panel to Changes leaves
+//   tab's nvim pane follows the panel. An opening counts even when the
+//   look sees it only after a tab switch (the switch itself never opens it). Switching the panel to Changes leaves
 //   nvim open (Changes opens files in it).
 // - the tab's nvim pane appeared or went (picker, `open`, gitview, `:q`): the
 //   panel follows the pane.
@@ -37,10 +38,17 @@ import { nvim, place } from "./lib.js";
 import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
-import { goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
+import { ended, goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
 // How long a Preview swap waits for its pane.
 const SWAP_GIVE_UP_MS = 5000;
+
+// How long our own open or close is assumed at most before the app's
+// terminal list shows it. The list lags by a moment, and a pane closed
+// meanwhile by something else (cmd-e with `tree = "nvim"` runs `toggle`
+// itself) shows only as ended; without an end its tab would look open for
+// good.
+const EXPECT_MS = 3000;
 
 // The preview each tab's Files closed: {[tab]: file}.
 const MEMORY = "herdr-nvim.preview-memory";
@@ -79,12 +87,13 @@ export class Sync {
   // the controller swaps them, nvim keeps running). Right after our own open
   // or close the app's terminal list may not show it yet: until it shows that
   // terminal there (or gone), the result of the action is assumed.
-  // Each tab's own expectation, kept until that tab's lists show it: a look
-  // at another tab meanwhile doesn't drop it.
+  // Each tab's own expectation, kept until that tab's lists show it (or
+  // EXPECT_MS): a look at another tab meanwhile doesn't drop it.
   nvimOf(tab) {
     const seen = nvimPanes(tab), e = this.expects.get(tab), preview = previewPane(tab);
-    if (e) {
-      if (e.opened && !seen.includes(e.opened)) return true;
+    if (e && Date.now() - e.since > EXPECT_MS) this.expects.delete(tab);
+    else if (e) {
+      if (e.opened && !seen.includes(e.opened) && !ended(e.opened)) return true;
       if (e.preview && !preview) return true;
       if (e.closed && seen.includes(e.closed)) return seen.length > 1 || Boolean(preview);
       if (e.closedPreview && preview === e.closedPreview) return seen.length > 0;
@@ -100,16 +109,18 @@ export class Sync {
     if (this.busy) return;
     if (this.swapping) return this.finishSwap();
     const p = panelState(layout()), f = focused();
-    if (!p || !f?.tab) {
-      this.prev = null;
-      return;
-    }
+    // Nothing with a tab focused (an overlay such as cmd-e's, a dialog): no
+    // decision, and the last look stays, so a change made meanwhile (cmd-e's
+    // hide) is still read as one when the tab is back.
+    if (!p || !f?.tab) return;
     // `at`: the whole tab context, fixed now; actions on `cur` use it after
     // their awaits, whichever tab is focused by then.
     const cur = { tab: f.tab, at: place(f), files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
     // nvim itself on screen (back by any way, cmd-o, open): no preview for
-    // Files to bring back.
-    if ((shared(MEMORY) ?? {})[f.tab] && nvimPanes(f.tab).length) remember(f.tab, null);
+    // Files to bring back. Not the nvim pane we just closed, which the
+    // app's list may still show.
+    const closing = this.expects.get(f.tab)?.closed;
+    if ((shared(MEMORY) ?? {})[f.tab] && nvimPanes(f.tab).some((t) => t !== closing)) remember(f.tab, null);
     const prev = this.prev;
     this.prev = cur;
     const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && takeKeepNvim(cur.tab);
@@ -234,7 +245,7 @@ export class Sync {
         // What Files closes now is what it opens next: the preview, or nvim.
         remember(at.tab, preview ? (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null : null);
         for (const p of [pane, preview]) if (p) run("pane.close", { pane: p });
-        this.expects.set(at.tab, { opened: null, closed: terminal, preview: false, closedPreview: preview });
+        this.expects.set(at.tab, { opened: null, closed: terminal, preview: false, closedPreview: preview, since: Date.now() });
         return { closed: terminal };
       }
     }
@@ -249,6 +260,7 @@ export class Sync {
       closed: made.closed ?? null,
       preview: Boolean(made.preview),
       closedPreview: made.closed_preview ?? null,
+      since: Date.now(),
     });
     return made;
   }

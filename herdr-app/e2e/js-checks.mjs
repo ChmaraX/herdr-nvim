@@ -13,6 +13,8 @@ assert.deepEqual(wanted(tab(true, false), null, opts), { panel: "hide" });
 assert.deepEqual(wanted(tab(false, true), null, { ...opts, kept: true }), { panel: null });
 // The panel opened or closed on the same tab: nvim follows it.
 assert.deepEqual(wanted(tab(true, false), tab(false, false), opts), { kept: false, nvim: true });
+// Files right after a tab switch, seen in one look: opens that tab's nvim.
+assert.deepEqual(wanted(tab(true, false), { ...tab(false, true), tab: "b" }, opts), { kept: false, nvim: true });
 assert.deepEqual(wanted(tab(false, true), tab(true, true), opts), { nvim: true });
 assert.deepEqual(wanted(tab(false, true), tab(true, true), { ...opts, hidByTreeKey: true }), { kept: true });
 assert.deepEqual(wanted(tab(false, true, true), tab(true, true), opts), { nvim: false });
