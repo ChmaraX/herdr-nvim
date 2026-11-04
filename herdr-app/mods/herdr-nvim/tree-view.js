@@ -20,6 +20,7 @@ import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
 // with LazyVim's leader.
 const TREE_KEY = ["space", "e"];
 import { GIT_EVERY_MS, TreeModel, dirname } from "./tree-model.js";
+import { markOf } from "./tree.js";
 import { KeyboardHandover, TabRoots } from "./tree-parts.js";
 
 const HINT = "? keys";
@@ -108,6 +109,12 @@ export class Tree {
     this.tabRoot = tabRoot;
     this.setRoot(this.roots.rootFor(tab, tabRoot), cx);
     cx.notify();
+  }
+
+  // The view is gone (main.js `close`): its watch loops end.
+  close() {
+    this.rootGen = (this.rootGen ?? 0) + 1;
+    this.currentGen = (this.currentGen ?? 0) + 1;
   }
 
   // The tab, with its folder as the tree knows it: what operations get.
@@ -539,7 +546,7 @@ export class Tree {
   }
 
   row(r, i, t, focusedNow) {
-    const mark = this.model.marks[r.abs];
+    const mark = markOf(this.model.marks, r.abs);
     const markColor = mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked;
     // No handlers here: a virtual list's rows take clicks through the list
     // (`clicked`).

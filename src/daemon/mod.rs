@@ -239,6 +239,20 @@ pub(crate) fn detach_command(command: &mut Command) {
     }
 }
 
+/// An error when the tab's daemon runs but doesn't answer, even after
+/// `unstick`; nothing when it answers or isn't running. For a caller about to
+/// make a pane for it: the pane's own `sidebar` would refuse it and close at
+/// once, its message unseen.
+pub(crate) fn refuse_stuck(tab: &str, sidebar: &Sidebar) -> Result<()> {
+    match health(&socket_path(tab), sidebar) {
+        Health::Stuck => bail!(
+            "tab {tab}'s nvim is running but doesn't answer (waiting at a prompt?); kept: \
+             stop it with `herdr-nvim daemons stop` if it stays like this"
+        ),
+        Health::Up | Health::Down => Ok(()),
+    }
+}
+
 /// How long a running daemon gets to answer before it counts as stuck.
 const ANSWER_WITHIN: Duration = Duration::from_secs(2);
 

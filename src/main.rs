@@ -57,8 +57,10 @@ fn main() {
     // The one place that asks which Herdr this is (`host`).
     let host = host::choose();
     let app = host == host::Host::App;
+    // Under the app's own 30 s `exec` limit, so this process's reason is
+    // the one the person sees.
     if app && SHORT.contains(&mode.as_str()) {
-        deadline(std::time::Duration::from_secs(30));
+        deadline(std::time::Duration::from_secs(25));
     }
     let code = match (mode.as_str(), app) {
         ("toggle", false) => run(maneuver::toggle_cmd),

@@ -276,6 +276,12 @@ end
 function M.setup()
   local group = vim.api.nvim_create_augroup("herdr-nvim-app", { clear = true })
   vim.api.nvim_create_autocmd({ "BufEnter", "DirChanged" }, { group = group, callback = write_current })
+  -- A rename of the current file (the tree's `r`, done in a helper window)
+  -- and a new file's first `:w`: written once back in the person's window.
+  vim.api.nvim_create_autocmd({ "BufFilePost", "BufWritePost" }, {
+    group = group,
+    callback = function() vim.schedule(write_current) end,
+  })
   -- The window gave this nvim the keyboard (the terminal's focus report):
   -- tell the app's tree, which can't see the keyboard leave it.
   vim.api.nvim_create_autocmd("FocusGained", {

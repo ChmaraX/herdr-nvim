@@ -189,11 +189,11 @@ export class Sync {
     }
     const { across } = await appConfig().catch(() => ({ across: "down" }));
     const terminal = nvimPanes(tab)[0];
-    const old = panes().find((p) => p.terminal === terminal)?.pane ?? previewPane(tab);
+    const old = (terminal && panes().find((p) => p.terminal === terminal)?.pane) || previewPane(tab);
     // Neither on screen: herdr-nvim puts the preview where nvim's pane goes.
     if (!old) return void (await nvim("app-preview", ["--file", file], at));
     this.swapping = { tab, old, before: this.panesOf(tab), at: Date.now() };
-    run("pane.split", { direction: across, pane: old, mod: "herdr-nvim", props: { preview: file, tab, cwd: at.cwd ?? null } });
+    run("pane.split", { direction: across, pane: old, mod: "herdr-nvim", props: { preview: file, tab } });
     // The deadlines below hold even if nothing else redraws meanwhile.
     cx.spawn(async (cx) => {
       await cx.sleep(SWAP_GIVE_UP_MS + 100);

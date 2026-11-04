@@ -1,4 +1,5 @@
-//! `pick-file` orchestration — the file bridge tying M1/M2/M3 together.
+//! `pick-file` orchestration: the agent's output, the picker, and the tab's
+//! nvim.
 //!
 //! Two phases share one entry point ([`pick_file_cmd`]), selected by argv:
 //!
@@ -11,7 +12,7 @@
 //!   the sidebar, and deletes the handoff file.
 //!
 //! Only the pure selection rule [`target_agent_pane`] is unit tested; the two
-//! phases are exercised live in Task 4's end-to-end run.
+//! phases are exercised by the e2e suites (TUI and `herdr-app/e2e`).
 
 use std::{
     collections::HashSet,

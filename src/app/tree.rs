@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::{config, daemon, state};
 
-use super::{cli, raw_tab, sidebar};
+use super::{cli, doc, raw_tab, sidebar};
 
 const NVIM_WAIT: Duration = Duration::from_secs(10);
 
@@ -32,7 +32,10 @@ pub fn fs_cmd() -> Result<()> {
     serde_json::from_str::<Value>(request).context("the request is not JSON")?;
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
     let config = config::load();
-    let socket = daemon::ensure_daemon(&ctx.tab, &daemon::plugin_root()?, &config, &ctx.cwd)?;
+    // A first request can start the tab's nvim: in the tab's folder, as the
+    // pane does.
+    let folder = sidebar::nvim_folder(&ctx, doc::read()?.as_ref());
+    let socket = daemon::ensure_daemon(&ctx.tab, &daemon::plugin_root()?, &config, &folder)?;
     let expr = format!(
         "luaeval(\"require('herdr-nvim.fs').run(_A)\", {})",
         daemon::vim_string_literal(request)

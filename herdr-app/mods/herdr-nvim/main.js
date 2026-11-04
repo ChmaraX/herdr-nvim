@@ -48,6 +48,11 @@ export default class HerdrNvim extends View {
     else this.part = new Tree(cx);
   }
 
+  // The view is gone: its part's loops end (the tree's and the preview's).
+  async close() {
+    this.part?.close?.();
+  }
+
   render(cx) {
     if (this.part) return this.part.render(cx);
     this.sync?.look(cx);

@@ -111,12 +111,17 @@ export class Preview {
     cx.spawn(async (cx) => {
       // A changed path of the folder's root means "anything may have changed".
       const ours = (changed) => !changed.length || changed.some((p) => p === this.file || p === dirname(this.file));
-      for (;;) {
+      while (!this.closed) {
         this.shown = await load(this.file);
         cx.notify();
-        while (!ours(await watchFolder(dirname(this.file))));
+        while (!this.closed && !ours(await watchFolder(dirname(this.file))));
       }
     });
+  }
+
+  // The pane is gone (main.js `close`): the watch loop ends.
+  close() {
+    this.closed = true;
   }
 
   render() {

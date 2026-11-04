@@ -24,7 +24,9 @@ export function panelState(root) {
   const at = path.findLastIndex((node) => node.type === "stack");
   const stack = path[at], slot = path[path.length - 1];
   const panel = at > 0 ? path[at - 1] : slot;
-  const shown = path.slice(0, Math.max(at, 0) + 1).every((node) => !node.hidden);
+  // Shown: every node down to the stack, and the slot itself (a layout
+  // without a stack hides the slot).
+  const shown = path.slice(0, Math.max(at, 0) + 1).every((node) => !node.hidden) && !slot.hidden;
   return {
     stack: stack?.id ?? null,
     slot: slot.id,

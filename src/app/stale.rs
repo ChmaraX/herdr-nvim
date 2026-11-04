@@ -60,11 +60,11 @@ pub(crate) fn plan(current: Option<&str>, look: &Probe) -> Plan {
     }
 }
 
-/// Pure: the notice for a stale daemon that was kept.
 /// What nvim itself shows (one line; the toast has `dirty_notice`).
 const SHORT_NOTICE: &str =
     "herdr-nvim: kept the old version for your unsaved work; save (:wa), then reopen nvim";
 
+/// Pure: the notice for a stale daemon that was kept.
 pub(crate) fn dirty_notice(look: &Probe) -> String {
     let count = |n: Option<u32>, what: &str| match n {
         Some(0) => None,

@@ -78,13 +78,14 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
 /// A stale daemon (an older runtime's) is restarted first, or kept with a
 /// notice when it has unsaved work (`stale`).
 pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
-    let notice =
-        super::stale::refresh_on_open(ctx.tab.as_str(), &ctx.cwd).unwrap_or_else(|error| {
-            eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
-            None
-        });
-    let config = config::load();
     let doc = doc::read()?;
+    let folder = nvim_folder(ctx, doc.as_ref());
+    let notice = super::stale::refresh_on_open(ctx.tab.as_str(), &folder).unwrap_or_else(|error| {
+        eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
+        None
+    });
+    let config = config::load();
+    crate::daemon::refuse_stuck(ctx.tab.as_str(), &config.sidebar)?;
     let preview = doc
         .as_ref()
         .and_then(|doc| doc::preview_of(doc, raw_tab(&ctx.tab)));
@@ -100,7 +101,7 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
         cli::self_command()?.to_string_lossy().into_owned(),
         "sidebar".to_owned(),
         "--cwd".to_owned(),
-        ctx.cwd.to_string_lossy().into_owned(),
+        folder.to_string_lossy().into_owned(),
     ];
     // In a preview's place: across, so nvim takes the preview's exact slot
     // (`swap_direction`); else beside the whole tab.
@@ -150,7 +151,7 @@ pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
             "direction": direction(config.sidebar.position),
             "pane": root,
             "mod": super::layout_patch::MOD,
-            "props": {"preview": file, "tab": raw, "cwd": ctx.cwd},
+            "props": {"preview": file, "tab": raw},
         }),
     )?;
     // The preview's pane (`true` when the app didn't name it).
@@ -206,6 +207,16 @@ fn label(terminal: &str, tab: &str) -> Result<()> {
         json!({"terminal": terminal, "labels": {LABEL: tab}}),
     )
     .map(drop)
+}
+
+/// Where a tab's nvim starts (and so the tree's root): the tab's folder, else
+/// its space's, in the app's document; the invocation's folder only without
+/// either. Not the focused terminal's live folder: a shell that did `cd src`
+/// would root the tab's nvim, which lives as long as the tab, in `src`.
+pub(crate) fn nvim_folder(ctx: &Ctx, doc: Option<&doc::Doc>) -> PathBuf {
+    doc.and_then(|doc| doc::folder_of(doc, raw_tab(&ctx.tab)))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ctx.cwd.clone())
 }
 
 /// The tab's sidebar, opened if it isn't.

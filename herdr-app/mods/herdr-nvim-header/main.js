@@ -27,11 +27,20 @@ const basename = (p) => p.replace(/^.*\//, "");
 const dirname = (p) => p.replace(/\/[^/]*$/, "") || "/";
 const bin = () => `${appHome()}/mods/herdr-nvim/bin/herdr-nvim`;
 
+// How long a failed first look waits before asking again.
+const RETRY_MS = 2000;
+
 export default class Header extends Pane {
   init() {
     super.init();
     this.file = null; // nvim's file, on herdr-nvim's nvim pane
     this.watching = null;
+  }
+
+  // The view is gone: its watch loop ends.
+  async close(cx) {
+    this.closed = true;
+    await super.close?.(cx);
   }
 
   // What this pane is to herdr-nvim: {role: "nvim", tab} (the tab's nvim),
@@ -60,7 +69,8 @@ export default class Header extends Pane {
   }
 
   // nvim's file, followed: the first look asks `app-current` where the tab's
-  // nvim writes it, then the header watches that file.
+  // nvim writes it, then the header watches that file. A first look that
+  // fails (nvim just starting, a slow moment) is tried again a little later.
   follow(r, cx) {
     if (this.watching) return;
     this.watching = "starting";
@@ -70,12 +80,17 @@ export default class Header extends Pane {
       try { at = out?.code === 0 ? JSON.parse(out.stdout) : null; } catch {}
       this.file = at?.file ?? null;
       cx.notify();
-      if (r.role !== "nvim" || !at?.watch) return;
+      if (!at?.watch) {
+        await cx.sleep(RETRY_MS);
+        this.watching = null;
+        return cx.notify();
+      }
       this.watching = at.watch;
-      for (;;) {
+      while (!this.closed) {
         // The folder holds every tab's file: only this tab's matters (a
         // batch naming the folder itself may be anything).
         const changed = await watchFolder(dirname(at.watch));
+        if (this.closed) return;
         if (changed.length && !changed.some((p) => p.startsWith(at.watch) || p === dirname(at.watch))) continue;
         const text = await readTextFile(at.watch).catch(() => null);
         let file = null;

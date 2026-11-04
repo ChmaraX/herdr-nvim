@@ -781,10 +781,13 @@ tree_key 0:cmd text:src/zz-dirty.txt enter
 poll 10 nvim_on zz-dirty.txt || fail "nvim's buffer did not follow the rename of a modified file"
 [ "$(nvim_eval "$sock_a" '&modified . ":" . getline(1)')" = "1:unsaved edit" ] ||
   fail "the rename lost the unsaved edit ($(nvim_eval "$sock_a" '&modified . ":" . getline(1)'))"
+# What nvim tells the tree and the pane header: the new name.
+state_names() { grep -q "zz-dirty.txt" "$(nvim_eval "$sock_a" '$HERDR_NVIM_CURRENT_FILE')"; }
+poll 5 state_names || fail "nvim's state file still names the old file after the rename"
 [ "$(cat "$demo/src/zz-dirty.txt")" = a ] || fail "the rename wrote the unsaved edit to disk"
 nvim_eval "$sock_a" 'execute("silent write")' >/dev/null
 [ "$(cat "$demo/src/zz-dirty.txt")" = "unsaved edit" ] || fail "a plain :w after the rename did not write"
-say "r on a modified buffer: renamed to zz-dirty.txt, still modified with its edit, nothing written until :w (which works)"
+say "r on a modified buffer: renamed to zz-dirty.txt (so says nvim's state), still modified with its edit, nothing written until :w (which works)"
 tree_key text:q
 # Nothing outside the tab's folder through a symlink in it.
 mkdir -p "$root/outside"; ln -s "$root/outside" "$demo/link"
@@ -807,6 +810,16 @@ poll 10 eval_is "$sock_b" 'getcwd()' "$real_demo" ||
 pid_b=$(daemon_pid "$sock_b")
 (cd / && "$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null)
 say "toggle with no terminal and no folder, run from /: tab B's nvim ($pid_b) started in the tab's folder"
+# A focused terminal that did `cd src` (the mod passes its live folder):
+# the tab's nvim still starts in the tab's folder, which roots the tree.
+stopped=$("$wrapper" daemons stop "$space:$tab_b" --force 2>&1) || fail "stopping tab B's nvim failed: $stopped"
+"$wrapper" toggle --state open --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\",\"cwd\":\"$demo/src\"}" >/dev/null ||
+  fail "toggle from a terminal in src/ failed"
+sock_b=$(sock_of "$space" "$tab_b") || fail "no daemon for tab B"
+poll 10 eval_is "$sock_b" 'getcwd()' "$real_demo" ||
+  fail "tab B's nvim started in the focused terminal's folder ($(nvim_eval "$sock_b" 'getcwd()')), not the tab's"
+"$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null
+say "toggle from a terminal in src/: tab B's nvim started in the tab's folder, not src/"
 H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
 tree_key "text: e" # space e in nvim, tree showing: hidden, nvim stays focused
 poll 10 panel_is hidden || fail "space e did not hide the tree"

@@ -48,7 +48,18 @@ export async function gitMarks(cwd) {
   if (status?.code !== 0) return marks;
   for (const entry of status.stdout.split("\0").filter(Boolean)) {
     const xy = entry.slice(0, 2);
-    marks[`${top}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+    // An untracked folder comes once, as `dir/`: its row gets the mark.
+    marks[`${top}/${entry.slice(3).replace(/\/$/, "")}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
   }
   return marks;
+}
+
+// A row's mark: its own, else "A" inside a new folder (git lists that
+// folder alone, not the files in it).
+export function markOf(marks, abs) {
+  if (marks[abs]) return marks[abs];
+  for (let dir = abs.replace(/\/[^/]*$/, ""); dir.includes("/"); dir = dir.replace(/\/[^/]*$/, "")) {
+    if (marks[dir] === "A") return "A";
+  }
+  return null;
 }
