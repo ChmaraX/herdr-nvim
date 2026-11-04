@@ -2,11 +2,13 @@
 # A convenience helper: does what RECIPE.md describes, the way AGENTS.md says
 # to add a mod, so an agent can do the same by hand.
 #
-#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--panel-width PX] [--tree native|nvim]
-#   herdr-app/install.sh --uninstall [--force] [--home DIR] [--app-bin PATH]
+#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--binary PATH] [--panel-width PX] [--tree native|nvim]
+#   herdr-app/install.sh --uninstall [--force] [--home DIR] [--app-bin PATH] [--binary PATH]
 #
 # The Herdr app must be open on that home (default: $HERDR_APP_HOME, else
-# ~/.config/herdr-app). Install builds herdr-nvim, copies its runtime (binary +
+# ~/.config/herdr-app). Install builds herdr-nvim (or takes the prebuilt
+# --binary: a release's app bundle, which the root install.sh downloads and
+# runs this from), copies its runtime (binary +
 # lua) to ${XDG_DATA_HOME:-~/.local/share}/herdr-nvim/app/<stamp>, copies the
 # mod into <home>/mods with a wrapper at mods/herdr-nvim/bin/herdr-nvim
 # (pointing at that runtime), runs `herdr-app check` on it, merges keys.json into the person's keys (only
@@ -31,6 +33,7 @@ repo=$(dirname "$here")
 mode=install
 home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 app_bin=${HERDR_APP_BIN:-}
+binary=
 panel_width=
 tree=
 force=
@@ -44,9 +47,10 @@ while [ $# -gt 0 ]; do
     --force) force=1 ;;
     --home) home=$2; shift ;;
     --app-bin) app_bin=$2; shift ;;
+    --binary) binary=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
     --tree) tree=$2; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -68,6 +72,20 @@ find_app_bin() {
 }
 
 case $tree in ''|native|nvim) ;; *) die "--tree is native or nvim, not $tree" ;; esac
+if [ -n "$binary" ]; then
+  [ -x "$binary" ] || die "--binary $binary is not an executable"
+  binary=$(cd "$(dirname "$binary")" && pwd)/$(basename "$binary")
+fi
+
+# The herdr-nvim binary to install: --binary, else this repo's release build.
+built_binary() {
+  if [ -n "$binary" ]; then echo "$binary"; return; fi
+  local log
+  log=$(mktemp)
+  (cd "$repo" && cargo build --release --quiet 2>"$log") || { cat "$log" >&2; rm -f "$log"; die "cargo build failed"; }
+  rm -f "$log"
+  echo "$repo/target/release/herdr-nvim"
+}
 
 app_bin=$(find_app_bin)
 home=$(cd "$home" 2>/dev/null && pwd) || die "no Herdr app home at $home"
@@ -137,9 +155,9 @@ if [ "$mode" = uninstall ]; then
   [ -x "$root/bin/herdr-nvim" ] || root=$(ls -dt "$runtime"/*/ 2>/dev/null | head -1 | sed 's:/$::')
   [ -x "$root/bin/herdr-nvim" ] || root=$runtime
   if [ ! -x "$root/bin/herdr-nvim" ]; then
-    (cd "$repo" && cargo build --release --quiet) || die "cargo build failed"
+    built=$(built_binary)
     root=$(mktemp -d)
-    mkdir -p "$root/bin" && cp "$repo/target/release/herdr-nvim" "$root/bin/"
+    mkdir -p "$root/bin" && cp "$built" "$root/bin/herdr-nvim"
     cp -R "$repo/lua" "$repo/plugin" "$root/"
   fi
   run_root "$root" app-setup uninstall --keys "$here/keys.json"
@@ -162,9 +180,7 @@ fi
 
 for m in "${mods[@]}"; do mine_or_absent "$m"; done
 
-build_log=$(mktemp)
-(cd "$repo" && cargo build --release --quiet 2>"$build_log") || { cat "$build_log" >&2; die "cargo build failed"; }
-rm -f "$build_log"
+built=$(built_binary)
 
 # The runtime goes into its own folder, named by its stamp, and the wrapper
 # points at it: a tab nvim already running keeps the runtime it started with,
@@ -174,7 +190,7 @@ rm -f "$build_log"
 mkdir -p "$runtime"
 staged=$(mktemp -d "$runtime/.new.XXXXXX")
 mkdir -p "$staged/bin"
-cp "$repo/target/release/herdr-nvim" "$staged/bin/herdr-nvim"
+cp "$built" "$staged/bin/herdr-nvim"
 cp -R "$repo/lua" "$repo/plugin" "$staged/"
 stamp=$(cd "$staged" && find bin/herdr-nvim lua plugin -type f | LC_ALL=C sort | xargs shasum -a 256 |
   shasum -a 256 | cut -c1-16)

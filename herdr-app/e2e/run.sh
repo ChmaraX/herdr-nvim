@@ -7,14 +7,16 @@
 # checks the real effects (daemons, buffers, what the agent received), takes
 # screenshots, uninstalls, and removes everything it started.
 #
-#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS]
+#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE]
 #
 # A smoke test of the flows a person uses: Files and cmd-e (core), cmd-o
 # (picker), the tree's file operations (tree), Preview / Source (preview),
 # daemons ending and uninstall (teardown); about 2 minutes. The logic behind
 # them is checked by the fast suites (cargo test, tests/run.lua,
 # js-checks.mjs). --only picker,preview runs the setup, the install and core,
-# then only those flows.
+# then only those flows. --bundle installs and uninstalls the way a person
+# does, through the root install.sh with a release's app bundle
+# (herdr-app/bundle.sh makes one), instead of this checkout's build.
 #
 # Needs: the Herdr app (0.1.11+), hc, nvim, cargo, git, and a python3 with
 # pyobjc (Quartz) for the key presses. The window is moved on screen once
@@ -26,6 +28,7 @@ repo=$(cd "$here/../.." && pwd)
 proof=/tmp/nvim-port-proof/run-$(date +%Y%m%d-%H%M%S)
 keep=0
 app_bin=
+bundle=
 only=
 groups=" picker tree preview teardown "
 while [ $# -gt 0 ]; do
@@ -33,6 +36,7 @@ while [ $# -gt 0 ]; do
     --proof) proof=$2; shift ;;
     --keep) keep=1 ;;
     --app-bin) app_bin=$2; shift ;;
+    --bundle) bundle=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift ;;
     --only)
       only=$2; shift
       for g in ${only//,/ }; do
@@ -207,7 +211,15 @@ ldiff() { "$py" "$here/layout_diff.py" "$@" | tee -a "$log"; } # ldiff BEFORE AF
 no_change='{"changed": {}, "added": [], "removed": []}'
 # The tab block's (`main`) content: its pane header, herdr-nvim's own one.
 in_slot='{"changed": {"files": ["content"], "main": ["content"], "panel": ["size"], "root": ["floating"]}, "added": [], "removed": []}'
-installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
+# Install (or uninstall, with --uninstall): this checkout's build, or the
+# bundle through the root installer.
+app_install() {
+  if [ -n "$bundle" ]; then sh "$repo/install.sh" --app --bundle "$bundle" ${1:+"$1"} -- --app-bin "$app_bin"
+  else "$repo/herdr-app/install.sh" ${1:+"$1"} --app-bin "$app_bin"; fi
+}
+installed=$(app_install 2>&1 | tee -a "$log")
+echo "$installed" | grep -q '^herdr-nvim: installed in' || fail "the install did not finish: $installed"
+say "installed from ${bundle:-the checkout build}"
 echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
 wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
@@ -217,7 +229,7 @@ node "$here/js-checks.mjs" | tee -a "$log" || fail "the mod's pure checks failed
 node "$here/../mods/herdr-nvim/tree-keys.js" > "$root/keys-table.md"
 "$py" -c 'import sys; sys.exit(open(sys.argv[2]).read().find(open(sys.argv[1]).read().strip()) < 0)' "$root/keys-table.md" "$here/../RECIPE.md" ||
   fail "RECIPE.md's key table differs from mods/herdr-nvim/tree-keys.js (node mods/herdr-nvim/tree-keys.js prints it)"
-again=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | grep '^layout:' || true)
+again=$(app_install 2>&1 | grep '^layout:' || true)
 echo "$again" | grep -q 'already uses herdr-nvim' || fail "a second install is not a no-op: $again"
 say "second install: $again"
 layouts_installed=$(layouts_now)
@@ -410,12 +422,14 @@ H do space.close "{\"id\":\"$space\",\"confirmed\":true}" >/dev/null
 poll 15 sh -c "! kill -0 $pid_a" || fail "tab A's daemon survived its space"
 poll 15 sh -c "! hc ls --json | grep -q herdr-nvim-watch" || fail "the watcher kept running with no daemons"
 say "closing tab B stopped its daemon, closing the space the rest and the watcher"
-"$repo/herdr-app/install.sh" --uninstall --app-bin "$app_bin" 2>&1 | tee -a "$log" >/dev/null
+app_install --uninstall 2>&1 | tee -a "$log" >/dev/null
 [ "$(layouts_now)" = "$layouts_installed" ] || fail "uninstall deleted or added a layout: $(layouts_now)"
 shown_is main-copy || fail "uninstall switched the layout away from main-copy"
 ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$no_change" || fail "main-copy is not back to main"
 grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim" ] || fail "uninstall left the mod"
+[ ! -e "$HERDR_APP_HOME/mods/herdr-nvim-header" ] || fail "uninstall left the header mod"
+[ ! -e "$XDG_DATA_HOME/herdr-nvim/app" ] || fail "uninstall left a runtime: $(ls "$XDG_DATA_HOME/herdr-nvim/app")"
 H status | grep -q '"errors": \[\]' || fail "the app reports errors after the uninstall: $(H status)"
 say "uninstall: the layout back to main's content, keys and mods gone, no errors"
 fi

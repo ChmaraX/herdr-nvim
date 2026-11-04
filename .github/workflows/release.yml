@@ -47,7 +47,13 @@ jobs:
       - run: nvim --headless --noplugin -u NONE -l tests/run.lua
       - run: cargo build --release --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/herdr-nvim herdr-nvim-${{ matrix.target }}
+      # The Herdr app's install (the root install.sh downloads it): the same
+      # binary with its Lua and the app's mods, and its SHA-256.
+      - run: herdr-app/bundle.sh target/${{ matrix.target }}/release/herdr-nvim ${{ matrix.target }} .
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          files: herdr-nvim-${{ matrix.target }}
+          files: |
+            herdr-nvim-${{ matrix.target }}
+            herdr-nvim-app-${{ matrix.target }}.tar.gz
+            herdr-nvim-app-${{ matrix.target }}.tar.gz.sha256

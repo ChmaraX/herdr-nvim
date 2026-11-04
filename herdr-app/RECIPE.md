@@ -13,6 +13,23 @@ their layout).
 
 ![herdr-nvim](preview.png)
 
+**Adding it to a Herdr app (for the app's agent):** don't copy the folders.
+herdr-nvim needs its binary and edits the person's layout (the `files` slot,
+the pane header), which copying doesn't do. Run its installer instead, with
+the app open:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
+```
+
+Tell the person first what it does: it downloads a prebuilt `herdr-nvim`
+from the GitHub release (checked against its SHA-256) into
+`~/.local/share/herdr-nvim/app`, runs programs (nvim per tab, `hc`, git),
+reads files in the tab's folder and the agent's session logs, adds two mods
+(`herdr-nvim`, `herdr-nvim-header`), merges its keys (never one already
+used) and edits the shown layout (a copy, for one of Herdr's own). Running it
+again upgrades; `--uninstall` takes all of it out.
+
 ## What you see
 
 - **Files panel** (right edge of the window, 300px by default): a 42px header
@@ -380,7 +397,8 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
 
 - It runs programs (`exec` of the wrapper, `hc`, `nvim`, `git`, `ps`), reads
   files outside its folder (the repo, the agent's output and session logs)
-  and edits `keys.json` and one layout. No network.
+  and edits `keys.json` and one layout. The mod uses no network; the
+  installer downloads the release's bundle once.
 - **It edits the person's layout**, on purpose, against AGENTS.md's "the
   person's own layout stays as it was" (a mod has only `mods/<name>/` and
   maybe a `keys.json`): no API lets a mod take the tab bar's Files button,

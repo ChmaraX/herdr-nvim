@@ -34,9 +34,43 @@ nvim ≥ 0.10 · herdr ≥ 0.7.5 · runs inside a herdr session
 
 ## Install
 
+One command installs it for whichever Herdr you have (the desktop app, the
+herdr TUI, or both); run it again to upgrade:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh
+```
+
+`--app` or `--tui` picks one (`sh -s -- --app`), `--uninstall` takes it out.
+
+### Herdr app
+
+With the app open, either ask the agent in your Herdr window to *add the mod
+at github.com/ChmaraX/herdr-nvim*, or run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
+```
+
+It downloads the release's app bundle for your machine (macOS or Linux,
+Intel or ARM; checked against its SHA-256), so no clone and no Rust
+toolchain, then puts the mods in your app, merges the keys (never one you
+already use) and points your layout's **Files** at the tree (on one of
+Herdr's own layouts, a copy of it). Options for the app go after `--`:
+
+```sh
+curl -fsSL …/install.sh | sh -s -- --app -- --tree nvim        # nvim's own explorer instead of the native tree
+curl -fsSL …/install.sh | sh -s -- --app -- --panel-width 340  # the Files panel's width (default 300)
+curl -fsSL …/install.sh | sh -s -- --app --uninstall           # back to the stock Files browser
+```
+
+What you get: [Herdr desktop app](#herdr-desktop-app).
+
+### herdr TUI
+
 Both halves come from this repo:
 
-**1. The herdr plugin** (sidebar + picker):
+**1. The herdr plugin** (sidebar + picker; `install.sh --tui` runs this):
 
 ```sh
 herdr plugin install ChmaraX/herdr-nvim
@@ -80,7 +114,9 @@ nvim so buffers and language servers follow. `cmd-o` lists the files the
 tab's agent read and edited (from its pi or Claude Code session log), then
 the repo's changes; the annotations work as below. On nvim's pane header,
 a **Preview** button shows a markdown file, an image or an SVG rendered in
-nvim's place (**Source** brings nvim back as it was). With the app open:
+nvim's place (**Source** brings nvim back as it was). To install it:
+[Herdr app](#herdr-app). From a clone (building herdr-nvim with cargo), with
+the app open:
 
 ```sh
 herdr-app/install.sh                    # install, or upgrade in place
@@ -88,6 +124,9 @@ herdr-app/install.sh --tree nvim        # nvim's own explorer instead of the nat
 herdr-app/install.sh --panel-width 340  # the Files panel's width (default 300)
 herdr-app/install.sh --uninstall        # back to the stock Files browser
 ```
+
+A release ships an app bundle per platform (`herdr-app/bundle.sh`: the
+binary, its Lua and the mods), which the root `install.sh` downloads.
 
 The tree's show/hide key is a setting in `~/.config/herdr-nvim/config.toml`:
 
@@ -103,7 +142,7 @@ What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/R
 Other mods open a file in a tab's nvim with
 `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
 `herdr-app/e2e/run.sh` is a smoke test of the main flows in a private app
-and core (about a minute); `cargo test`, `tests/run.lua` and
+and core (about a minute; `--bundle` installs through the root installer); `cargo test`, `tests/run.lua` and
 `herdr-app/e2e/js-checks.mjs` check the logic.
 
 The port also changed a few things the TUI plugin does:
