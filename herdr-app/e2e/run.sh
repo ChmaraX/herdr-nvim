@@ -45,7 +45,8 @@ mkdir -p "$proof"
 log=$proof/run.log
 : > "$log"
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$log"; }
-fail() { say "FAIL: $*"; exit 1; }
+# The app as it was at the failure goes with the proof (once the app runs).
+fail() { say "FAIL: $*"; type H >/dev/null 2>&1 && H shot "$proof/FAIL.png" >/dev/null 2>&1; exit 1; }
 
 # --- the private instance ---------------------------------------------------
 root=$(mktemp -d /tmp/hnv-e2e.XXXX)
@@ -95,6 +96,10 @@ poll() { # poll <seconds> <command...>: until it succeeds
 }
 keys() { "$py" "$here/keys.py" "$app_pid" "$@"; }
 shot() { H shot "$proof/$1.png" >/dev/null && say "screenshot $1.png"; }
+# cmd_e: what cmd-e runs (keys.json), after a moment for the last action to
+# settle. Not a key press: those are lost now and then when the window isn't
+# frontmost, and a person never presses within milliseconds of the last change.
+cmd_e() { sleep 0.5; H do mod.open:herdr-nvim >/dev/null; }
 files_button() { # exactly what the tab bar's Files button runs (mods/tabs/main.js)
   H do layout.select '{"stack":"panel-body","child":"files"}' >/dev/null
   H do layout.show '{"id":"panel"}' >/dev/null
@@ -113,7 +118,17 @@ for s in json.load(sys.stdin)["spaces"]:
 sidebar_of() { # the live sidebar terminal of a tab id
   hc ls --json --label "herdr-nvim.sidebar=$1" | "$py" -c 'import json,sys; t=[t["address"] for t in json.load(sys.stdin)["terminals"] if t["state"]=="live"]; print(t[0] if t else ""); sys.exit(0 if t else 1)'
 }
-sock_of() { ls "$root"/run/app/*"${2:0:12}".sock 2>/dev/null | head -1; } # sock_of <space> <tab>
+# sock_of <space> <tab>: the tab daemon's socket, waited for (up to 15 s:
+# a daemon makes it a moment after the pane opens); fails without one.
+sock_of() {
+  local s i
+  for i in $(seq 1 60); do
+    s=$(ls "$root"/run/app/*"${2:0:12}".sock 2>/dev/null | head -1 || true)
+    [ -S "$s" ] && { echo "$s"; return 0; }
+    sleep 0.25
+  done
+  return 1
+}
 bounded() { perl -e 'alarm shift; exec @ARGV' "$@"; } # bounded <seconds> <command...>
 nvim_eval() { bounded 5 nvim --headless --server "$1" --remote-expr "$2" 2>/dev/null; }
 daemon_pid() { nvim_eval "$1" 'getpid()'; }
@@ -217,8 +232,7 @@ files_button
 poll 10 panel_is files || fail "Files did not show the side panel"
 poll 15 sidebar_of "$tab_a" || fail "Files did not open tab A's nvim pane with the tree"
 sidebar_a=$(sidebar_of "$tab_a")
-poll 15 sh -c "ls $root/run/app/*${tab_a:0:12}.sock" || fail "no daemon for tab A"
-sock_a=$(sock_of "$space" "$tab_a")
+sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
 pid_a=$(daemon_pid "$sock_a")
 poll 10 focus_is "$sidebar_a" || fail "focus is not on the new nvim pane"
 width=$(probe | jget width)
@@ -246,12 +260,11 @@ say "Files again: panel and nvim pane closed together; daemon $pid_a keeps runni
 # --- 2. cmd-e in tab B does the same, and tab switches carry the pair --------
 H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_b\"}" >/dev/null
-keys 14:cmd # cmd-e
+keys 14:cmd # cmd-e, the real key once (the binding); cmd_e after this
 poll 10 panel_is files || fail "cmd-e did not show the panel"
 poll 15 sidebar_of "$tab_b" || fail "cmd-e did not open tab B's nvim pane"
 sidebar_b=$(sidebar_of "$tab_b")
-poll 15 sh -c "ls $root/run/app/*${tab_b:0:12}.sock" || fail "no daemon for tab B"
-sock_b=$(sock_of "$space" "$tab_b")
+sock_b=$(sock_of "$space" "$tab_b") || fail "no daemon for tab B"
 pid_b=$(daemon_pid "$sock_b")
 [ "$pid_a" != "$pid_b" ] || fail "tabs A and B share a daemon"
 say "cmd-e: panel and tab B's nvim pane $sidebar_b (its own daemon $pid_b)"
@@ -274,7 +287,7 @@ poll 10 panel_is files || fail "the first space lost its panel"
 sidebar_of "$tab_a" && fail "a space switch opened an nvim pane"
 H do space.close "{\"id\":\"$space2\",\"confirmed\":true}" >/dev/null
 say "space switches: the panel follows the shown tab of each space (other: closed, back: open)"
-keys 14:cmd # cmd-e again
+cmd_e # cmd-e again
 poll 10 panel_is hidden || fail "cmd-e again did not hide the panel"
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_b | grep -q '\"live\"'" || fail "cmd-e again left tab B's nvim pane"
 say "cmd-e again: both closed"
@@ -347,7 +360,7 @@ sleep 0.5
 shot 09-open-link-greet-line-5
 
 # --- 5b. the open contract other mods use (gitview's Changes) --------------
-keys 14:cmd # cmd-e: close both first
+cmd_e # cmd-e: close both first
 poll 10 panel_is hidden || fail "cmd-e did not close the panel"
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "cmd-e left tab A's nvim pane"
 "$wrapper" open --tab "$tab_a" src/notes.md:3:6 >/dev/null
@@ -541,12 +554,12 @@ say "? opened the key list and closed it; the tree has the keyboard again"
 cat > "$XDG_CONFIG_HOME/nvim/init.lua" <<'LUA'
 vim.keymap.set("n", "<leader>e", function() vim.g.edit_hit = 1 end, { desc = "Edit something" })
 LUA
-keys 14:cmd
+cmd_e
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "cmd-e did not close the pair"
 "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
-keys 14:cmd
+cmd_e
 poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
-sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
+sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
 poll 10 eval_is "$sock_a" 'maparg("<leader>e","n",0,1).desc' 'Edit something' ||
   fail "a <leader>e that opens no explorer was taken over"
 say "an nvim whose <leader>e is 'Edit something' keeps it"
@@ -554,10 +567,10 @@ say "an nvim whose <leader>e is 'Edit something' keeps it"
 # --- 6b''. the tree key: <leader>e shows and hides the tree, nvim stays -------
 pair_off() { poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'"; }
 restart_pair() { # close the pair, stop tab A's nvim, open the pair: nvim reads its config again
-  keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+  cmd_e; pair_off || fail "cmd-e did not close the pair"
   "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
-  keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
-  sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a")
+  cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen nvim"
+  sidebar_a=$(sidebar_of "$tab_a"); sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
   poll 10 test -S "$sock_a" || fail "no daemon socket"
 }
 leader_e_desc() { nvim_eval "$sock_a" 'get(maparg("<leader>e","n",0,1), "desc", "")'; }
@@ -596,18 +609,18 @@ sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "Files closed nvim"
 H do layout.hide '{"id":"panel"}' >/dev/null # the Files button again
 pair_off || fail "Files again did not close nvim"
 panel_is hidden || fail "Files again left the panel"
-keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
 sidebar_a=$(sidebar_of "$tab_a")
 H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
 tree_key esc backslash 14; poll 10 panel_is hidden || fail "<leader>e did not hide the tree"
-sleep 1; keys 14:cmd
+sleep 1; cmd_e
 poll 10 panel_is files || fail "cmd-e did not show the tree"
 sleep 1.5; sidebar_of "$tab_a" >/dev/null || fail "cmd-e closed nvim"
-keys 14:cmd; pair_off || fail "cmd-e again did not close nvim"
+cmd_e; pair_off || fail "cmd-e again did not close nvim"
 panel_is hidden || fail "cmd-e again left the panel"
 say "nvim open, tree hidden: Files and cmd-e each showed the tree (nvim kept), and pressed again closed both"
 # Switching back to a tab whose tree <leader>e hid: it stays hidden.
-keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
 sidebar_a=$(sidebar_of "$tab_a")
 H do pane.focus "{\"terminal\":\"$sidebar_a\"}" >/dev/null; sleep 0.8
 tree_key esc backslash 14; poll 10 panel_is hidden || fail "<leader>e did not hide the tree"
@@ -644,14 +657,14 @@ cp "$root/config.toml.saved" "$config_toml"
 say "tree_key = \"\": <leader>e left unmapped, and the tree has no tree key"
 
 # --- 6c. tree = "nvim": cmd-e and Files open only nvim, with its explorer ---
-keys 14:cmd
+cmd_e
 poll 10 panel_is hidden || fail "cmd-e did not close the pair"
 "$wrapper" app-config tree nvim | tee -a "$log"
 "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
-keys 14:cmd
+cmd_e
 poll 15 sidebar_of "$tab_a" || fail "tree=nvim: cmd-e did not open nvim"
-sock_a=$(sock_of "$space" "$tab_a")
+sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
 panel_is hidden || fail "tree=nvim: the Files panel showed"
 poll 10 eval_has "$sock_a" 'join(map(nvim_list_wins(), {_,w -> getbufvar(winbufnr(w), "&filetype")}), ",")' netrw ||
   fail "tree=nvim: nvim's own explorer did not open"
@@ -664,7 +677,7 @@ poll 10 panel_is hidden || fail "tree=nvim: Files left the panel open"
 files_button
 poll 15 sidebar_of "$tab_a" || fail "tree=nvim: Files did not open nvim"
 poll 10 panel_is hidden || fail "tree=nvim: Files showed the panel"
-keys 14:cmd
+cmd_e
 poll 15 sh -c "! hc ls --json --label herdr-nvim.sidebar=$tab_a | grep -q '\"live\"'" || fail "tree=nvim: cmd-e did not close nvim"
 say "tree=nvim: Files and cmd-e toggle the nvim pane alone; the panel never stays"
 "$wrapper" app-config tree native | tee -a "$log"
@@ -681,11 +694,11 @@ stamp_of() { nvim_eval "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP'; }
 # Tab A's nvim as one started before an install: it loaded runtime "old-e2e".
 echo old-e2e > "$stamp_file"
 "$wrapper" daemons stop "$space:$tab_a" --force >/dev/null
-keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
-sock_a=$(sock_of "$space" "$tab_a"); poll 10 test -S "$sock_a" || fail "no daemon socket"
+cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not open the pair"
+sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon socket"
 poll 10 eval_is "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP' old-e2e ||
   fail "the daemon did not record old-e2e"
-keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+cmd_e; pair_off || fail "cmd-e did not close the pair"
 old_pid=$(daemon_pid "$sock_a")
 installed=$("$repo/herdr-app/install.sh" --app-bin "$app_bin" 2>&1 | tee -a "$log")
 [ "$(cat "$stamp_file")" = "$real_stamp" ] || fail "the install wrote another stamp for the same runtime"
@@ -693,7 +706,7 @@ echo "$installed" | grep -q '^nvim: 1 of 2 running tab nvim(s) are stale' || fai
 alive "$old_pid" || fail "the install stopped a stale nvim"
 "$wrapper" daemons | tee -a "$log" | grep -q 'alive · stale' || fail "daemons does not list tab A's nvim as stale"
 say "install: reported 1 of 2 nvims stale, stopped none (tab A's $old_pid still runs)"
-keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
+cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
 sidebar_a=$(sidebar_of "$tab_a")
 poll 10 sh -c "! kill -0 $old_pid" || fail "reopening did not restart the stale nvim"
 poll 10 eval_is "$sock_a" '$HERDR_NVIM_RUNTIME_STAMP' "$real_stamp" ||
@@ -703,9 +716,9 @@ say "reopening the pair restarted the stale clean nvim ($old_pid -> $pid_a) on r
 # A stale nvim with an unsaved buffer is kept, with a toast and a message in nvim.
 nvim_eval "$sock_a" 'execute("enew") . setline(1, "unsaved")' >/dev/null
 [ "$(nvim_eval "$sock_a" "len(filter(getbufinfo({'bufmodified':1}),'v:val.listed'))")" = 1 ] || fail "no unsaved buffer"
-keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+cmd_e; pair_off || fail "cmd-e did not close the pair"
 echo old-e2e > "$stamp_file" # the next install
-keys 14:cmd; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
+cmd_e; poll 15 sidebar_of "$tab_a" || fail "cmd-e did not reopen the pair"
 sidebar_a=$(sidebar_of "$tab_a")
 sleep 1.5
 alive "$pid_a" || fail "a stale nvim with an unsaved buffer was restarted"
@@ -788,8 +801,7 @@ stopped=$("$wrapper" daemons stop "$space:$tab_b" --force 2>&1) || fail "stoppin
 (cd / && "$wrapper" toggle --state open --ctx "{\"space\":\"$space\",\"tab\":\"$tab_b\"}" >/dev/null) ||
   fail "toggle with only a space and a tab failed"
 # Its nvim starts in the new pane, a moment after the toggle returns.
-poll 15 sock_of "$space" "$tab_b" || fail "no daemon for tab B"
-sock_b=$(sock_of "$space" "$tab_b"); poll 10 test -S "$sock_b" || fail "no daemon for tab B"
+sock_b=$(sock_of "$space" "$tab_b") || fail "no daemon for tab B"
 poll 10 eval_is "$sock_b" 'getcwd()' "$real_demo" ||
   fail "tab B's nvim did not start in the tab's folder ($(nvim_eval "$sock_b" 'getcwd()'))"
 pid_b=$(daemon_pid "$sock_b")
@@ -811,24 +823,24 @@ poll 10 panel_is hidden || fail "space e in the tree did not hide it"
 sleep 1; focus_shot 25-fresh-tree-space-e-back-to-nvim wide
 [ -z "$(nvim_eval "$sock_a" 'get(g:, "explorer_opened", "")')" ] || fail "space e opened the Snacks-like explorer"
 say "fresh nvim: space e (Snacks-like <leader>e) toggled the native tree from nvim and from the tree; Snacks' explorer never ran"
-keys 14:cmd; poll 10 panel_is files || fail "cmd-e did not show the tree"
-keys 14:cmd; pair_off || fail "cmd-e did not close the pair"
+cmd_e; poll 10 panel_is files || fail "cmd-e did not show the tree"
+cmd_e; pair_off || fail "cmd-e did not close the pair"
 pid_a=$pid_fresh
 
 # --- 6f. Preview / Source: the rendered file in nvim's exact place ----------
 # What the pane header's buttons run (mods/herdr-nvim-header): herdr-nvim.swap.
 # tab_shape: tab A's split tree with sizes, nvim's pane or the preview as SLOT.
 tab_shape() {
-  "$py" - "$tab_a" <<'PY'
+  "$py" - "$tab_a" "$(sidebar_of "$tab_a" || true)" <<'PY'
 import json, subprocess, sys
 out = subprocess.run(["hc", "connect"], capture_output=True, text=True, timeout=5,
     input='{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"doc.get","params":{"name":"herdr-app"}}\n').stdout
 doc = next(json.loads(l) for l in out.splitlines() if json.loads(l).get("id") == 2)["result"]["value"]
 tab = next(t for s in doc["spaces"] for t in s["tabs"] if t["id"] == sys.argv[1])
-labels = {t["address"]: t.get("labels", {}) for t in json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True, timeout=5).stdout)["terminals"]}
 def walk(n):
     c = n.get("content") or {}
-    slot = c.get("mod") == "herdr-nvim" or labels.get(c.get("terminal"), {}).get("herdr-nvim.sidebar")
+    # The slot: the preview, or nvim's terminal (argv 2, found by its label).
+    slot = c.get("mod") == "herdr-nvim" or (c.get("terminal") and c.get("terminal") == sys.argv[2])
     kids = [walk(k) for k in n.get("children", [])]
     if n.get("type") in ("row", "column") and len(kids) == 1: return kids[0] | {"size": n.get("size")}
     return {"type": n.get("type"), "what": "SLOT" if slot else c.get("terminal"), "size": n.get("size"), "kids": kids}
@@ -853,14 +865,16 @@ has_preview() { preview_pane >/dev/null; }
 no_preview() { ! preview_pane >/dev/null; }
 preview_is() { preview_pane | grep -q "$1"; }
 enc() { "$py" -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe="-_.!~*()"))' "$1"; }
-"$wrapper" open "$demo/src/notes.md" --ctx "{\"space\":\"$space\",\"tab\":\"$tab_a\",\"terminal\":\"$agent_a\",\"cwd\":\"$demo\"}" >/dev/null
+# Its own file (earlier sections moved and renamed theirs).
+printf '# Preview\n\nRendered in place of nvim.\n' > "$demo/preview.md"
+"$wrapper" open "$demo/preview.md" --ctx "{\"space\":\"$space\",\"tab\":\"$tab_a\",\"terminal\":\"$agent_a\",\"cwd\":\"$demo\"}" >/dev/null
 poll 15 sidebar_of "$tab_a" || fail "open did not bring tab A's nvim back"
 poll 10 panel_is files || fail "the tree did not come with nvim"
 sleep 1
 shape=$(tab_shape)
 pid_prev=$(daemon_pid "$sock_a")
 for round in 1 2; do
-  H do "herdr-nvim.swap:$tab_a:$(enc "$demo/src/notes.md")" >/dev/null
+  H do "herdr-nvim.swap:$tab_a:$(enc "$demo/preview.md")" >/dev/null
   poll 10 has_preview || fail "Preview ($round) put no preview in nvim's place"
   poll 5 no_sidebar || fail "Preview ($round) left nvim's pane beside the preview"
   sleep 0.8
@@ -873,13 +887,13 @@ for round in 1 2; do
   sleep 0.8
   [ "$(tab_shape)" = "$shape" ] || fail "Source ($round) changed the layout: $(tab_shape) vs $shape"
   [ "$(daemon_pid "$sock_a")" = "$pid_prev" ] || fail "Source ($round) gave nvim a new daemon"
-  nvim_at "$sock_a" notes.md:1 || nvim_eval "$sock_a" 'expand("%:t")' | grep -q notes.md || fail "Source ($round): nvim is not on notes.md"
+  nvim_at "$sock_a" preview.md:1 || nvim_eval "$sock_a" 'expand("%:t")' | grep -q preview.md || fail "Source ($round): nvim is not on preview.md"
   panel_is files || fail "Source ($round) closed the tree"
 done
 say "Preview / Source twice: the preview takes nvim's exact place and back, same layout and sizes, same daemon $pid_prev, the tree shown throughout"
 shot 26-source-nvim-back
 # Files with a preview: closes it with the tree, and opens it again.
-H do "herdr-nvim.swap:$tab_a:$(enc "$demo/src/notes.md")" >/dev/null
+H do "herdr-nvim.swap:$tab_a:$(enc "$demo/preview.md")" >/dev/null
 poll 10 has_preview || fail "Preview (for Files) did not show"
 files_button_off
 poll 10 panel_is hidden || fail "Files did not hide the panel"
@@ -897,7 +911,7 @@ shot 27-image-preview
 H do "herdr-nvim.swap:$tab_a:" >/dev/null
 poll 15 sidebar_of "$tab_a" || fail "Source after the image did not bring nvim back"
 [ "$(daemon_pid "$sock_a")" = "$pid_prev" ] || fail "nvim lost its daemon through the previews"
-keys 14:cmd; pair_off || fail "cmd-e did not close the pair after the previews"
+cmd_e; pair_off || fail "cmd-e did not close the pair after the previews"
 
 # --- 7. closing tab B stops its daemon ----------------------------------------
 H do tab.close "{\"id\":\"$tab_b\",\"confirmed\":true}" >/dev/null
@@ -916,7 +930,7 @@ say "closed the space: daemon $pid_a stopped, watcher ended"
 made=$(H do space.new "{\"name\":\"dirty\",\"folder\":\"$demo\"}")
 space_d=$(echo "$made" | jget space); tab_d=$(echo "$made" | jget tab)
 "$wrapper" toggle --state open --ctx "{\"space\":\"$space_d\",\"tab\":\"$tab_d\"}" >/dev/null || fail "no nvim in the dirty space"
-sock_d=$(sock_of "$space_d" "$tab_d"); poll 10 test -S "$sock_d" || fail "no daemon in the dirty space"
+sock_d=$(sock_of "$space_d" "$tab_d") || fail "no daemon in the dirty space"
 pid_d=$(daemon_pid "$sock_d")
 nvim_eval "$sock_d" 'execute("enew") . setline(1, "unsaved")' >/dev/null
 runtime_d=$(sed -n "s/^export HERDR_NVIM_PLUGIN_ROOT='\(.*\)'$/\1/p" "$wrapper")
@@ -1021,12 +1035,12 @@ ldiff "$root/before-terminals-copy.json" "$layouts/terminals-copy.json" \
   --expect '{"changed": {"root": ["floating"]}, "added": ["files", "herdr-nvim-row", "panel", "panel-body"], "removed": []}' ||
   fail "terminals-copy: wrong changes"
 H do space.select "{\"id\":\"$space_c\"}" >/dev/null
-keys 14:cmd
+cmd_e
 poll 10 panel_is files || fail "terminals-copy: cmd-e did not show the added panel"
 poll 15 sidebar_of "$tab_c" || fail "terminals-copy: cmd-e did not open the tab's nvim"
 sleep 1.5
 shot 22-terminals-copy-added-panel
-keys 14:cmd
+cmd_e
 poll 10 panel_is hidden || fail "terminals-copy: cmd-e did not hide the panel"
 no_sidebar() { ! sidebar_of "$1"; }
 poll 15 no_sidebar "$tab_c" || fail "terminals-copy: cmd-e did not close the tab's nvim"
