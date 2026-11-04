@@ -57,8 +57,10 @@ export default class Header extends Pane {
   }
 
   // The preview's header names its file, as nvim's does.
+  // (The shipped header's `me()`, if this app's version still has one: the
+  // install copies whatever it ships as pane-base.js.)
   me() {
-    const p = super.me();
+    const p = typeof super.me === "function" ? super.me() : null;
     const r = p && this.role();
     return r?.role === "preview" && r.file ? { ...p, title: `Preview · ${basename(r.file)}` } : p;
   }

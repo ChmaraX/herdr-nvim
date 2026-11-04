@@ -54,7 +54,8 @@ pub(crate) fn close(terminal: &str) -> Result<()> {
 
 /// Give `terminal`'s pane the keyboard. A dialog still on screen (the picker,
 /// closing as its program exits) hands the keyboard back to the pane it was
-/// opened over when it goes, so wait for it to go first (at most 3 s).
+/// opened over when it goes, so wait for it to go first (at most 3 s; each
+/// look runs the app binary, so not more often than every 150 ms).
 pub(crate) fn focus(terminal: &str) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while std::time::Instant::now() < deadline
@@ -64,7 +65,7 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
             .and_then(|overlays| overlays.as_array().cloned())
             .is_some_and(|overlays| overlays.iter().any(|o| o == "layout"))
     {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
     cli::app_do("pane.focus", &json!({"terminal": terminal})).map(drop)
 }

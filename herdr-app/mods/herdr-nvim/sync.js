@@ -186,7 +186,12 @@ export class Sync {
   // `herdr-nvim.swap:<tab>:` (Source): nvim back in the preview's place,
   // which herdr-nvim does (`toggle --state open` swaps it in).
   async startSwap(tab, file, cx) {
-    if (this.busy || this.swapping) return;
+    // A click while another action runs waits its turn (a moment, usually).
+    for (const until = Date.now() + SWAP_GIVE_UP_MS; (this.busy || this.swapping) && Date.now() < until; ) await cx.sleep(100);
+    if (this.busy || this.swapping) {
+      notify({ title: "herdr-nvim", body: "Still busy with the last action; try Preview / Source again.", level: "warning" });
+      return;
+    }
     // The tab the swap is for (it may not be the one on screen).
     const here = place();
     const at = here?.tab === tab ? here
