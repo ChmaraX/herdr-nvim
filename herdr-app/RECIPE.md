@@ -480,8 +480,11 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
 - Preview on nvim's `src/notes.md` puts the rendered file in nvim's place
   at nvim's size, the tree shown the whole time; Source brings nvim back on
   the same daemon, same size; Preview → Source twice leaves the slot's size
-  as it was; Files closes the preview and opens it again; Enter on an image
-  in the tree opens its preview. (Not in `run.sh` yet.)
+  as it was; Files closes the preview and opens it again; a code file
+  opened from the tree takes the preview's place with the tree shown
+  throughout; an image opened any way opens its preview.
 
-`herdr-app/e2e/run.sh` does every check above in a private app and core,
-except the Preview line.
+`herdr-app/e2e/run.sh` does every check above in a private app and core
+(about 4 minutes). `--only preview,fresh` runs the setup, the install and the
+first two sections, then only the groups named (picker, open, tree, treemode,
+stale, fresh, preview, teardown), each from the same starting state.

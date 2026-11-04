@@ -18,7 +18,7 @@ Install into a Herdr app home with `herdr-app/install.sh`, then use Files / `cmd
 
 ## Driving it
 
-- Not in the TUI box (macOS app). `herdr-app/e2e/run.sh --app-bin <Herdr binary> --proof DIR` runs every check in RECIPE.md's Done when against a private app and a private core (its own home, XDG dirs and sockets), posting keys to that app's PID only. It writes `run.log`, `app.log` and screenshots into `DIR`.
+- Not in the TUI box (macOS app). `herdr-app/e2e/run.sh --app-bin <Herdr binary> --proof DIR` runs every check in RECIPE.md's Done when against a private app and a private core (its own home, XDG dirs and sockets), posting keys to that app's PID only. It writes `run.log`, `app.log` and screenshots into `DIR`. `--only <groups>` (comma-separated: picker, open, tree, treemode, stale, fresh, preview, teardown) runs the setup and the first two sections, then just those groups.
 - Never run it against the person's own app home, core or daemons; never foreground a window; drop `HC_SCOPE` for every `hc` call.
 
 ## Gotchas
