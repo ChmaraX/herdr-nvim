@@ -902,6 +902,21 @@ files_button
 poll 10 panel_is files || fail "Files did not show the panel again"
 poll 10 has_preview || fail "Files on did not bring the preview back"
 say "Files closes the preview with the tree, and opens it again"
+# A code file opened from the tree with the preview shown (what a click
+# runs, tree-view.js): nvim takes the preview's place and the tree never
+# hides meanwhile (it used to hide and come back: a flicker).
+ctx_tree="{\"space\":\"$space\",\"tab\":\"$tab_a\",\"cwd\":\"$demo\"}"
+echo 'console.log("code")' > "$demo/code.js"
+"$wrapper" open --no-focus "$demo/code.js" --ctx "$ctx_tree" >/dev/null &
+opener=$!
+hidden=0
+for _ in $(seq 1 30); do panel_is files || hidden=$((hidden + 1)); sleep 0.03; done
+wait "$opener" || fail "open of a code file from the tree failed"
+[ "$hidden" = 0 ] || fail "opening a code file over the preview hid the tree ($hidden of 30 samples)"
+poll 10 sidebar_of "$tab_a" || fail "the code file did not bring nvim back in the preview's place"
+poll 5 no_preview || fail "the preview stayed beside nvim"
+poll 10 eval_is "$sock_a" 'expand("%:t")' code.js || fail "nvim is not on code.js"
+say "a code file opened from the tree over the preview: nvim in its place, the tree shown throughout (30 samples)"
 # An image, opened as any file is (gitview, cmd-o, links): rendered, not in nvim.
 "$py" -c 'import base64,sys; open(sys.argv[1],"wb").write(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))' "$demo/dot.png"
 "$wrapper" open --tab "$tab_a" "$demo/dot.png" | grep -q '"preview"' || fail "open of an image did not go to the preview"

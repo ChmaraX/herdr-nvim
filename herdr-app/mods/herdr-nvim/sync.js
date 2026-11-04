@@ -40,6 +40,9 @@ import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
 import { ended, goToTree, hidePanel, hideTreeKeepNvim, nvimPanes, panelState, previewPane, showFiles, takeKeepNvim } from "./panel.js";
 
+// How long a preview that went may wait for nvim in its place.
+const GRACE_MS = 1000;
+
 // How long a Preview swap waits for its pane.
 const SWAP_GIVE_UP_MS = 5000;
 
@@ -115,13 +118,31 @@ export class Sync {
     if (!p || !f?.tab) return;
     // `at`: the whole tab context, fixed now; actions on `cur` use it after
     // their awaits, whichever tab is focused by then.
-    const cur = { tab: f.tab, at: place(f), files: p.files, other: p.other, nvim: this.nvimOf(f.tab) };
+    const cur = {
+      tab: f.tab, at: place(f), files: p.files, other: p.other,
+      nvim: this.nvimOf(f.tab), preview: Boolean(previewPane(f.tab)),
+    };
     // nvim itself on screen (back by any way, cmd-o, open): no preview for
     // Files to bring back. Not the nvim pane we just closed, which the
     // app's list may still show.
     const closing = this.expects.get(f.tab)?.closed;
     if ((shared(MEMORY) ?? {})[f.tab] && nvimPanes(f.tab).some((t) => t !== closing)) remember(f.tab, null);
     const prev = this.prev;
+    // A preview gone with the tree shown, nvim not there: give nvim GRACE_MS
+    // to show in its place (a file opened from the tree swaps it in, and the
+    // app's list shows the new pane as nvim a moment after the preview
+    // closes). Without the wait the panel hides and comes back: a flicker.
+    if (prev?.tab === cur.tab && prev.preview && !cur.nvim && cur.files) {
+      if (!this.grace) {
+        this.grace = Date.now();
+        cx.spawn(async (cx) => {
+          await cx.sleep(GRACE_MS + 50);
+          cx.notify();
+        });
+      }
+      if (Date.now() - this.grace < GRACE_MS) return;
+    }
+    this.grace = null;
     this.prev = cur;
     const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && takeKeepNvim(cur.tab);
     const want = wanted(cur, prev, {
