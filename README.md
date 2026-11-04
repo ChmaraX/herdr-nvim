@@ -30,7 +30,9 @@ https://github.com/user-attachments/assets/9a6092b4-6851-4e47-a4b7-d09fda1f5121
 
 ## Requirements
 
-nvim ≥ 0.10 · herdr ≥ 0.7.5 · runs inside a herdr session
+nvim ≥ 0.10 · herdr ≥ 0.7.5 (TUI) or the Herdr app 0.1.11+. Without nvim the
+app's installer offers to install it (Homebrew's, else Neovim's own release
+into `~/.local/share/herdr-nvim/nvim`, no sudo).
 
 ## Install
 
@@ -56,7 +58,11 @@ It downloads the release's app bundle for your machine (macOS or Linux,
 Intel or ARM; checked against its SHA-256), so no clone and no Rust
 toolchain, then puts the mods in your app, merges the keys (never one you
 already use) and points your layout's **Files** at the tree (on one of
-Herdr's own layouts, a copy of it). Options for the app go after `--`:
+Herdr's own layouts, a copy of it). Without Neovim 0.10+ it asks first
+whether to install it (`--install-nvim` says yes up front); in the app,
+`cmd-e` with no Neovim shows a card that installs it in a terminal tab. The
+first nvim pane brings a welcome with the keys, once. Options for the app go
+after `--`:
 
 ```sh
 curl -fsSL …/install.sh | sh -s -- --app -- --tree nvim        # nvim's own explorer instead of the native tree

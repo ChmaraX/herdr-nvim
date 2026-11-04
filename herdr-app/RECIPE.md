@@ -14,6 +14,9 @@ their layout).
 ![herdr-nvim](preview.png)
 
 **Adding it to a Herdr app (for the app's agent):** don't copy the folders.
+It needs Neovim 0.10+; the installer stops without it, and `--install-nvim`
+(after the person said yes) installs it: Homebrew's, else Neovim's release
+into `~/.local/share/herdr-nvim/nvim`, no sudo.
 herdr-nvim needs its binary and edits the person's layout (the `files` slot,
 the pane header), which copying doesn't do. Run its installer instead, with
 the app open:
@@ -315,7 +318,9 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   tree's size changed), `herdr-nvim.previews` (the file each tab's preview
   shows, for its header; only tabs with a preview), `herdr-nvim.preview-cache`
   (the image copies, newest first), `herdr-nvim.debug` (a file for the
-  controller's decisions; the e2e sets it). Never `null`: the app can't read
+  controller's decisions; the e2e sets it), `herdr-nvim.welcomed` (the
+  welcome was shown), `herdr-nvim.card-at` (when a card last opened: requests
+  failing together open one). Never `null`: the app can't read
   one back. What the controller knows of each tab (its own actions' expected
   results, the tree key's hide, the preview Files closed) is its own, one
   record per tab (`sync.js` `tabState`). Panes are made by herdr-nvim (Rust:
@@ -367,6 +372,23 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     (`terminal.list`, agents = terminals with a reported status) and for
     sending (`hc send` to submit; paste = a short framed `terminal.attach`
     that types the text, bracketed when the program asked for it).
+- **Neovim, and the two cards** (`card.js`, a dialog of this mod with props
+  {card}): herdr-nvim needs Neovim 0.10+ (`[sidebar] nvim_bin`). It checks
+  only when a tab's nvim has to start (`nvim_check.rs`, from
+  `daemon::ensure_daemon` and before the app's pane is made); without one it
+  exits 3 with `{"nvim_missing": {bin, found, need}}`, and `lib.js` `nvim()`
+  opens the "Neovim is needed" card instead of an error toast (none for the
+  tree's own settings lookup, which only showed). Its Install opens a terminal
+  tab running `herdr-nvim app-install-nvim --pause`, the runtime's
+  `bin/install-nvim.sh`: `brew install neovim` (or upgrade) with Homebrew,
+  else Neovim's latest release for the machine, checked against the SHA-256
+  GitHub's API lists for it, into `~/.local/share/herdr-nvim/nvim`, with
+  `nvim_bin` pointed at it (`app-config nvim-bin`). The install asks the same
+  before it changes anything (`--install-nvim`: yes without asking; no
+  terminal to ask on: it stops). The welcome opens once, after the first nvim
+  pane (`sync.js` `toggle`): each key as the person's `keys.json` binds it
+  (one the install couldn't take is left out), the tree key, `?`, Preview,
+  and where keys and settings live.
 - **The tree** (`tree-view.js` keys and drawing, `tree-model.js` folders,
   `dialog.js` its prompts as a dialog of this mod with props {dialog},
   `ops.js` its client): `mod.json` `"focusable": true`; `"focus"` from

@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh
 #   curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
 #
-#   install.sh [--app] [--tui] [--uninstall] [--version vX.Y.Z] [--bundle FILE] [-- app options]
+#   install.sh [--app] [--tui] [--uninstall] [--install-nvim] [--version vX.Y.Z] [--bundle FILE] [-- app options]
 #
 # With neither --app nor --tui: whichever Herdr is installed (both if both).
 # Run it again to upgrade.
@@ -15,6 +15,8 @@
 # with the app open. Options after `--` go to that script (--panel-width PX,
 # --tree native|nvim, --home DIR, --app-bin PATH, --force). --version picks a
 # release (default: the latest), --bundle a bundle file instead of a download.
+# Without Neovim 0.10+ it asks to install it (Homebrew's, else Neovim's own
+# release, no sudo); --install-nvim says yes up front (no one to ask).
 #
 # TUI: `herdr plugin install ChmaraX/herdr-nvim` (or `herdr plugin update`);
 # its keys are bound by hand, as the README says.
@@ -22,7 +24,7 @@ set -eu
 
 repo=ChmaraX/herdr-nvim
 plugin=chmarax.herdr-nvim
-app= tui= uninstall= version= bundle=
+app= tui= uninstall= version= bundle= install_nvim=
 die() { echo "herdr-nvim: $*" >&2; exit 1; }
 say() { echo "herdr-nvim: $*"; }
 
@@ -31,9 +33,10 @@ while [ $# -gt 0 ]; do
     --app) app=1 ;;
     --tui) tui=1 ;;
     --uninstall) uninstall=1 ;;
+    --install-nvim) install_nvim=1 ;;
     --version) [ $# -ge 2 ] || die "--version needs a tag"; version=$2; shift ;;
     --bundle) [ $# -ge 2 ] || die "--bundle needs a file"; bundle=$2; shift ;;
-    -h|--help) sed -n '2,20p' "$0" 2>/dev/null || echo "see https://github.com/$repo#install"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" 2>/dev/null || echo "see https://github.com/$repo#install"; exit 0 ;;
     --) shift; break ;;
     *) die "unknown argument $1 (app options go after --)" ;;
   esac
@@ -102,7 +105,7 @@ install_app() {
   rc=0
   "$dir/bin/herdr-nvim" >/dev/null 2>&1 || rc=$?
   [ "$rc" -eq 2 ] || die "the prebuilt herdr-nvim does not run on this machine (exit $rc); build from source (README: From source)"
-  bash "$dir/herdr-app/install.sh" --binary "$dir/bin/herdr-nvim" ${uninstall:+--uninstall} "$@"
+  bash "$dir/herdr-app/install.sh" --binary "$dir/bin/herdr-nvim" ${uninstall:+--uninstall} ${install_nvim:+--install-nvim} "$@"
 }
 
 install_tui() {

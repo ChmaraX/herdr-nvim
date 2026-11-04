@@ -187,4 +187,25 @@ app.panes = [{ pane: "pv", terminal: null, tab: "t", mod: "herdr-nvim" }];
 assert.equal(swapper.nvimOf("t"), true);
 assert.equal(swapper.tabState("t").expect, null, "the swap's expectation outlived what it waited for");
 
+// No Neovim to start a tab's nvim with (herdr-nvim exits 3): one card for
+// requests failing together, none for the tree's quiet lookup, no toast.
+const { nvim } = await import("../mods/herdr-nvim/lib.js");
+const { welcomeRows } = await import("../mods/herdr-nvim/card.js");
+app.focused = { space: "s", tab: "t", terminal: "t1", cwd: "/r" };
+app.exec = async () => ({ code: 3, stdout: JSON.stringify({ nvim_missing: { bin: "nvim", found: null, need: "0.10" } }), stderr: "" });
+app.overlays = []; app.shared["herdr-nvim.card-at"] = 0;
+assert.equal(await nvim("fs", ["{}"], null, { quiet: true }), null);
+assert.equal(app.overlays.length, 0, "the tree's quiet lookup opened the card");
+assert.equal(await nvim("toggle", ["--state", "open"]), null);
+assert.equal(await nvim("open", ["/r/x.js"]), null);
+assert.deepEqual(app.overlays.map((o) => o.props.card.kind), ["nvim"], "not exactly one card for two failing requests");
+assert.equal(app.overlays[0].props.card.bin, "nvim");
+
+// The welcome lists the keys keys.json binds (any section), not ones the
+// install couldn't take; nvim's own explorer has no tree rows.
+const keys = { global: { "cmd-e": "mod.open:herdr-nvim", "cmd-shift-e": "herdr-nvim.reveal" }, terminal: { "cmd-k o": "herdr-nvim.pick" } };
+const rows = welcomeRows(keys, { tree: "native", tree_key: "<leader>e" });
+assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<leader>e", "?", "Preview"]);
+assert.deepEqual(welcomeRows({ global: {} }, { tree: "nvim", tree_key: "<leader>e" }).map(([k]) => k), ["Preview"]);
+
 console.log("js checks: ok");

@@ -69,6 +69,7 @@ pub fn ensure_daemon(
         ),
         Health::Down => {}
     }
+    crate::nvim_check::check(&config.sidebar)?;
 
     #[cfg(not(windows))]
     {
@@ -240,16 +241,19 @@ pub(crate) fn detach_command(command: &mut Command) {
 }
 
 /// An error when the tab's daemon runs but doesn't answer, even after
-/// `unstick`; nothing when it answers or isn't running. For a caller about to
-/// make a pane for it: the pane's own `sidebar` would refuse it and close at
-/// once, its message unseen.
-pub(crate) fn refuse_stuck(tab: &str, sidebar: &Sidebar) -> Result<()> {
+/// `unstick`, or isn't running and no usable nvim is there to start it
+/// (`nvim_check`); nothing when it answers or can be started. For a caller
+/// about to make a pane for it: the pane's own `sidebar` would refuse it and
+/// close at once, its message unseen.
+pub(crate) fn ready_to_open(tab: &str, sidebar: &Sidebar) -> Result<()> {
     match health(&socket_path(tab), sidebar) {
         Health::Stuck => bail!(
             "tab {tab}'s nvim is running but doesn't answer (waiting at a prompt?); kept: \
              stop it with `herdr-nvim daemons stop` if it stays like this"
         ),
-        Health::Up | Health::Down => Ok(()),
+        // It has to be started: an nvim that can run herdr-nvim is needed.
+        Health::Down => Ok(crate::nvim_check::check(sidebar).map(drop)?),
+        Health::Up => Ok(()),
     }
 }
 

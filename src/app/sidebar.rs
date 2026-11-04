@@ -86,7 +86,7 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
         None
     });
     let config = config::load();
-    crate::daemon::refuse_stuck(ctx.tab.as_str(), &config.sidebar)?;
+    crate::daemon::ready_to_open(ctx.tab.as_str(), &config.sidebar)?;
     let preview = doc
         .as_ref()
         .and_then(|doc| doc::preview_of(doc, raw_tab(&ctx.tab)));

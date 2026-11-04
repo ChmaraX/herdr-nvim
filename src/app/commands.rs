@@ -243,6 +243,27 @@ pub(crate) fn open_link() -> Result<()> {
     bridge::open_in_sidebar(&ctx, &resolved.to_string_lossy(), line).map(drop)
 }
 
+/// `herdr-nvim app-install-nvim [--pause]`: the "Neovim is needed" card's
+/// Install button, in a terminal tab of its own so the person sees what runs
+/// (and any password prompt): the runtime's `install-nvim.sh`, which installs
+/// Neovim and points `[sidebar] nvim_bin` at it.
+pub fn install_nvim_cmd() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let root = crate::daemon::plugin_root()?;
+    let script = ["bin/install-nvim.sh", "herdr-app/install-nvim.sh"]
+        .iter()
+        .map(|rel| root.join(rel))
+        .find(|path| path.is_file())
+        .with_context(|| format!("no install-nvim.sh in {}", root.display()))?;
+    let error = std::process::Command::new("sh")
+        .arg(&script)
+        .arg("--herdr-nvim")
+        .arg(cli::self_command()?)
+        .args(env::args().skip(2))
+        .exec();
+    Err(error).with_context(|| format!("cannot run {}", script.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

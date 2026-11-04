@@ -2,13 +2,15 @@
 # A convenience helper: does what RECIPE.md describes, the way AGENTS.md says
 # to add a mod, so an agent can do the same by hand.
 #
-#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--binary PATH] [--panel-width PX] [--tree native|nvim]
+#   herdr-app/install.sh [--home DIR] [--app-bin PATH] [--binary PATH] [--panel-width PX] [--tree native|nvim] [--install-nvim]
 #   herdr-app/install.sh --uninstall [--force] [--home DIR] [--app-bin PATH] [--binary PATH]
 #
 # The Herdr app must be open on that home (default: $HERDR_APP_HOME, else
 # ~/.config/herdr-app). Install builds herdr-nvim (or takes the prebuilt
 # --binary: a release's app bundle, which the root install.sh downloads and
-# runs this from), copies its runtime (binary +
+# runs this from). It needs Neovim 0.10+: without one it asks to install it
+# (install-nvim.sh: Homebrew's, else Neovim's release, no sudo), or, with no
+# one to ask, stops unless --install-nvim says yes. Then it copies its runtime (binary +
 # lua) to ${XDG_DATA_HOME:-~/.local/share}/herdr-nvim/app/<stamp>, copies the
 # mod into <home>/mods with a wrapper at mods/herdr-nvim/bin/herdr-nvim
 # (pointing at that runtime), runs `herdr-app check` on it, merges keys.json into the person's keys (only
@@ -34,6 +36,7 @@ mode=install
 home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 app_bin=${HERDR_APP_BIN:-}
 binary=
+install_nvim=
 panel_width=
 tree=
 force=
@@ -50,7 +53,8 @@ while [ $# -gt 0 ]; do
     --binary) binary=$2; shift ;;
     --panel-width) panel_width=$2; shift ;;
     --tree) tree=$2; shift ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    --install-nvim) install_nvim=1 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -182,6 +186,22 @@ for m in "${mods[@]}"; do mine_or_absent "$m"; done
 
 built=$(built_binary)
 
+# Neovim 0.10+, before anything changes: without it nothing would open.
+if ! "$built" app-nvim-check >/dev/null 2>&1; then
+  why=$("$built" app-nvim-check 2>&1 >/dev/null | sed 's/^herdr-nvim: //' || true)
+  how="Homebrew's (brew install neovim)"
+  command -v brew >/dev/null 2>&1 ||
+    how="Neovim's own release, into ${XDG_DATA_HOME:-~/.local/share}/herdr-nvim/nvim (no sudo)"
+  if [ -z "$install_nvim" ] && { : </dev/tty; } 2>/dev/null; then
+    printf 'herdr-nvim: %s.\nInstall it now, %s? [Y/n] ' "$why" "$how" >/dev/tty
+    read -r answer </dev/tty || answer=n
+    case $answer in ''|y|Y|yes) install_nvim=1 ;; esac
+  fi
+  [ -n "$install_nvim" ] ||
+    die "$why. Install it (or run this again with --install-nvim: $how); nothing changed"
+  sh "$here/install-nvim.sh" --herdr-nvim "$built" || die "Neovim was not installed; nothing changed"
+fi
+
 # The runtime goes into its own folder, named by its stamp, and the wrapper
 # points at it: a tab nvim already running keeps the runtime it started with,
 # whole (never new Lua modules loaded beside old ones), and is stale when its
@@ -191,8 +211,9 @@ mkdir -p "$runtime"
 staged=$(mktemp -d "$runtime/.new.XXXXXX")
 mkdir -p "$staged/bin"
 cp "$built" "$staged/bin/herdr-nvim"
+cp "$here/install-nvim.sh" "$staged/bin/install-nvim.sh"
 cp -R "$repo/lua" "$repo/plugin" "$staged/"
-stamp=$(cd "$staged" && find bin/herdr-nvim lua plugin -type f | LC_ALL=C sort | xargs shasum -a 256 |
+stamp=$(cd "$staged" && find bin lua plugin -type f | LC_ALL=C sort | xargs shasum -a 256 |
   shasum -a 256 | cut -c1-16)
 echo "$stamp" > "$staged/runtime-stamp"
 root=$runtime/$stamp

@@ -12,7 +12,8 @@
 //   place (preview.js; the controller's swap puts it there, sync.js);
 // - a dialog with props {dialog}: the tree's new/rename/copy/delete prompts
 //   (dialog.js); with props {help}: its key list (keys-help.js); with props
-//   {bar}: the title of cmd-o's picker (pick.js);
+//   {bar}: the title of cmd-o's picker (pick.js); with props {card}: the
+//   welcome and "Neovim is needed" (card.js);
 // - an overlay, `mod.open:herdr-nvim` (cmd-e): does exactly what the Files
 //   button does, then closes (with `tree = "nvim"` the controller turns that
 //   into nvim alone, as for the button); without the slot in this layout, it
@@ -22,6 +23,7 @@ import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props } from "herdr";
 import { nvim, place } from "./lib.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
+import { Card } from "./card.js";
 import { Dialog } from "./dialog.js";
 import { KeyHelp } from "./keys-help.js";
 import { PickBar } from "./pick.js";
@@ -31,11 +33,12 @@ import { Tree } from "./tree-view.js";
 
 export default class HerdrNvim extends View {
   init(_props, cx) {
-    const { overlay, role, dialog, help, bar, preview } = props() ?? {};
+    const { overlay, role, dialog, help, bar, preview, card } = props() ?? {};
     if (preview) this.part = new Preview(props(), cx);
     else if (bar) this.part = new PickBar();
     else if (help) this.part = new KeyHelp(cx);
     else if (dialog) this.part = new Dialog(cx);
+    else if (card) this.part = new Card(cx);
     else if (overlay) {
       cx.spawn(async () => {
         const p = panelState(layout());

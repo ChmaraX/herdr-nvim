@@ -9,6 +9,7 @@ export const app = {
   spaces: [],
   shared: {},
   ran: [],
+  overlays: [],
   // exec(cmd, args, opts) -> {code, stdout, stderr}; a check replaces it.
   exec: async () => ({ code: 1, stdout: "", stderr: "no exec in this check" }),
 };
@@ -33,7 +34,7 @@ export const readTextFile = async () => { throw new Error("no files in this chec
 export const watchFolder = () => new Promise(() => {});
 export const window = () => ({ platform: "macos" });
 export const hc = async () => ({ code: 1, stdout: "", stderr: "" });
-export const openOverlay = () => {};
+export const openOverlay = (spec) => app.overlays.push(spec);
 export const closeOverlay = () => {};
 export const props = () => ({});
 export const theme = () => ({});

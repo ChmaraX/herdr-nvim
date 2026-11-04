@@ -41,6 +41,7 @@ import { focused, layout, nextCommand, notify, panes, run, setShared, shared, sp
 import { nvim, place, trace } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { pick } from "./pick.js";
+import { welcome } from "./card.js";
 import { wanted } from "./sync-rule.js";
 import { ended, goToTree, hidePanel, nvimPanes, panelState, previewPane, showFiles } from "./panel.js";
 
@@ -290,6 +291,9 @@ export class Sync {
     try { made = JSON.parse(out || "{}"); } catch {}
     trace("toggled", { tab: at.tab, state, made });
     this.expect(at.tab, made);
+    // The first nvim pane ever: the welcome, once its pane has the keyboard
+    // (`toggle` gave it), so Esc hands it back there.
+    if (made.terminal) welcome();
     return made;
   }
 

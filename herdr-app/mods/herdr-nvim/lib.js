@@ -1,6 +1,7 @@
 // herdr-nvim's mod helpers.
 
 import { appHome, exec, focused, notify, shared } from "herdr";
+import { openCard } from "./card.js";
 
 // The install script writes the wrapper here (it bakes in the binary, the
 // herdr-app path and this window's home). Other mods use it the same way:
@@ -36,8 +37,9 @@ function noticeIn(stdout) {
 
 // Runs `herdr-nvim <command> [args] --ctx <tab>` (the focused tab unless
 // given); resolves with its stdout, or null after a toast saying what went
-// wrong.
-export async function nvim(command, args = [], tab = null) {
+// wrong. No Neovim to start the tab's nvim with (exit 3): the card that
+// offers to install it instead, unless `quiet`.
+export async function nvim(command, args = [], tab = null, { quiet = false } = {}) {
   const ctx = tab ? JSON.stringify(tab) : context();
   if (!ctx) {
     notify({ title: "herdr-nvim", body: "Open a tab first.", level: "warning" });
@@ -48,6 +50,14 @@ export async function nvim(command, args = [], tab = null) {
     if (r.code === 0) {
       noticeIn(r.stdout);
       return r.stdout;
+    }
+    if (r.code === 3) {
+      let missing = null;
+      try { missing = JSON.parse(r.stdout).nvim_missing; } catch {}
+      if (missing) {
+        if (!quiet) openCard({ kind: "nvim", ...missing });
+        return null;
+      }
     }
     notify({ title: `herdr-nvim ${command} failed`, body: (r.stderr || r.stdout).trim().slice(-400), level: "error" });
   } catch (e) {

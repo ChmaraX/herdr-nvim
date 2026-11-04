@@ -24,6 +24,7 @@ picker_term() {
 open_in_nvim() { "$wrapper" open "$1" --ctx "$ctx" >/dev/null; }
 nvim_on() { [ "$(nvim_eval "$sock_a" 'expand("%:t")')" = "$1" ]; }
 dialog_open() { H status | tr -d ' \n' | grep -q '"overlays":\["herdr-nvim"'; }
+no_dialog() { ! dialog_open; }
 gone_buffer() { [ "$(nvim_eval "$sock_a" "bufnr('$1')")" = "-1" ]; }
 tree_key() { keys "$@"; sleep 0.4; } # paced like a person typing
 into_tree() { sleep 0.5; H do herdr-nvim.reveal >/dev/null; sleep 1; } # what cmd-shift-e runs (keys.json)

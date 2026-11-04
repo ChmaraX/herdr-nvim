@@ -44,8 +44,8 @@ export function pathsOf(r) {
 }
 
 // Runs one operation; resolves with its JSON answer, or null (a toast said why).
-export async function fsOp(place, request) {
-  const out = await nvim("fs", [JSON.stringify({ root: place.cwd, ...request })], tabOf(place));
+export async function fsOp(place, request, opts = {}) {
+  const out = await nvim("fs", [JSON.stringify({ root: place.cwd, ...request })], tabOf(place), opts);
   return out === null ? null : JSON.parse(out);
 }
 
@@ -76,7 +76,7 @@ export async function appConfig() {
   try { out = r?.code === 0 ? JSON.parse(r.stdout) : {}; } catch {}
   const tree = out.tree ?? "native";
   const path = out.config ?? null;
-  const read = { path, tree, across: out.across ?? "down", text: path ? await readTextFile(path).catch(() => null) : undefined };
+  const read = { path, tree, tree_key: out.tree_key ?? "<leader>e", across: out.across ?? "down", text: path ? await readTextFile(path).catch(() => null) : undefined };
   config = r?.code === 0 ? read : null;
   if (shared("herdr-nvim.tree") !== tree) setShared("herdr-nvim.tree", tree);
   return read;

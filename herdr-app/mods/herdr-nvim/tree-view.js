@@ -171,7 +171,9 @@ export class Tree {
     if (!this.defaults) {
       this.defaults = true;
       cx.spawn(async (cx) => {
-        const d = await fsOp(this.where(), request.defaults());
+        // Quiet: the tree only showed; with no Neovim, the card waits for a
+        // press that wants nvim.
+        const d = await fsOp(this.where(), request.defaults(), { quiet: true });
         if (d) Object.assign(this.model, { showHidden: d.hidden, showIgnored: d.ignored });
         cx.notify();
       });

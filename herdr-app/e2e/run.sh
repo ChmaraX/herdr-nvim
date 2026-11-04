@@ -220,10 +220,23 @@ no_change='{"changed": {}, "added": [], "removed": []}'
 in_slot='{"changed": {"files": ["content"], "main": ["content"], "panel": ["size"], "root": ["floating"]}, "added": [], "removed": []}'
 # Install (or uninstall, with --uninstall): this checkout's build, or the
 # bundle through the root installer.
+# `runner=detached app_install`: with no terminal to ask on.
 app_install() {
-  if [ -n "$bundle" ]; then sh "$repo/install.sh" --app --bundle "$bundle" ${1:+"$1"} -- --app-bin "$app_bin"
-  else "$repo/herdr-app/install.sh" ${1:+"$1"} --app-bin "$app_bin"; fi
+  if [ -n "$bundle" ]; then ${runner:-command} sh "$repo/install.sh" --app --bundle "$bundle" ${1:+"$1"} -- --app-bin "$app_bin"
+  else ${runner:-command} "$repo/herdr-app/install.sh" ${1:+"$1"} --app-bin "$app_bin"; fi
 }
+detached() { perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$@"; }
+# Without Neovim 0.10+ (a config naming none) and no one to ask (no
+# terminal: setsid), the install stops before changing anything.
+nvim_conf=$XDG_CONFIG_HOME/herdr-nvim/config.toml
+no_nvim() { mkdir -p "${nvim_conf%/*}" && printf '[sidebar]\nnvim_bin = "%s"\n' "$root/no-nvim" > "$nvim_conf"; }
+no_nvim
+refused=$(runner=detached app_install 2>&1 </dev/null || true)
+echo "$refused" | grep -q -- '--install-nvim' || fail "without Neovim the install did not stop and say how: $refused"
+[ ! -e "$HERDR_APP_HOME/mods/herdr-nvim" ] && [ ! -e "$XDG_DATA_HOME/herdr-nvim/app" ] ||
+  fail "without Neovim the install changed something"
+rm "$nvim_conf"
+say "without Neovim: the install stops, says how (--install-nvim), changes nothing"
 installed=$(app_install 2>&1 | tee -a "$log")
 echo "$installed" | grep -q '^herdr-nvim: installed in' || fail "the install did not finish: $installed"
 say "installed from ${bundle:-the checkout build}"
@@ -287,6 +300,14 @@ sidebar_a=$(sidebar_of "$tab_a")
 sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
 pid_a=$(daemon_pid "$sock_a")
 poll 10 focus_is "$sidebar_a" || fail "focus is not on the new nvim pane"
+# The first nvim pane ever: the welcome, once; Esc gives nvim the keyboard.
+poll 5 dialog_open || fail "the first nvim pane brought no welcome card"
+sleep 0.5
+shot 01-welcome
+keys esc
+poll 5 no_dialog || fail "Esc left the welcome card open"
+poll 5 focus_is "$sidebar_a" || fail "after the welcome, the keyboard is not back in nvim"
+say "the first nvim pane: the welcome card, once; Esc hands nvim the keyboard"
 [ "$(probe | jget width)" = 300 ] || fail "the panel is not the default 300 px wide"
 eval_is "$sock_a" 'getcwd()' "$real_demo" || fail "tab A's nvim is not in the repo its agent works in (the space was made in $root/work)"
 no_explorer "$sock_a" || fail "nvim opened a file explorer of its own"
@@ -303,6 +324,22 @@ poll 10 panel_is hidden || fail "Files did not hide the panel"
 pair_off || fail "Files off left tab A's nvim pane open"
 alive "$pid_a" || fail "closing the pane stopped the daemon"
 say "Files again: the tree and nvim's pane closed together; daemon $pid_a keeps running"
+# No Neovim when tab B's nvim has to start: the card offering to install
+# it, and no nvim pane.
+no_nvim
+H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
+H do pane.focus "{\"terminal\":\"$agent_b\"}" >/dev/null
+cmd_e
+poll 10 dialog_open || fail "with no Neovim, cmd-e showed no card"
+sleep 0.5
+shot 02-no-neovim-card
+no_sidebar_of "$tab_b" || fail "with no Neovim, an nvim pane opened in tab B"
+keys esc
+poll 5 no_dialog || fail "Esc left the Neovim card open"
+rm "$nvim_conf"
+files_button_off
+poll 10 panel_is hidden || fail "the panel stayed after the Neovim card"
+say "no Neovim: cmd-e shows the card offering to install it, opens nothing"
 # cmd-e in tab B, the real key once (the binding); `cmd_e` runs its command after this.
 H do tab.select "{\"id\":\"$tab_b\"}" >/dev/null
 H do pane.focus "{\"terminal\":\"$agent_b\"}" >/dev/null

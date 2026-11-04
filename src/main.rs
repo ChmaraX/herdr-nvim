@@ -12,6 +12,7 @@ mod home;
 mod host;
 mod layout;
 mod maneuver;
+mod nvim_check;
 mod openlink;
 mod path;
 mod pathkey;
@@ -87,9 +88,12 @@ fn main() {
         // The install script runs these before the wrapper exists.
         ("app-setup", _) => run(app::setup::setup_cmd),
         ("app-config", _) => run(app::settings::app_config_cmd),
+        ("app-nvim-check", _) => run(nvim_check::check_cmd),
+        // The "Neovim is needed" card's Install button (a terminal tab).
+        ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
         (
             "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
-            | "app-reveal" | "app-preview",
+            | "app-reveal" | "app-preview" | "app-install-nvim",
             false,
         ) => {
             eprintln!("herdr-nvim: `{mode}` is for the Herdr app (HERDR_NVIM_HOST=app)");
@@ -97,7 +101,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim>"
             );
             2
         }
@@ -108,6 +112,17 @@ fn main() {
 fn run(f: fn() -> anyhow::Result<()>) -> i32 {
     match f() {
         Ok(()) => 0,
+        // No usable nvim: exit 3, and for the app's mods what the card shows.
+        Err(e) if e.downcast_ref::<nvim_check::NvimMissing>().is_some() => {
+            let missing = e
+                .downcast_ref::<nvim_check::NvimMissing>()
+                .expect("checked");
+            if host::choose() == host::Host::App {
+                println!("{}", serde_json::json!({"nvim_missing": missing.to_json()}));
+            }
+            eprintln!("herdr-nvim: {e:#}");
+            3
+        }
         Err(e) => {
             eprintln!("herdr-nvim: {e:#}");
             1
