@@ -319,8 +319,8 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   shows, for its header; only tabs with a preview), `herdr-nvim.preview-cache`
   (the image copies, newest first), `herdr-nvim.debug` (a file for the
   controller's decisions; the e2e sets it), `herdr-nvim.welcomed` (the
-  welcome was shown), `herdr-nvim.card-at` (when a card last opened: requests
-  failing together open one). Never `null`: the app can't read
+  welcome was shown), `herdr-nvim.card-at` (when the Neovim card last opened:
+  requests failing together open one). Never `null`: the app can't read
   one back. What the controller knows of each tab (its own actions' expected
   results, the tree key's hide, the preview Files closed) is its own, one
   record per tab (`sync.js` `tabState`). Panes are made by herdr-nvim (Rust:

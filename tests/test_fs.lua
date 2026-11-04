@@ -1,5 +1,9 @@
 -- The native tree's file operations, done by nvim (lua/herdr-nvim/fs.lua).
 -- Headless nvim without Snacks: herdr-nvim's own rename/delete path.
+-- Only where the Herdr app version installs (macOS, Linux: its installer is
+-- a shell script, its release bundles are for those); fs.lua loads only in
+-- an nvim started for the app, and its paths are POSIX ones.
+if vim.fn.has("win32") == 1 then return end
 local fs = require("herdr-nvim.fs")
 
 local function tmpdir()

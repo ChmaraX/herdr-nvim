@@ -194,6 +194,9 @@ const { welcomeRows } = await import("../mods/herdr-nvim/card.js");
 app.focused = { space: "s", tab: "t", terminal: "t1", cwd: "/r" };
 app.exec = async () => ({ code: 3, stdout: JSON.stringify({ nvim_missing: { bin: "nvim", found: null, need: "0.10" } }), stderr: "" });
 app.overlays = []; app.shared["herdr-nvim.card-at"] = 0;
+const { openCard } = await import("../mods/herdr-nvim/card.js");
+openCard({ kind: "welcome", rows: [], config: "" }); // just before: it holds nothing back
+app.overlays = [];
 assert.equal(await nvim("fs", ["{}"], null, { quiet: true }), null);
 assert.equal(app.overlays.length, 0, "the tree's quiet lookup opened the card");
 assert.equal(await nvim("toggle", ["--state", "open"]), null);

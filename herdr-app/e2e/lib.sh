@@ -25,6 +25,29 @@ open_in_nvim() { "$wrapper" open "$1" --ctx "$ctx" >/dev/null; }
 nvim_on() { [ "$(nvim_eval "$sock_a" 'expand("%:t")')" = "$1" ]; }
 dialog_open() { H status | tr -d ' \n' | grep -q '"overlays":\["herdr-nvim"'; }
 no_dialog() { ! dialog_open; }
+# The terminal of the tab the "Neovim is needed" card's Install opened.
+installer_term() {
+  H ls | "$py" -c 'import json,sys
+t=[x["terminal"] for s in json.load(sys.stdin)["spaces"] for tab in s["tabs"] if tab["name"]=="Install Neovim" for x in tab["terminals"]]
+print(t[0]) if t else sys.exit(1)'
+}
+no_installer() { ! installer_term >/dev/null; }
+# A video of the app window from its own frames (`herdr-app shot`: nothing
+# else on the screen), about 5 a second, into the proof folder.
+record() { # record <name> ... record_end
+  rec_name=$1 rec_dir=$root/rec-$1
+  mkdir -p "$rec_dir"
+  (n=0; while :; do H shot "$(printf '%s/%05d.png' "$rec_dir" "$n")" >/dev/null 2>&1; n=$((n + 1)); sleep 0.12; done) &
+  rec_pid=$!
+}
+record_end() {
+  # The recorder ends by its kill: `wait` returns that (143), not a failure.
+  kill "$rec_pid" 2>/dev/null; wait "$rec_pid" 2>/dev/null || true; rec_pid=
+  command -v ffmpeg >/dev/null || { say "no ffmpeg: frames kept in $rec_dir"; return 0; }
+  ffmpeg -loglevel error -y -framerate 5 -i "$rec_dir/%05d.png" \
+    -vf "tpad=stop_mode=clone:stop_duration=2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" \
+    -c:v libx264 "$proof/$rec_name.mp4" && say "video $rec_name.mp4 ($(ls "$rec_dir" | wc -l | tr -d ' ') frames)"
+}
 gone_buffer() { [ "$(nvim_eval "$sock_a" "bufnr('$1')")" = "-1" ]; }
 tree_key() { keys "$@"; sleep 0.4; } # paced like a person typing
 into_tree() { sleep 0.5; H do herdr-nvim.reveal >/dev/null; sleep 1; } # what cmd-shift-e runs (keys.json)

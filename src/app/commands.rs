@@ -246,7 +246,9 @@ pub(crate) fn open_link() -> Result<()> {
 /// `herdr-nvim app-install-nvim [--pause]`: the "Neovim is needed" card's
 /// Install button, in a terminal tab of its own so the person sees what runs
 /// (and any password prompt): the runtime's `install-nvim.sh`, which installs
-/// Neovim and points `[sidebar] nvim_bin` at it.
+/// Neovim and points `[sidebar] nvim_bin` at it. macOS and Linux (a shell
+/// script, like the app install itself).
+#[cfg(unix)]
 pub fn install_nvim_cmd() -> Result<()> {
     use std::os::unix::process::CommandExt;
     let root = crate::daemon::plugin_root()?;
@@ -262,6 +264,11 @@ pub fn install_nvim_cmd() -> Result<()> {
         .args(env::args().skip(2))
         .exec();
     Err(error).with_context(|| format!("cannot run {}", script.display()))
+}
+
+#[cfg(not(unix))]
+pub fn install_nvim_cmd() -> Result<()> {
+    bail!("install Neovim 0.10+ yourself (winget install Neovim.Neovim), then press cmd-e again")
 }
 
 #[cfg(test)]

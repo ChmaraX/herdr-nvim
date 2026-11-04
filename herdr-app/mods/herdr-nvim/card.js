@@ -13,14 +13,16 @@ import { v_flex, h_flex } from "gpui-base";
 import { appHome, closeOverlay, openOverlay, props, readTextFile, run, setShared, shared, theme } from "herdr";
 import { appConfig } from "./ops.js";
 
-// The last time a card opened: several requests failing at once (the tree
-// and the controller) open one card.
+// The last time the "Neovim is needed" card opened: several requests failing
+// at once (the tree and the controller) open one.
 const OPENED = "herdr-nvim.card-at";
 const SEEN = "herdr-nvim.welcomed";
 
 export function openCard(card) {
-  if (Date.now() - (shared(OPENED) || 0) < 3000) return;
-  setShared(OPENED, Date.now());
+  if (card.kind === "nvim") {
+    if (Date.now() - (shared(OPENED) || 0) < 3000) return;
+    setShared(OPENED, Date.now());
+  }
   openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 520, props: { card } });
 }
 

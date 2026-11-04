@@ -9,7 +9,10 @@
 #   install-nvim.sh --herdr-nvim PATH [--method brew|download] [--pause]
 #
 # --herdr-nvim: the herdr-nvim binary (it checks the version and writes the
-# setting). --pause: wait for Enter at the end (the app's terminal tab).
+# setting). --pause: wait for Enter at the end, then close this terminal's
+# tab (the app's "Install Neovim" tab: a finished terminal keeps its tab).
+# HERDR_NVIM_INSTALL_METHOD=brew|download: the method when --method isn't
+# given (the e2e: download, so a test never runs Homebrew).
 # Run by herdr-app/install.sh (after the person said yes) and by the app's
 # "Neovim is needed" card (`herdr-nvim app-install-nvim`).
 set -eu
@@ -27,11 +30,18 @@ done
 [ -n "$hn" ] || { echo "install-nvim: --herdr-nvim PATH is needed" >&2; exit 2; }
 
 say() { echo "herdr-nvim: $*"; }
+# The app's tab this terminal is in (`herdr.tab`, set by the app), closed.
+close_tab() {
+  [ -n "${HC_TERMINAL_ID:-}" ] || return 0
+  tab=$(hc get "$HC_TERMINAL_ID" --json 2>/dev/null | tr ',' '\n' | sed -n 's/.*"herdr\.tab": *"\([^"]*\)".*/\1/p' | head -1)
+  [ -z "$tab" ] || "${HERDR_APP_BIN:-herdr-app}" do tab.close "{\"id\":\"$tab\",\"confirmed\":true}" >/dev/null 2>&1 || true
+}
 finish() {
   status=$1
   if [ -n "$pause" ]; then
     printf '\nPress Enter to close this tab. '
     read -r _ || true
+    close_tab
   fi
   exit "$status"
 }
@@ -42,6 +52,7 @@ if ok; then
   say "Neovim is already there: $("$hn" app-nvim-check)"
   finish 0
 fi
+method=${method:-${HERDR_NVIM_INSTALL_METHOD:-}}
 [ -n "$method" ] || { command -v brew >/dev/null 2>&1 && method=brew || method=download; }
 
 case $method in

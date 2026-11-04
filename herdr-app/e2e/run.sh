@@ -8,13 +8,16 @@
 # screenshots, uninstalls, and removes everything it started.
 #
 #   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE]
+#   herdr-app/e2e/run.sh --only nvim-install   # opt-in: downloads Neovim (~10 MB)
 #
 # A smoke test of the flows a person uses: Files and cmd-e (core), cmd-o
 # (picker), the tree's file operations (tree), Preview / Source (preview),
 # daemons ending and uninstall (teardown); about 2 minutes. The logic behind
 # them is checked by the fast suites (cargo test, tests/run.lua,
 # js-checks.mjs). --only picker,preview runs the setup, the install and core,
-# then only those flows. --bundle installs and uninstalls the way a person
+# then only those flows. nvim-install runs only when named: with no Neovim,
+# the card's Install downloads Neovim's release and cmd-e then opens nvim
+# with it, recorded as nvim-install.mp4. --bundle installs and uninstalls the way a person
 # does, through the root install.sh with a release's app bundle
 # (herdr-app/bundle.sh makes one), instead of this checkout's build.
 #
@@ -30,7 +33,7 @@ keep=0
 app_bin=
 bundle=
 only=
-groups=" picker tree preview teardown "
+groups=" picker tree preview nvim-install teardown "
 while [ $# -gt 0 ]; do
   case $1 in
     --proof) proof=$2; shift ;;
@@ -72,6 +75,9 @@ for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$
 export HERDR_APP_HOME=$root/home HC_SESSION=hn${root: -4} XDG_STATE_HOME=$root/state
 export XDG_CONFIG_HOME=$root/config XDG_DATA_HOME=$root/data
 export HERDR_NVIM_RUNTIME_DIR=$root/run HERDR_NVIM_STATE_DIR=$root/nvstate
+# A Neovim install in a test is a download into this run's data folder,
+# never Homebrew (which would change the machine).
+export HERDR_NVIM_INSTALL_METHOD=download
 export PI_CODING_AGENT_DIR=$root/pi CLAUDE_CONFIG_DIR=$root/claude # agents' session logs
 export HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1
 export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
@@ -92,6 +98,7 @@ cleanup() {
   [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
   [ -f "$root/trace.jsonl" ] && cp "$root/trace.jsonl" "$proof/trace.jsonl"
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
+  [ -n "${rec_pid:-}" ] && kill "$rec_pid" 2>/dev/null
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
   for t in $(hc ls --json 2>/dev/null | "$py" -c 'import json,sys; [print(t["address"]) for t in json.load(sys.stdin).get("terminals", [])]'); do
     hc kill "$t" >/dev/null 2>&1
@@ -269,6 +276,7 @@ real_demo=$(cd "$demo" && pwd -P)
 begin() { # begin <flow>: whether it runs; if it does, from the baseline
   [ "$1" = core ] && return 0
   [ -z "$only" ] || [[ ",$only," == *",$1,"* ]] || { say "skipped: $1"; return 1; }
+  [ "$1" != nvim-install ] || [[ ",$only," == *",$1,"* ]] || { say "skipped: $1 (opt-in: --only nvim-install)"; return 1; }
   baseline
 }
 # Tab A shown, agent A focused, no nvim pane or panel in either tab, both
@@ -456,6 +464,40 @@ poll 5 no_preview || fail "the preview stayed beside nvim"
 poll 10 nvim_on package.json || fail "nvim is not on package.json"
 panel_is files || fail "the tree went away"
 say "Files closes the preview and brings it back; a code file from the tree puts nvim back in its place"
+fi
+
+if begin nvim-install; then
+# --- no Neovim: the card's Install downloads it, then cmd-e opens nvim -------
+# HERDR_NVIM_INSTALL_METHOD=download: Neovim's release into this run's data
+# folder, checked against GitHub's SHA-256; nvim_bin then points at it.
+"$wrapper" daemons stop "$space:$tab_a" >/dev/null || fail "could not stop tab A's nvim"
+no_nvim
+record nvim-install
+cmd_e
+poll 10 dialog_open || fail "with no Neovim, cmd-e showed no card"
+sleep 1.5
+keys enter
+poll 10 installer_term >/dev/null || fail "Install opened no terminal tab"
+inst=$(installer_term)
+poll 120 sh -c "hc read $inst | grep -q 'ready:'" || fail "the Neovim install did not finish: $(hc read "$inst" | tail -5)"
+grep -q "$XDG_DATA_HOME/herdr-nvim/nvim/" "$nvim_conf" || fail "nvim_bin is not the downloaded Neovim: $(cat "$nvim_conf")"
+say "Install: Neovim downloaded into the data folder, nvim_bin points at it"
+sleep 2
+keys enter # "Press Enter to close this tab"
+poll 10 no_installer || fail "Enter left the Install Neovim tab open"
+H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
+files_button_off
+poll 10 panel_is hidden || fail "the panel stayed after the install"
+H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
+cmd_e
+poll 20 sidebar_of "$tab_a" || fail "after the install, cmd-e did not open tab A's nvim"
+sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A after the install"
+pid_a=$(daemon_pid "$sock_a")
+ps -o command= -p "$pid_a" | grep -q "^$XDG_DATA_HOME/herdr-nvim/nvim/" ||
+  fail "tab A's nvim is not the downloaded Neovim: $(ps -o command= -p "$pid_a" | cut -c1-120)"
+sleep 2
+record_end
+say "then cmd-e: tab A's nvim runs the downloaded Neovim"
 fi
 
 if begin teardown; then
