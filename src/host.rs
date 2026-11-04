@@ -98,6 +98,10 @@ pub trait HostOps: Sync {
     fn socket_subdir(&self) -> Option<&'static str> {
         None
     }
+    /// Where the tab's nvim starts when a file is opened and it isn't running.
+    fn nvim_folder(&self, ctx: &Ctx) -> PathBuf {
+        ctx.cwd.clone()
+    }
     /// Inside the sidebar pane: its tab, its own pane id, its folder.
     fn sidebar_identity(&self) -> Result<(String, String, PathBuf)>;
     /// Inside the sidebar pane, its daemon up, before nvim's window attaches.

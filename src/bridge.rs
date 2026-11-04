@@ -311,7 +311,7 @@ pub(crate) fn open_in_sidebar_at(
     // sidebar reuses the already-healthy daemon rather than racing to
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
-    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
+    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &host.nvim_folder(ctx))?;
 
     let opened = host.ensure_sidebar(ctx)?;
 

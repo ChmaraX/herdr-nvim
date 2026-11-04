@@ -6,9 +6,11 @@
 import { exec, focused, notify, readTextFile, setShared, shared, window } from "herdr";
 import { bin, nvim } from "./lib.js";
 
-// The tab the tree works for, with its folder: what `--ctx` takes.
+// The tab the tree works for: what `--ctx` takes. No folder: herdr-nvim
+// finds where the tab works from its terminals (where its nvim starts). The
+// tree's root is not it: one the person moved to, or a stopped nvim's.
 export function tabOf(place) {
-  return { space: place.space ?? focused()?.space, tab: place.tab, terminal: null, cwd: place.cwd };
+  return { space: place.space ?? focused()?.space, tab: place.tab, terminal: null, cwd: null };
 }
 
 // Every request the tree makes, by op (fs.lua's `ops`).

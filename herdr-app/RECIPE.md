@@ -402,6 +402,9 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   space follows its terminals (one made in one repo can work in another).
   The repo, not the terminal's folder itself: the tab's nvim lives as long as
   the tab, and a shell that did `cd src` would root it in `src`.
+  herdr-nvim finds it itself from the tab's terminals: the tree's requests
+  and a focused mod pane carry no folder (the tree's root may be one the
+  person moved to), and a stopped nvim's state file is not read for it.
 
 - It runs programs (`exec` of the wrapper, `hc`, `nvim`, `git`, `ps`), reads
   files outside its folder (the repo, the agent's output and session logs)

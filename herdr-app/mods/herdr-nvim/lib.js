@@ -13,7 +13,10 @@ export function bin() {
 // one. Capture it before any await: the person may switch tabs meanwhile.
 export function place(f = focused()) {
   if (!f?.space || !f?.tab) return null;
-  return { space: f.space, tab: f.tab, terminal: f.terminal ?? null, cwd: f.cwd ?? null };
+  // A folder only with a terminal: it is that terminal's (a focused mod pane,
+  // such as the tree, has none; herdr-nvim then asks the tab's terminals).
+  const terminal = f.terminal ?? null;
+  return { space: f.space, tab: f.tab, terminal, cwd: terminal ? f.cwd ?? null : null };
 }
 
 export function context() {

@@ -74,6 +74,11 @@ impl HostOps for App {
         daemon::app_daemon(command, tab, daemon::runtime_stamp(plugin_root));
     }
 
+    /// The repo the tab works in, as for its pane (`sidebar::nvim_folder`).
+    fn nvim_folder(&self, ctx: &Ctx) -> PathBuf {
+        super::sidebar::nvim_folder(ctx)
+    }
+
     fn socket_subdir(&self) -> Option<&'static str> {
         Some("app")
     }

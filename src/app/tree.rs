@@ -102,12 +102,18 @@ pub fn current_cmd() -> Result<()> {
         std::fs::canonicalize(&folder).unwrap_or(folder)
     };
     // What the tab's nvim last wrote (`app.lua` `write_state`); an nvim that
-    // hasn't written yet is asked, once.
-    let state: Value = std::fs::read_to_string(&watch)
-        .ok()
+    // hasn't written yet is asked, once. A stopped nvim's file is not the
+    // tab's: its folder may be one the tab no longer works in.
+    let running = daemon::registry::socket_path(&ctx.tab).exists();
+    let state: Value = running
+        .then(|| std::fs::read_to_string(&watch).ok())
+        .flatten()
         .and_then(|text| serde_json::from_str(&text).ok())
         .filter(|state: &Value| state.get("cwd").is_some_and(Value::is_string))
         .or_else(|| {
+            if !running {
+                return None;
+            }
             let config = config::load();
             let socket = daemon::registry::socket_path(&ctx.tab);
             let out = daemon::remote_expr_within(
