@@ -395,6 +395,14 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
 
 ## Watch out
 
+- **The tab's folder** is where its nvim starts and the tree's root: the git
+  repo of the folder the tab works in now (the focused terminal's, else the
+  tab's first terminal's, as the app's own Files panel sees it), else that
+  folder. Not the space's `folder`: that is where the space was made, and a
+  space follows its terminals (one made in one repo can work in another).
+  The repo, not the terminal's folder itself: the tab's nvim lives as long as
+  the tab, and a shell that did `cd src` would root it in `src`.
+
 - It runs programs (`exec` of the wrapper, `hc`, `nvim`, `git`, `ps`), reads
   files outside its folder (the repo, the agent's output and session logs)
   and edits `keys.json` and one layout. The mod uses no network; the

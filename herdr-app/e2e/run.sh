@@ -188,13 +188,20 @@ git -C "$demo" init -q && git -C "$demo" add -A && git -C "$demo" -c user.email=
 echo 'console.log(1)' >> "$demo/src/greet.js"
 agent=(python3 -u "$here/dummy-agent.py")
 argv=$("$py" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${agent[@]}")
-made=$(H do space.new "{\"name\":\"e2e\",\"folder\":\"$demo\",\"tab\":\"tab A\",\"argv\":$argv}")
+# The space is made outside the repo and its agents work in it, tab B's in
+# src/: a space follows its terminals, so each tab's nvim starts in the repo
+# they work in, never in the folder the space was made in.
+made=$(H do space.new "{\"name\":\"e2e\",\"folder\":\"$root/work\",\"tab\":\"made\"}")
 space=$(echo "$made" | jget space)
+tab_made=$(echo "$made" | jget tab)
+made=$(H do tab.new "{\"name\":\"tab A\",\"space\":\"$space\",\"folder\":\"$demo\",\"argv\":$argv}")
 tab_a=$(echo "$made" | jget tab)
 agent_a=$(echo "$made" | jget terminal)
-made=$(H do tab.new "{\"name\":\"tab B\",\"space\":\"$space\",\"folder\":\"$demo\",\"argv\":$argv}")
+made=$(H do tab.new "{\"name\":\"tab B\",\"space\":\"$space\",\"folder\":\"$demo/src\",\"argv\":$argv}")
 tab_b=$(echo "$made" | jget tab)
 agent_b=$(echo "$made" | jget terminal)
+H do tab.close "{\"id\":\"$tab_made\",\"confirmed\":true}" >/dev/null
+H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
 poll 20 sh -c "hc read $agent_a | grep -q 'notes.md:3'" || fail "agent A did not start"
 say "space $space: tab A $tab_a (agent $agent_a), tab B $tab_b (agent $agent_b)"
 # Agent A's pi session log, as pi writes it (after the agent started): it read
@@ -281,7 +288,7 @@ sock_a=$(sock_of "$space" "$tab_a") || fail "no daemon for tab A"
 pid_a=$(daemon_pid "$sock_a")
 poll 10 focus_is "$sidebar_a" || fail "focus is not on the new nvim pane"
 [ "$(probe | jget width)" = 300 ] || fail "the panel is not the default 300 px wide"
-eval_is "$sock_a" 'getcwd()' "$real_demo" || fail "tab A's nvim is not in the tab's folder"
+eval_is "$sock_a" 'getcwd()' "$real_demo" || fail "tab A's nvim is not in the repo its agent works in (the space was made in $root/work)"
 no_explorer "$sock_a" || fail "nvim opened a file explorer of its own"
 H status | grep -q '"errors": \[\]' || fail "the mods report errors: $(H status)"
 say "Files: the tree (300 px) and tab A's nvim pane $sidebar_a (daemon $pid_a) in the tab's folder, focused"
@@ -305,6 +312,7 @@ poll 15 sidebar_of "$tab_b" || fail "cmd-e did not open tab B's nvim pane"
 sock_b=$(sock_of "$space" "$tab_b") || fail "no daemon for tab B"
 pid_b=$(daemon_pid "$sock_b")
 [ "$pid_a" != "$pid_b" ] || fail "tabs A and B share a daemon"
+eval_is "$sock_b" 'getcwd()' "$real_demo" || fail "tab B's nvim is not in the repo (its agent works in src/)"
 say "cmd-e: the tree and tab B's own nvim (daemon $pid_b)"
 H do tab.select "{\"id\":\"$tab_a\"}" >/dev/null
 poll 10 panel_is hidden || fail "switching to tab A (no nvim pane) left the panel open"

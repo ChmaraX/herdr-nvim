@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::{config, daemon, state};
 
-use super::{cli, doc, raw_tab, sidebar};
+use super::{cli, raw_tab, sidebar};
 
 const NVIM_WAIT: Duration = Duration::from_secs(10);
 
@@ -34,7 +34,7 @@ pub fn fs_cmd() -> Result<()> {
     let config = config::load();
     // A first request can start the tab's nvim: in the tab's folder, as the
     // pane does.
-    let folder = sidebar::nvim_folder(&ctx, doc::read()?.as_ref());
+    let folder = sidebar::nvim_folder(&ctx);
     let socket = daemon::ensure_daemon(&ctx.tab, &daemon::plugin_root()?, &config, &folder)?;
     let expr = format!(
         "luaeval(\"require('herdr-nvim.fs').run(_A)\", {})",
@@ -96,7 +96,11 @@ pub fn current_cmd() -> Result<()> {
     }
     // The tree works with real paths (/private/tmp on macOS, not /tmp), so
     // one tab's folder is one tree whichever of its panes had the focus.
-    let real_root = || std::fs::canonicalize(&ctx.cwd).unwrap_or_else(|_| ctx.cwd.clone());
+    // Before the tab's nvim runs: where it will start.
+    let real_root = || {
+        let folder = sidebar::nvim_folder(&ctx);
+        std::fs::canonicalize(&folder).unwrap_or(folder)
+    };
     // What the tab's nvim last wrote (`app.lua` `write_state`); an nvim that
     // hasn't written yet is asked, once.
     let state: Value = std::fs::read_to_string(&watch)

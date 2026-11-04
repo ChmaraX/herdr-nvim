@@ -142,7 +142,7 @@ pub(crate) fn open_cmd() -> Result<()> {
         }
         None => cli::read_ctx(&args)?,
     };
-    let ctx = sidebar::ctx_for_tab(&app_ctx)?;
+    let ctx = sidebar::ctx(&app_ctx)?;
     let (path, line, col) = split_location(target);
     let path = crate::pathkey::absolute(&path, &ctx.cwd);
     if !path.is_file() {

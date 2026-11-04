@@ -80,7 +80,7 @@ pub(crate) fn focus(terminal: &str) -> Result<()> {
 /// notice when it has unsaved work (`stale`).
 pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     let doc = doc::read()?;
-    let folder = nvim_folder(ctx, doc.as_ref());
+    let folder = nvim_folder(ctx);
     let notice = super::stale::refresh_on_open(ctx.tab.as_str(), &folder).unwrap_or_else(|error| {
         eprintln!("herdr-nvim: could not check this tab's nvim for updates: {error:#}");
         None
@@ -238,14 +238,12 @@ fn label(terminal: &str, tab: &str) -> Result<()> {
     .map(drop)
 }
 
-/// Where a tab's nvim starts (and so the tree's root): the tab's folder, else
-/// its space's, in the app's document; the invocation's folder only without
-/// either. Not the focused terminal's live folder: a shell that did `cd src`
-/// would root the tab's nvim, which lives as long as the tab, in `src`.
-pub(crate) fn nvim_folder(ctx: &Ctx, doc: Option<&doc::Doc>) -> PathBuf {
-    doc.and_then(|doc| doc::folder_of(doc, raw_tab(&ctx.tab)))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.cwd.clone())
+/// Where a tab's nvim starts, and so the tree's root: the git repo of the
+/// folder the tab works in now (`ctx`), else that folder. The repo, not the
+/// folder itself: a shell that did `cd src` would root the tab's nvim, which
+/// lives as long as the tab, in `src`.
+pub(crate) fn nvim_folder(ctx: &Ctx) -> PathBuf {
+    crate::gitscan::toplevel(&ctx.cwd).unwrap_or_else(|| ctx.cwd.clone())
 }
 
 /// The tab's sidebar, opened if it isn't.
@@ -259,50 +257,53 @@ pub(crate) fn ensure_open(ctx: &Ctx) -> Result<Opened> {
     }
 }
 
-/// The TUI `Ctx` for an app invocation: the folder is the one the mod saw,
-/// else the focused terminal's, else the tab's (or its space's) in the app's
-/// layout document. Never this process's own folder: the app's is often `/`.
+/// The TUI `Ctx` for an app invocation. Its folder is where the tab works
+/// now, as the app's own Files panel sees it: the one the mod saw, else the
+/// focused terminal's, else the tab's first terminal's (a mod pane has the
+/// focus, such as the tree or a preview, or `open --tab` names the tab
+/// alone). Only a tab without terminals gets its own or its space's folder
+/// from the app's document: that is where the space was made, and a space
+/// follows its terminals since (one made in one repo can work in another).
+/// Never this process's own folder: the app's is often `/`.
 pub(crate) fn ctx(app: &AppCtx) -> Result<Ctx> {
-    let cwd = match &app.cwd {
-        Some(cwd) if !cwd.is_empty() => PathBuf::from(cwd),
-        _ => match app
-            .terminal
-            .as_deref()
-            .and_then(|t| host::terminal(t).ok())
+    let live = |terminal: &str| {
+        host::terminal(terminal)
+            .ok()
             .and_then(|facts| host::cwd_of(&facts))
-        {
-            Some(cwd) => cwd,
-            None => doc::read()?
-                .and_then(|doc| doc::folder_of(&doc, &app.tab))
-                .map(PathBuf::from)
+    };
+    let given = app
+        .cwd
+        .as_deref()
+        .filter(|cwd| !cwd.is_empty())
+        .map(PathBuf::from);
+    let cwd = match given.or_else(|| app.terminal.as_deref().and_then(live)) {
+        Some(cwd) => cwd,
+        None => {
+            let doc = doc::read()?;
+            let first = doc
+                .as_ref()
+                .and_then(|doc| doc::terminals_of(doc, &app.tab).into_iter().next());
+            first
+                .as_deref()
+                .and_then(live)
+                .or_else(|| {
+                    doc.as_ref()
+                        .and_then(|doc| doc::folder_of(doc, &app.tab))
+                        .map(PathBuf::from)
+                })
                 .with_context(|| {
                     format!(
-                        "no folder for tab {}: no focused terminal, and neither the tab nor its space has a folder",
+                        "no folder for tab {}: no terminal in it, and neither the tab nor its space has a folder",
                         app.tab
                     )
-                })?,
-        },
+                })?
+        }
     };
     Ok(Ctx {
         workspace: app.space.clone(),
         tab: tab_id(&app.space, &app.tab),
         focused_pane: app.terminal.clone().unwrap_or_default(),
         cwd,
-    })
-}
-
-/// The `Ctx` for a tab named by id alone (`open --tab`): its folder is its
-/// first terminal's, which is where the app starts new terminals of the tab.
-pub(crate) fn ctx_for_tab(app: &AppCtx) -> Result<Ctx> {
-    if app.cwd.is_some() || app.terminal.is_some() {
-        return ctx(app);
-    }
-    let first = doc::read()?
-        .map(|doc| doc::terminals_of(&doc, &app.tab))
-        .and_then(|terminals| terminals.into_iter().next());
-    ctx(&AppCtx {
-        terminal: first,
-        ..app.clone()
     })
 }
 
@@ -419,6 +420,34 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    // A tab's nvim starts in the repo the tab works in, whichever folder of
+    // it the terminal is in; outside a repo, in that folder.
+    #[test]
+    fn nvim_starts_in_the_repo_the_tab_works_in() {
+        let base = env::temp_dir().join(format!("hnv-folder-{}", std::process::id()));
+        let repo = base.join("repo");
+        let plain = base.join("plain");
+        std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap();
+        assert!(git.success());
+        let at = |cwd: &std::path::Path| Ctx {
+            workspace: "sp".into(),
+            tab: tab_id("sp", "tb"),
+            focused_pane: String::new(),
+            cwd: cwd.to_path_buf(),
+        };
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(real(&nvim_folder(&at(&repo.join("src/deep")))), real(&repo));
+        assert_eq!(real(&nvim_folder(&at(&repo))), real(&repo));
+        assert_eq!(real(&nvim_folder(&at(&plain))), real(&plain));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
