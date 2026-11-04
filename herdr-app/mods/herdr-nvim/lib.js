@@ -1,6 +1,6 @@
 // herdr-nvim's mod helpers.
 
-import { appHome, exec, focused, notify } from "herdr";
+import { appHome, exec, focused, notify, shared } from "herdr";
 
 // The install script writes the wrapper here (it bakes in the binary, the
 // herdr-app path and this window's home). Other mods use it the same way:
@@ -51,4 +51,13 @@ export async function nvim(command, args = [], tab = null) {
     notify({ title: "herdr-nvim is not installed here", body: `${bin()}: ${e}`, level: "error" });
   }
   return null;
+}
+
+// The controller's decisions, one JSON line each, appended to the file the
+// shared value `herdr-nvim.debug` names (the e2e sets it; unset: nothing).
+export function trace(what, data) {
+  const file = shared("herdr-nvim.debug");
+  if (!file) return;
+  const line = JSON.stringify({ at: Date.now(), what, ...data });
+  exec("sh", ["-c", 'printf "%s\\n" "$1" >> "$2"', "trace", line, file]).catch(() => {});
 }

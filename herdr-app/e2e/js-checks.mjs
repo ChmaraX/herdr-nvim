@@ -143,4 +143,23 @@ Date.now = now;
 app.terminals = [{ address: "t9", state: "live", labels: { "herdr-nvim.sidebar": "t" } }];
 assert.equal(sync.nvimOf("t"), true);
 
+// The controller's own show, not on screen yet: the next look waits for it
+// (read as is, it is the person closing Files, and nvim would close).
+app.focused = { space: "s", tab: "t", terminal: "t1", cwd: "/r" };
+app.terminals = [{ address: "t9", state: "live", labels: { "herdr-nvim.sidebar": "t" } }];
+app.panes = [{ pane: "p9", terminal: "t9", tab: "t" }];
+app.layout = stack("files", true); // the panel hidden, nvim on screen
+app.ran = [];
+const cx = { spawn: (fn) => { fn(cx); }, notify() {}, sleep: async () => {} };
+const controller = new Sync(cx);
+controller.look(cx); // nvim without its tree: show the panel
+assert.deepEqual(app.ran.map(([name]) => name), ["layout.select", "layout.show"]);
+controller.look(cx); // the app hasn't applied it yet
+controller.look(cx);
+await new Promise((done) => setTimeout(done, 20)); // whatever those looks started
+app.layout = stack("files"); // now it has
+controller.look(cx);
+await new Promise((done) => setTimeout(done, 20));
+assert.deepEqual(app.ran.map(([name]) => name), ["layout.select", "layout.show"], "nothing closed or opened meanwhile");
+
 console.log("js checks: ok");

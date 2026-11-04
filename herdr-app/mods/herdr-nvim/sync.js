@@ -34,7 +34,7 @@
 // the command by a moment).
 
 import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces } from "herdr";
-import { nvim, place } from "./lib.js";
+import { nvim, place, trace } from "./lib.js";
 import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { wanted } from "./sync-rule.js";
@@ -116,6 +116,12 @@ export class Sync {
     // decision, and the last look stays, so a change made meanwhile (cmd-e's
     // hide) is still read as one when the tab is back.
     if (!p || !f?.tab) return;
+    // Our own show or hide, not on screen yet (the app applies it a moment
+    // later): nothing to decide until it is, or it's EXPECT_MS old. Read
+    // before then, it would look like the person's Files press.
+    const to = this.panelWant;
+    if (to && p.files !== to.files && Date.now() - to.since <= EXPECT_MS) return;
+    this.panelWant = null;
     // `at`: the whole tab context, fixed now; actions on `cur` use it after
     // their awaits, whichever tab is focused by then.
     const cur = {
@@ -151,12 +157,22 @@ export class Sync {
       kept: this.kept.has(cur.tab),
       hidByTreeKey,
     });
+    if (Object.keys(want).length) {
+      trace("look", { tab: cur.tab, prev: prev && { tab: prev.tab, files: prev.files, nvim: prev.nvim, preview: prev.preview }, cur: { files: cur.files, nvim: cur.nvim, preview: cur.preview }, want, seen: nvimPanes(cur.tab), expect: this.expects.get(cur.tab) ?? null });
+    }
     if (want.kept === true) this.kept.add(cur.tab);
     if (want.kept === false) this.kept.delete(cur.tab);
     // Our own show or hide: nothing for the next look to follow.
-    if (want.panel === "show") { showFiles(p); cur.files = true; }
-    if (want.panel === "hide") { hidePanel(p); cur.files = false; }
+    if (want.panel === "show") { this.panelTo(true, () => showFiles(p)); cur.files = true; }
+    if (want.panel === "hide") { this.panelTo(false, () => hidePanel(p)); cur.files = false; }
     if (want.nvim) this.act(cur, p, cx);
+  }
+
+  // Shows (true) or hides the panel, and remembers that until the layout
+  // shows it (`look`).
+  panelTo(files, change) {
+    this.panelWant = { files, since: Date.now() };
+    change();
   }
 
   // `herdr-nvim.swap:<tab>:<file>` (the pane header's Preview, an image
@@ -236,10 +252,11 @@ export class Sync {
         const mode = await treeMode();
         let state = cur.files ? "open" : "close";
         if (mode === "nvim" && cur.files) {
-          hidePanel(p);
+          this.panelTo(false, () => hidePanel(p));
           cur.files = false;
           state = cur.nvim ? "close" : "open";
         }
+        trace("act", { tab: cur.tab, mode, state, nvim: cur.nvim });
         if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state);
         cur.nvim = state === "open";
       } catch (e) {
@@ -276,6 +293,7 @@ export class Sync {
     if (out === null) return null;
     let made = {};
     try { made = JSON.parse(out || "{}"); } catch {}
+    trace("toggled", { tab: at.tab, state, made });
     this.expects.set(at.tab, {
       opened: made.terminal ?? null,
       closed: made.closed ?? null,
@@ -293,7 +311,7 @@ export class Sync {
     const f = focused(), p = panelState(layout());
     if (!f?.tab || !p || this.busy) return;
     if (!p.files) return this.reveal(cx);
-    hideTreeKeepNvim(p, f.tab, nvimPanes(f.tab)[0]);
+    this.panelTo(false, () => hideTreeKeepNvim(p, f.tab, nvimPanes(f.tab)[0]));
     cx.notify();
   }
 
@@ -309,7 +327,7 @@ export class Sync {
       let terminal = nvimPanes(f.tab)[0];
       // A preview in nvim's place: the tree beside it, the keyboard stays.
       if (!terminal && previewPane(f.tab)) {
-        if (!p.files) showFiles(p);
+        if (!p.files) this.panelTo(true, () => showFiles(p));
         this.prev = { tab: f.tab, files: true, other: false, nvim: true };
         return;
       }
@@ -319,7 +337,7 @@ export class Sync {
       // On nvim's file, on purpose: the tree otherwise keeps the selection
       // where the person left it (an empty path: nvim's current file).
       setShared("herdr-nvim.reveal", { tab: f.tab, path: "", n: (shared("herdr-nvim.reveal")?.n ?? 0) + 1 });
-      if (!p.files) showFiles(p);
+      if (!p.files) this.panelTo(true, () => showFiles(p));
       this.prev = { tab: f.tab, files: true, other: false, nvim: true };
       this.pendingFocus = { terminal, since: shared("herdr-nvim.tree-laid-out") ?? 0, shown: p.files };
     } finally {
