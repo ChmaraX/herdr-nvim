@@ -3,8 +3,8 @@
 //   herdr-nvim says so (exit 3, `nvim_missing`, lib.js). Install opens a
 //   terminal tab running `herdr-nvim app-install-nvim`, so the person sees
 //   what runs; nothing installs without that press.
-// - "welcome": once, the first time the tab's nvim opens (`welcome`): the
-//   keys as the person's keys.json binds them, and where the settings live.
+// - "welcome": once, the first time the tab's nvim opens (`welcome`): just
+//   the keys, as the person's keys.json binds them, and where they live.
 // Enter does the main button, Esc closes.
 
 import { div } from "gpui-kit";
@@ -37,17 +37,14 @@ function keyFor(keys, command) {
 export function welcomeRows(keys, config) {
   const nvimTree = config.tree === "nvim";
   const rows = [
-    [keyFor(keys, "mod.open:herdr-nvim"), nvimTree
-      ? "this tab's nvim, with nvim's own explorer; again closes it"
-      : "the file tree with this tab's nvim; again closes both"],
-    [keyFor(keys, "herdr-nvim.pick"), "the files the agent read and edited, then the repo's changes"],
+    [keyFor(keys, "mod.open:herdr-nvim"), nvimTree ? "open or close nvim" : "open or close the tree and nvim"],
+    [keyFor(keys, "herdr-nvim.pick"), "open a file the agent touched"],
   ];
   if (!nvimTree) {
-    rows.push([keyFor(keys, "herdr-nvim.reveal"), "into the tree, on nvim's file"]);
-    if (config.tree_key) rows.push([config.tree_key, "in nvim or the tree: show or hide the tree, nvim stays"]);
-    rows.push(["?", "in the tree: all its keys"]);
+    rows.push([keyFor(keys, "herdr-nvim.reveal"), "jump into the tree"]);
+    if (config.tree_key) rows.push([config.tree_key, "show or hide the tree"]);
+    rows.push(["?", "all tree keys"]);
   }
-  rows.push(["Preview", "on nvim's pane header: markdown or an image, rendered"]);
   return rows.filter(([key]) => key);
 }
 
@@ -113,9 +110,7 @@ export class Card {
           .child(button("card-install", "Install Neovim", true, () => this.submit())));
     }
     return shell
-      .child(title("herdr-nvim"))
-      .child(div().text_color(t.muted).child(
-        "Each tab has its own nvim. Closing its pane keeps it running: buffers, undo and unsaved edits stay."))
+      .child(title("nvim is ready"))
       .child(v_flex().gap(6).pt(4).children(card.rows.map(([key, what]) => h_flex().gap(12)
         .child(div().w(110).flex_none().child(mono(key)))
         .child(div().flex_1().min_w(0).child(what)))))

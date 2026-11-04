@@ -205,7 +205,8 @@ assert.equal(app.overlays[0].props.card.bin, "nvim");
 // install couldn't take; nvim's own explorer has no tree rows.
 const keys = { global: { "cmd-e": "mod.open:herdr-nvim", "cmd-shift-e": "herdr-nvim.reveal" }, terminal: { "cmd-k o": "herdr-nvim.pick" } };
 const rows = welcomeRows(keys, { tree: "native", tree_key: "<leader>e" });
-assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<leader>e", "?", "Preview"]);
-assert.deepEqual(welcomeRows({ global: {} }, { tree: "nvim", tree_key: "<leader>e" }).map(([k]) => k), ["Preview"]);
+assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<leader>e", "?"]);
+assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { tree: "nvim", tree_key: "<leader>e" }),
+  [["cmd-e", "open or close nvim"]]);
 
 console.log("js checks: ok");
