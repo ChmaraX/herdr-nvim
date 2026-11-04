@@ -135,29 +135,57 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     })
 }
 
-/// Show `file` rendered (the `herdr-nvim` mod's preview role) where nvim's
-/// pane would be, when neither it nor a preview is on screen (Files
-/// reopening a preview it closed, Enter on an image with nothing open):
-/// split the whole tab, as `open` does for nvim. A swap with a pane on
-/// screen is the controller's (`sync.js` `startSwap`).
+/// Show `file` rendered (the `herdr-nvim` mod's preview role) where the tab's
+/// nvim shows. In the place of nvim's pane or of a preview on screen (the
+/// pane header's Preview, another file, an image opened any way): split
+/// across that pane (`swap_direction`), so both nest in its slot, then close
+/// it, and the new pane keeps its exact size. nvim keeps running (its pane
+/// only attaches to the tab's daemon). With neither on screen (Files
+/// reopening a preview it closed, an image with nothing open): beside the
+/// whole tab, as `open` does for nvim. Every pane herdr-nvim makes is made
+/// here or in `open`; the mod only closes them.
+///
+/// Prints `{"preview": pane}`, with `closed` (nvim's terminal) or
+/// `closed_preview` (the old preview's pane) for the one it replaced.
 pub(crate) fn open_preview(ctx: &Ctx, file: &str) -> Result<Value> {
     let config = config::load();
     let doc = doc::read()?.context("the app's layout is unknown")?;
     let raw = raw_tab(&ctx.tab);
-    let root =
-        doc::root_of(&doc, raw).with_context(|| format!("tab {raw} is not in the app's layout"))?;
+    let nvim = find(&ctx.tab)?
+        .and_then(|terminal| doc::pane_of(&doc, &terminal).map(|(pane, _)| (pane, terminal)));
+    let old_preview = doc::preview_of(&doc, raw).map(|(pane, _)| pane);
+    let (anchor, split) = match (&nvim, &old_preview) {
+        (Some((pane, _)), _) | (None, Some(pane)) => (pane.clone(), swap_direction()),
+        (None, None) => (
+            doc::root_of(&doc, raw)
+                .with_context(|| format!("tab {raw} is not in the app's layout"))?,
+            direction(config.sidebar.position),
+        ),
+    };
     let made = cli::app_do(
         "pane.split",
         &json!({
-            "direction": direction(config.sidebar.position),
-            "pane": root,
+            "direction": split,
+            "pane": anchor,
             "mod": super::layout_patch::MOD,
             "props": {"preview": file, "tab": raw},
         }),
     )?;
     // The preview's pane (`true` when the app didn't name it).
     let pane = made.get("pane").cloned().filter(|p| !p.is_null());
-    Ok(json!({"preview": pane.unwrap_or(json!(true))}))
+    let mut out = json!({"preview": pane.unwrap_or(json!(true))});
+    match (nvim, old_preview) {
+        (Some((pane, terminal)), _) => {
+            cli::app_do("pane.close", &json!({"pane": pane}))?;
+            out["closed"] = json!(terminal);
+        }
+        (None, Some(pane)) => {
+            cli::app_do("pane.close", &json!({"pane": pane}))?;
+            out["closed_preview"] = json!(pane);
+        }
+        (None, None) => {}
+    }
+    Ok(out)
 }
 
 /// Pure: whether the preview shows `path` as an image (the mods' list:
@@ -354,9 +382,8 @@ pub fn toggle_cmd() -> Result<()> {
     Ok(())
 }
 
-/// `herdr-nvim app-preview --file <path> --ctx JSON` (the controller, when no
-/// nvim or preview pane is on screen to swap with): the file rendered where
-/// nvim's pane would be.
+/// `herdr-nvim app-preview --file <path> --ctx JSON` (the controller's
+/// Preview): the file rendered where the tab's nvim shows (`open_preview`).
 pub fn preview_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let file = cli::flag(&args, "--file")?

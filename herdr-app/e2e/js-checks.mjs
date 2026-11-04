@@ -42,7 +42,7 @@ register(`data:text/javascript,${encodeURIComponent(`
 const { app } = await import("./herdr-stub.mjs");
 const { gitMarks, listFolder, markOf } = await import("../mods/herdr-nvim/tree.js");
 const { TreeModel } = await import("../mods/herdr-nvim/tree-model.js");
-const { hideTreeKeepNvim, panelState, takeKeepNvim } = await import("../mods/herdr-nvim/panel.js");
+const { panelState } = await import("../mods/herdr-nvim/panel.js");
 const { inside, join } = await import("../mods/herdr-nvim/ops.js");
 const { Sync } = await import("../mods/herdr-nvim/sync.js");
 const ok = (stdout) => ({ code: 0, stdout, stderr: "" });
@@ -111,14 +111,6 @@ assert.equal(panelState({ id: "root", children: [{ ...files }] }).files, true);
 assert.equal(panelState({ id: "root", children: [{ ...files, hidden: true }] }).files, false);
 assert.equal(panelState({ id: "root", children: [] }), null);
 
-// The tree key's hide: the next hide of that tab is its own (once), and
-// nothing it stores is null (the stand-in's setShared refuses one).
-hideTreeKeepNvim(panelState(stack("files")), "t", "t9");
-assert.equal(takeKeepNvim("other"), false);
-hideTreeKeepNvim(panelState(stack("files")), "t", "t9");
-assert.equal(takeKeepNvim("t"), true);
-assert.equal(takeKeepNvim("t"), false);
-
 // Paths the tree sends.
 assert.equal(join("/r/src", "../b/./c.txt"), "/r/b/c.txt");
 assert.ok(inside("/r/src/a", "/r") && inside("/r", "/r") && !inside("/rx/a", "/r"));
@@ -161,5 +153,38 @@ app.layout = stack("files"); // now it has
 controller.look(cx);
 await new Promise((done) => setTimeout(done, 20));
 assert.deepEqual(app.ran.map(([name]) => name), ["layout.select", "layout.show"], "nothing closed or opened meanwhile");
+
+// The tree key (a command from nvim or the tree): the tree hides, nvim stays
+// and gets the keyboard, and the tab remembers it; the next hide by Files
+// closes nvim as usual.
+app.layout = stack("files");
+app.ran = [];
+const keyed = new Sync(cx);
+keyed.look(cx); // the pair on screen: nothing to do
+await keyed.toggleTree(cx);
+assert.deepEqual(app.ran.map(([name]) => name), ["layout.hide", "pane.focus"]);
+app.layout = stack("files", true);
+keyed.look(cx);
+await new Promise((done) => setTimeout(done, 20));
+assert.ok(!app.ran.some(([name]) => name === "pane.close"), "the tree key closed nvim");
+assert.equal(keyed.tabState("t").kept, true);
+app.layout = stack("files");
+keyed.look(cx); // Files again: shows the tree, nvim already there
+await new Promise((done) => setTimeout(done, 20));
+app.layout = stack("files", true);
+keyed.look(cx); // Files off: nvim closes with it
+await new Promise((done) => setTimeout(done, 20));
+assert.ok(app.ran.some(([name, args]) => name === "pane.close" && args.pane === "p9"), "Files off kept nvim");
+
+// Preview: herdr-nvim swaps the preview in (app-preview); until the lists
+// show it, the tab still has its nvim (else the tree would hide: a flicker).
+app.exec = async (cmd, args) => ok(args[0] === "app-preview" ? JSON.stringify({ preview: "pv", closed: "t9" }) : "{}");
+const swapper = new Sync(cx);
+await swapper.startSwap("t", "/r/x.md", cx);
+app.terminals = []; app.panes = []; // nvim's pane gone, the preview not listed yet
+assert.equal(swapper.nvimOf("t"), true, "mid-swap, the tab lost its nvim");
+app.panes = [{ pane: "pv", terminal: null, tab: "t", mod: "herdr-nvim" }];
+assert.equal(swapper.nvimOf("t"), true);
+assert.equal(swapper.tabState("t").expect, null, "the swap's expectation outlived what it waited for");
 
 console.log("js checks: ok");

@@ -14,7 +14,7 @@ import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
 import { ACTIONS } from "./tree-keys.js";
-import { goToTree, hideTreeKeepNvim, nvimPanes, panelState } from "./panel.js";
+import { goToTree, nvimPanes, panelState } from "./panel.js";
 
 // The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
 // with LazyVim's leader.
@@ -402,7 +402,8 @@ export class Tree {
   hideToNvim() {
     this.handover.cancel();
     const tab = this.place?.tab, p = panelState(layout());
-    if (tab && p?.files) hideTreeKeepNvim(p, tab, nvimPanes(tab)[0]);
+    // The controller hides it, keeping nvim (sync.js `toggleTree`).
+    if (tab && p?.files) run(`herdr-nvim.toggle:${tab}`);
   }
 
   key(e, rows, cx) {

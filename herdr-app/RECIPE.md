@@ -187,12 +187,11 @@ them, `?` lists them, and this table is that file's output
   image or SVG opened any way: Enter in the tree, `cmd-o`, `herdr-nvim open`
   from gitview or a link, which nvim can't show) asks herdr-nvim's controller for the swap
   (`herdr-nvim.swap:<tab>:<file>`; no file: Source). For Preview the
-  controller splits the old pane across the split that made nvim's slot
-  (`app-config`'s `across`: down for a side nvim), so both nest in the
-  slot, and closes the old pane once the new preview is in the tab: the
-  preview has the old pane's exact size. One that doesn't come in 5 s
-  closes nothing and says so. Source is `toggle --state open`: herdr-nvim
-  puts nvim in the preview's place the same way (after restarting a stale
+  controller runs `app-preview`: herdr-nvim splits the old pane (nvim's or
+  a preview's) across the split that made nvim's slot (down for a side
+  nvim), so both nest in the slot, then closes the old one: the preview has
+  its exact size. Source is `toggle --state open`: herdr-nvim puts nvim in
+  the preview's place the same way (after restarting a stale
   clean nvim, as Files does). nvim keeps running meanwhile (its daemon),
   with its buffers, cursor, undo and unsaved edits. Until
   the swap is done the controller decides nothing else, so the moment with
@@ -201,8 +200,8 @@ them, `?` lists them, and this table is that file's output
   same across split, by herdr-nvim). The preview reloads when its file
   changes on disk (saving in nvim). For the pair the preview counts as
   nvim's pane: Files closes it with the tree and the next Files shows it
-  again (remembered per tab in the shared `herdr-nvim.preview-memory`); a tab
-  switch keeps each tab's. The swap keeps the size while nvim's pane is the
+  again (remembered per tab by the controller); a tab switch keeps each
+  tab's. The swap keeps the size while nvim's pane is the
   one the install made; a pane the person split by hand may not keep it.
   Layouts without pane headers get no button. No keys.
 - A main window on something that isn't a file (`:help`, a terminal, a new
@@ -295,13 +294,15 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     posts errors and notices with `notify`.
 - **Shared values** (`setShared`, every copy sees them):
   `herdr-nvim.tree` (the `tree` setting), `herdr-nvim.reveal` (the tree
-  selects a path, or nvim's file for null), `herdr-nvim.keep-nvim` (the tree
-  key's hide keeps nvim, 10 s), `herdr-nvim.tree-laid-out` (the tree's size
-  changed), `herdr-nvim.previews` (the file each tab's preview shows, for its
-  header; only tabs with a preview), `herdr-nvim.preview-memory` (the
-  preview each tab's Files closed; cleared when Files closes nvim, or nvim
-  is back on screen any other way; only tabs that exist), `herdr-nvim.preview-cache` (the image
-  copies, newest first).
+  selects a path, or nvim's file for ""), `herdr-nvim.tree-laid-out` (the
+  tree's size changed), `herdr-nvim.previews` (the file each tab's preview
+  shows, for its header; only tabs with a preview), `herdr-nvim.preview-cache`
+  (the image copies, newest first), `herdr-nvim.debug` (a file for the
+  controller's decisions; the e2e sets it). Never `null`: the app can't read
+  one back. What the controller knows of each tab (its own actions' expected
+  results, the tree key's hide, the preview Files closed) is its own, one
+  record per tab (`sync.js` `tabState`). Panes are made by herdr-nvim (Rust:
+  `toggle`, `app-preview`); the mod only closes them.
 - **`herdr-nvim-header`** (the layout's pane header, `pane-base.js` + one
   button): the button runs `herdr-nvim.swap:<tab>:<file>` (Preview) or
   `herdr-nvim.swap:<tab>:` (Source). It learns nvim's file from
@@ -323,8 +324,7 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
     <the tab's root node id from the core's herdr-app document>, argv:
     [wrapper, sidebar, --cwd, dir]}`, or the preview of `F` there. The
     controller closes panes itself (`run("pane.close")`); `toggle` closes
-    them for `cmd-e`'s `tree = nvim` toggle and when the mod's lists don't
-    show the pane yet. Daemons whose tab is gone are left to
+    them when the mod's lists don't show the pane yet. Daemons whose tab is gone are left to
     the watcher, so a click never waits on them.
   - `sidebar` (in the new pane): reads its tab from its `herdr.space`/
     `herdr.tab` labels, starts the tab's headless nvim daemon if needed
