@@ -388,7 +388,8 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   terminal to ask on: it stops). The welcome opens once, after the first nvim
   pane (`sync.js` `toggle`), titled "nvim is ready": just the keys, each as
   the person's `keys.json` binds it (one the install couldn't take is left
-  out), the tree key and `?`, and where keys and settings live.
+  out), the tree key and `?`, and where keys and settings live;
+  `herdr-nvim.welcome` (`herdr-app do herdr-nvim.welcome`) shows it again.
 - **The tree** (`tree-view.js` keys and drawing, `tree-model.js` folders,
   `dialog.js` its prompts as a dialog of this mod with props {dialog},
   `ops.js` its client): `mod.json` `"focusable": true`; `"focus"` from

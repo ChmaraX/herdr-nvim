@@ -5,6 +5,7 @@
 //   what runs; nothing installs without that press.
 // - "welcome": once, the first time the tab's nvim opens (`welcome`): just
 //   the keys, as the person's keys.json binds them, and where they live.
+//   `herdr-nvim.welcome` shows it again (`welcome({ again: true })`).
 // Enter does the main button, Esc closes.
 
 import { div } from "gpui-kit";
@@ -48,9 +49,9 @@ export function welcomeRows(keys, config) {
   return rows.filter(([key]) => key);
 }
 
-// Once: the first time a tab's nvim opened.
-export async function welcome() {
-  if (shared(SEEN) === true) return;
+// Once: the first time a tab's nvim opened; `again`: whenever asked.
+export async function welcome({ again = false } = {}) {
+  if (shared(SEEN) === true && !again) return;
   setShared(SEEN, true);
   const text = await readTextFile(`${appHome()}/keys.json`).catch(() => null);
   let keys = {};

@@ -26,7 +26,8 @@
 // pick.js), `herdr-nvim.reveal` (cmd-shift-e, `<leader>E` in nvim):
 // open the pair if needed, then hand the tree the keyboard (`pane.go` right
 // from the tab's nvim pane, once the tree has been laid out); and
-// `herdr-nvim.toggle` (the tree key in nvim): that, or hide a tree that shows.
+// `herdr-nvim.toggle` (the tree key in nvim): that, or hide a tree that shows;
+// and `herdr-nvim.welcome`: the welcome card again (its keys).
 //
 // Each action makes the other side agree, so the next look finds nothing to
 // do: no loops. While an action runs nothing else is decided, and until the
@@ -74,6 +75,7 @@ export class Sync {
         else if (verb === "swap") await this.startSwap(tab, decodeURIComponent(command.split(":").slice(2).join(":")), cx);
         else if (verb === "reveal") await this.reveal(cx);
         else if (verb === "toggle") await this.toggleTree(cx);
+        else if (verb === "welcome") await welcome({ again: true });
       }
     });
   }
