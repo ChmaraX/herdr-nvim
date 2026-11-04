@@ -86,9 +86,13 @@ export function hideTreeKeepNvim(p, tab, terminal) {
 }
 
 // On a hide in `tab`: whether it was the tree key's. Consumes the intent.
+// A shared value is never null: the app can't read a null back, and every
+// view then fails to re-render ("Null"). An earlier version stored one.
+if (shared(KEEP_NVIM) === null) setShared(KEEP_NVIM, false);
+
 export function takeKeepNvim(tab) {
   const keep = shared(KEEP_NVIM);
   if (!keep) return false;
-  setShared(KEEP_NVIM, null);
+  setShared(KEEP_NVIM, false);
   return keep.tab === tab && Date.now() - keep.at < KEEP_FOR_MS;
 }

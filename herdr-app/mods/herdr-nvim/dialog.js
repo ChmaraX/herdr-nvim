@@ -53,7 +53,7 @@ export class Dialog {
       }
       const show = result.path ?? result.paths?.[0] ?? request.dir;
       const n = (shared("herdr-nvim.reveal")?.n ?? 0) + 1;
-      setShared("herdr-nvim.reveal", { tab: d.place.tab, path: show ?? null, n });
+      setShared("herdr-nvim.reveal", { tab: d.place.tab, path: show ?? "", n });
     });
   }
 

@@ -296,8 +296,8 @@ export class Sync {
       if (!terminal) return;
       if (mode === "nvim") return run("pane.focus", { terminal });
       // On nvim's file, on purpose: the tree otherwise keeps the selection
-      // where the person left it (a path of null: nvim's current file).
-      setShared("herdr-nvim.reveal", { tab: f.tab, path: null, n: (shared("herdr-nvim.reveal")?.n ?? 0) + 1 });
+      // where the person left it (an empty path: nvim's current file).
+      setShared("herdr-nvim.reveal", { tab: f.tab, path: "", n: (shared("herdr-nvim.reveal")?.n ?? 0) + 1 });
       if (!p.files) showFiles(p);
       this.prev = { tab: f.tab, files: true, other: false, nvim: true };
       this.pendingFocus = { terminal, since: shared("herdr-nvim.tree-laid-out") ?? 0, shown: p.files };
