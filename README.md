@@ -102,8 +102,9 @@ nvim-tree), mapped when free, and left alone when it does anything else.
 What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 Other mods open a file in a tab's nvim with
 `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
-`herdr-app/e2e/run.sh` checks all of it in a private app and core (Preview
-not yet).
+`herdr-app/e2e/run.sh` is a smoke test of the main flows in a private app
+and core (about a minute); `cargo test`, `tests/run.lua` and
+`herdr-app/e2e/js-checks.mjs` check the logic.
 
 The port also changed a few things the TUI plugin does:
 `herdr-nvim daemons stop` and the TUI's daemon cleanup keep a daemon that

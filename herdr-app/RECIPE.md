@@ -484,7 +484,10 @@ these edits out (from `props.replaces` / `props.added`), byte for byte.
   opened from the tree takes the preview's place with the tree shown
   throughout; an image opened any way opens its preview.
 
-`herdr-app/e2e/run.sh` does every check above in a private app and core
-(about 4 minutes). `--only preview,fresh` runs the setup, the install and the
-first two sections, then only the groups named (picker, open, tree, treemode,
-stale, fresh, preview, teardown), each from the same starting state.
+`herdr-app/e2e/run.sh` is a smoke test of the main flows above in a private
+app and core, about a minute: Files and cmd-e with tab switches, cmd-o, the
+tree's rename/create/delete through nvim, Preview / Source, daemons ending
+with their tabs, and uninstall. `--only picker,preview` runs the setup, the
+install and the first flow, then only those named (picker, tree, preview,
+teardown). The rest of the list is checked by the fast suites (`cargo test`,
+`tests/run.lua`, `herdr-app/e2e/js-checks.mjs`) or by hand.
