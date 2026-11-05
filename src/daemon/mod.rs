@@ -4,6 +4,8 @@
 
 pub(crate) mod events;
 pub(crate) mod inventory;
+#[cfg(unix)]
+mod nvim_rpc;
 pub(crate) mod registry;
 
 use std::{
@@ -70,6 +72,16 @@ pub fn ensure_daemon(
         ),
         Health::Down => {}
     }
+    // One start at a time per tab: two processes finding it down at once
+    // (the tree's request and nvim's pane, opening together) would each
+    // start one, and the second, taking the socket path, would leave the
+    // first running unreachable. The one that waited finds it up.
+    #[cfg(unix)]
+    let _starting = StartLock::take(&socket)?;
+    #[cfg(unix)]
+    if answers(&socket, &config.sidebar, ANSWER_WITHIN) {
+        return Ok(socket);
+    }
     crate::nvim_check::check(&config.sidebar)?;
 
     #[cfg(not(windows))]
@@ -101,6 +113,39 @@ pub fn ensure_daemon(
             );
         }
         sleep(HEALTH_POLL_INTERVAL);
+    }
+}
+
+/// An exclusive lock on `<socket>.lock` while a tab's daemon starts; let go
+/// when dropped (and by the system if the process dies). The file stays:
+/// removing it while another process waits on it would let a third take a
+/// new one.
+#[cfg(unix)]
+struct StartLock {
+    _held: fs::File,
+}
+
+#[cfg(unix)]
+impl StartLock {
+    fn take(socket: &Path) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        let path = socket.with_extension("lock");
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        let _span = crate::profile::span("daemon: wait for its start");
+        // SAFETY: flock on a descriptor this File owns.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            bail!("cannot lock {}", path.display());
+        }
+        Ok(Self { _held: file })
     }
 }
 
@@ -304,6 +349,12 @@ pub(crate) fn unstuck(socket: &Path, sidebar: &Sidebar) -> bool {
 }
 
 /// Back to normal mode, whatever was waiting for input (bounded: 2 s).
+#[cfg(unix)]
+fn unstick(socket: &Path, _sidebar: &Sidebar) {
+    nvim_rpc::input_within(socket, "<C-\\><C-n>", ANSWER_WITHIN);
+}
+
+#[cfg(not(unix))]
 fn unstick(socket: &Path, sidebar: &Sidebar) {
     let Ok(mut child) = nvim_cmd(sidebar)
         .arg("--headless")
@@ -363,6 +414,25 @@ pub(crate) fn remote_expr_within(
 ) -> Option<String> {
     let _span = crate::profile::span("nvim: remote-expr")
         .with("expr", expr.chars().take(60).collect::<String>());
+    // Over the socket itself: no nvim to start for the question.
+    #[cfg(unix)]
+    {
+        let _ = sidebar;
+        nvim_rpc::eval_within(socket, expr, timeout)
+    }
+    #[cfg(not(unix))]
+    remote_expr_spawned(socket, expr, sidebar, timeout)
+}
+
+/// `remote_expr_within` by an `nvim --remote-expr` of its own (Windows'
+/// named pipes).
+#[cfg(not(unix))]
+fn remote_expr_spawned(
+    socket: &Path,
+    expr: &str,
+    sidebar: &Sidebar,
+    timeout: Duration,
+) -> Option<String> {
     let mut child = nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
@@ -580,6 +650,59 @@ mod tests {
             daemon.eval("getpid()"),
             daemon.pid.to_string(),
             "second ensure_daemon must reuse the daemon, not spawn a new one"
+        );
+    }
+
+    /// Several processes opening a tab's nvim at once (the tree's request
+    /// and nvim's pane): one daemon, which they all get. Two would leave one
+    /// running with its socket taken by the other, out of reach.
+    #[cfg(unix)]
+    #[test]
+    fn starting_a_tabs_daemon_at_once_from_several_places_starts_one() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let config = Config::default();
+        let sockets: Vec<PathBuf> = std::thread::scope(|scope| {
+            // A few ms apart, as they come: the later one finds no daemon
+            // yet, and the earlier one's nvim has its socket by the time it
+            // would remove it.
+            let starts: Vec<_> = (0..6u64)
+                .map(|i| {
+                    let (root, config) = (&plugin_root, &config);
+                    scope.spawn(move || {
+                        std::thread::sleep(Duration::from_millis(i * 4));
+                        ensure_daemon("wR", root, config, root)
+                    })
+                })
+                .collect();
+            starts
+                .into_iter()
+                .map(|s| s.join().unwrap().expect("ensure_daemon"))
+                .collect()
+        });
+        let socket = sockets[0].clone();
+        assert!(sockets.iter().all(|s| *s == socket));
+        let listening: Vec<u32> = String::from_utf8_lossy(
+            &Command::new("pgrep")
+                .args(["-f", "--", &format!("--listen {}", socket.display())])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+        for pid in &listening {
+            crate::test_support::kill(*pid);
+        }
+        assert_eq!(
+            listening.len(),
+            1,
+            "nvim daemons started for one tab: {listening:?}"
         );
     }
 
