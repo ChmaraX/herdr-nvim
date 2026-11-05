@@ -73,6 +73,7 @@ pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
 
 /// The configured nvim's version, or why it can't run herdr-nvim.
 pub fn check(sidebar: &Sidebar) -> Result<String, NvimMissing> {
+    let _span = crate::profile::span("nvim: version check");
     let missing = |found| NvimMissing {
         bin: sidebar.nvim_bin.clone(),
         found,

@@ -54,6 +54,7 @@ pub fn ensure_daemon(
     cwd: &Path,
 ) -> Result<PathBuf> {
     let socket = socket_path(tab);
+    let _span = crate::profile::span("daemon: ensure");
     match health(&socket, &config.sidebar) {
         Health::Up => {
             // Also (re)register an already-running daemon, so one spawned
@@ -360,6 +361,8 @@ pub(crate) fn remote_expr_within(
     sidebar: &Sidebar,
     timeout: Duration,
 ) -> Option<String> {
+    let _span = crate::profile::span("nvim: remote-expr")
+        .with("expr", expr.chars().take(60).collect::<String>());
     let mut child = nvim_cmd(sidebar)
         .arg("--headless")
         .arg("--server")
@@ -429,10 +432,14 @@ pub fn sidebar_cmd() -> Result<()> {
     let plugin_root = plugin_root()?;
     let config = crate::config::load();
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
-    wait_for_layout_ready();
+    {
+        let _span = crate::profile::span("pane: wait for layout");
+        wait_for_layout_ready();
+    }
     refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
     host.sidebar_ready(&socket, &config.sidebar);
-
+    // This process becomes `nvim --remote-ui` now: its span ends here.
+    crate::profile::process_end(0);
     attach_remote_ui(&socket, &config.sidebar)
 }
 

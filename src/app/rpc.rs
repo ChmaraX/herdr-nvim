@@ -54,6 +54,7 @@ fn spawn_connect() -> Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
 
 impl Rpc {
     pub(crate) fn connect() -> Result<Self> {
+        let _span = crate::profile::span("hc connect");
         let (child, stdin, reader) = spawn_connect()?;
         let mut rpc = Self {
             child,
@@ -67,6 +68,7 @@ impl Rpc {
     }
 
     pub(crate) fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+        let _span = crate::profile::span(&format!("hc {method}"));
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});

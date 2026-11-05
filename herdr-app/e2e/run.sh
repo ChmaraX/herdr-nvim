@@ -83,9 +83,12 @@ export HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1
 export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$root/work"
-# herdr-nvim.debug: the controller's decisions (sync.js, lib.js `trace`) go
-# with the proof.
-printf '{"frame.welcomed": true, "layout": "main", "herdr-nvim.debug": "%s"}\n' "$root/trace.jsonl" > "$HERDR_APP_HOME/shared.json"
+# The run is profiled (src/profile.rs, mods/herdr-nvim/profile.js): the
+# mods' events (the controller's decisions among them) and herdr-nvim's own
+# processes go to profile.jsonl; its report goes with the proof.
+profile=$root/profile.jsonl
+mkdir -p "$HERDR_NVIM_STATE_DIR/profile" && printf '%s' "$profile" > "$HERDR_NVIM_STATE_DIR/profile/on"
+printf '{"frame.welcomed": true, "layout": "main", "herdr-nvim.profile": "%s"}\n' "$profile" > "$HERDR_APP_HOME/shared.json"
 version=$(plutil -extract CFBundleShortVersionString raw "${app_bin%/MacOS/*}/Info.plist" 2>/dev/null || true)
 echo "{\"last_run\": \"$version\", \"presented\": []}" > "$HERDR_APP_HOME/update-notes.json" # no "Updated" toast
 H() { "$app_bin" "$@"; }
@@ -96,7 +99,10 @@ cleanup() {
   say "cleanup (root $root)"
   # The app's own log goes with the proof, failed run or not.
   [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
-  [ -f "$root/trace.jsonl" ] && cp "$root/trace.jsonl" "$proof/trace.jsonl"
+  if [ -s "${profile:-}" ]; then
+    cp "$profile" "$proof/profile.jsonl"
+    [ -x "$repo/target/release/herdr-nvim" ] && "$repo/target/release/herdr-nvim" app-profile report "$proof/profile.jsonl" >/dev/null 2>&1
+  fi
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
   [ -n "${rec_pid:-}" ] && kill "$rec_pid" 2>/dev/null
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
@@ -519,6 +525,16 @@ grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 [ ! -e "$XDG_DATA_HOME/herdr-nvim/app" ] || fail "uninstall left a runtime: $(ls "$XDG_DATA_HOME/herdr-nvim/app")"
 H status | grep -q '"errors": \[\]' || fail "the app reports errors after the uninstall: $(H status)"
 say "uninstall: the layout back to main's content, keys and mods gone, no errors"
+fi
+
+# The profile saw the person's waits and herdr-nvim's own commands.
+if [ -x "$repo/target/release/herdr-nvim" ]; then
+  sleep 1.5 # the mods append once a second
+  "$repo/target/release/herdr-nvim" app-profile report "$profile" >/dev/null || fail "app-profile report failed"
+  sum=${profile%.jsonl}.summary.md
+  grep -q "Files: nvim opened" "$sum" || fail "the profile has no Files action: $(head -20 "$sum")"
+  grep -q "| herdr-nvim toggle |" "$sum" || fail "the profile has no herdr-nvim toggle process: $(grep '^|' "$sum" | head)"
+  say "profile: $(sed -n 3p "$sum" | cut -c1-160)"
 fi
 
 say "PASS: ${only:-every flow}"

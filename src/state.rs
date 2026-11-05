@@ -108,7 +108,7 @@ pub(crate) fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     env::var_os("HERDR_NVIM_STATE_DIR")
         .map(PathBuf::from)
         .or_else(|| {

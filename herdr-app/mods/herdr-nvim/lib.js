@@ -1,7 +1,8 @@
 // herdr-nvim's mod helpers.
 
-import { appHome, exec, focused, notify, shared } from "herdr";
+import { appHome, exec, focused, notify, setShared } from "herdr";
 import { openCard } from "./card.js";
+import { flush, instant, mark, profiling, timedExec } from "./profile.js";
 
 // The install script writes the wrapper here (it bakes in the binary, the
 // herdr-app path and this window's home). Other mods use it the same way:
@@ -46,7 +47,7 @@ export async function nvim(command, args = [], tab = null, { quiet = false } = {
     return null;
   }
   try {
-    const r = await exec(bin(), [command, ...args, "--ctx", ctx]);
+    const r = await timedExec("wait", `herdr-nvim ${command}`, bin(), [command, ...args, "--ctx", ctx]);
     if (r.code === 0) {
       noticeIn(r.stdout);
       return r.stdout;
@@ -66,11 +67,34 @@ export async function nvim(command, args = [], tab = null, { quiet = false } = {
   return null;
 }
 
-// The controller's decisions, one JSON line each, appended to the file the
-// shared value `herdr-nvim.debug` names (the e2e sets it; unset: nothing).
+// The controller's decisions, in the profile while profiling (profile.js).
 export function trace(what, data) {
-  const file = shared("herdr-nvim.debug");
-  if (!file) return;
-  const line = JSON.stringify({ at: Date.now(), what, ...data });
-  exec("sh", ["-c", 'printf "%s\\n" "$1" >> "$2"', "trace", line, file]).catch(() => {});
+  instant("sync", what, data, "decide");
+}
+
+// `herdr-nvim.profile` (cmd-alt-shift-p): profiling on, or off with its
+// report (src/profile.rs) named in a toast.
+export async function toggleProfile() {
+  if (!profiling()) {
+    const r = await exec(bin(), ["app-profile", "on"]).catch((e) => ({ code: 1, stderr: String(e) }));
+    let file = null;
+    try { file = r.code === 0 ? JSON.parse(r.stdout).file : null; } catch {}
+    if (!file) return notify({ title: "herdr-nvim: profiling did not start", body: (r.stderr || r.stdout || "").trim().slice(-300), level: "error" });
+    setShared("herdr-nvim.profile", file);
+    return notify({ title: "herdr-nvim: profiling", body: "Use the app as usual. cmd-alt-shift-l marks a moment that felt slow; cmd-alt-shift-p stops and writes the report.", timeout: 8000 });
+  }
+  setShared("herdr-nvim.profile", "");
+  await flush();
+  const r = await exec(bin(), ["app-profile", "off", "--report"]).catch((e) => ({ code: 1, stderr: String(e) }));
+  let report = null;
+  try { report = r.code === 0 ? JSON.parse(r.stdout) : null; } catch {}
+  if (!report) return notify({ title: "herdr-nvim: no profile report", body: (r.stderr || r.stdout || "").trim().slice(-300), level: "error" });
+  notify({ title: "herdr-nvim: profile saved", body: `${report.headline}. ${report.summary}`, timeout: 20000 });
+}
+
+// `herdr-nvim.profile-mark` (cmd-alt-shift-l): "that felt slow".
+export function markLag() {
+  if (!profiling()) return notify({ title: "herdr-nvim", body: "Not profiling: cmd-alt-shift-p starts it.", level: "warning" });
+  mark();
+  notify({ title: "herdr-nvim", body: "Marked.", timeout: 1500 });
 }

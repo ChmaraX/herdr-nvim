@@ -17,6 +17,7 @@ mod openlink;
 mod path;
 mod pathkey;
 mod picker;
+mod profile;
 mod sessions;
 mod state;
 #[cfg(test)]
@@ -38,6 +39,7 @@ const SHORT: &[&str] = &[
     "pick-file",
     "open-link",
     "app-config",
+    "app-profile",
 ];
 
 fn deadline(after: std::time::Duration) {
@@ -63,6 +65,7 @@ fn main() {
     if app && SHORT.contains(&mode.as_str()) {
         deadline(std::time::Duration::from_secs(25));
     }
+    profile::process_start(&mode);
     let code = match (mode.as_str(), app) {
         ("toggle", false) => run(maneuver::toggle_cmd),
         ("toggle", true) => run(app::sidebar::toggle_cmd),
@@ -91,6 +94,7 @@ fn main() {
         ("app-nvim-check", _) => run(nvim_check::check_cmd),
         // The "Neovim is needed" card's Install button (a terminal tab).
         ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
+        ("app-profile", _) => run(profile::profile_cmd),
         (
             "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
             | "app-reveal" | "app-preview" | "app-install-nvim",
@@ -101,11 +105,12 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-profile>"
             );
             2
         }
     };
+    profile::process_end(code);
     std::process::exit(code);
 }
 
