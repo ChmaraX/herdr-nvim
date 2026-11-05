@@ -339,7 +339,7 @@ pub(crate) fn request(
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to run {}", sidebar.nvim_bin))?;
+        .map_err(|error| run_error(&sidebar.nvim_bin, error))?;
     let stdout = drain(child.stdout.take().expect("stdout is piped"));
     let stderr = drain(child.stderr.take().expect("stderr is piped"));
     let deadline = Instant::now() + timeout;
@@ -501,7 +501,57 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// `HERDR_PANE_ID` for plugin panes so this command can select the tab daemon
 /// and refresh it with the live sidebar pane identity. The pane's own cwd (set
 /// via `--cwd`) is where the daemon spawns.
+/// The error for an nvim client that could not be run. A health check runs
+/// `nvim_bin` before anything else, so this is where a missing nvim shows.
+/// herdr hands the plugin the herdr server's PATH, which may not be the
+/// person's, so "No such file or directory" alone does not tell them what to
+/// change: this names the `nvim_bin` setting and its file.
+fn run_error(bin: &str, error: std::io::Error) -> anyhow::Error {
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return anyhow::Error::new(error).context(format!("failed to run {bin}"));
+    }
+    let file = crate::config::config_file_display();
+    if Path::new(bin).components().count() > 1 {
+        return anyhow::anyhow!("`{bin}` was not found: fix `nvim_bin` under [sidebar] in {file}");
+    }
+    let find = if cfg!(windows) { "where" } else { "command -v" };
+    anyhow::anyhow!(
+        "`{bin}` was not found on the PATH herdr gave herdr-nvim: set `nvim_bin` \
+         under [sidebar] in {file} to nvim's full path (`{find} {bin}` prints it)"
+    )
+}
+
+/// The sidebar pane's entry point. herdr closes a plugin pane the moment it
+/// exits, so an error that stops the sidebar from starting is printed in the
+/// pane, which waits for Enter: otherwise the person sees it flash and close.
 pub fn sidebar_cmd() -> Result<()> {
+    let (socket, sidebar) = start_sidebar().inspect_err(show_start_failure)?;
+    let attached = attach_remote_ui(&socket, &sidebar);
+    // On Unix the attach `exec`s nvim, so it returns only if nvim could not
+    // start. On Windows it returns when the session ends, which is not a
+    // start failure.
+    if cfg!(unix) {
+        attached.inspect_err(show_start_failure)
+    } else {
+        attached
+    }
+}
+
+fn show_start_failure(error: &anyhow::Error) {
+    use std::io::{BufRead, IsTerminal};
+
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    eprintln!(
+        "herdr-nvim: the nvim sidebar could not start: {error:#}\n\nPress Enter to close this pane."
+    );
+    let _ = std::io::stdin().lock().read_line(&mut String::new());
+}
+
+/// Everything before the attach: the tab's daemon, up and told this pane's
+/// id. Returns its socket and the settings the attach needs.
+fn start_sidebar() -> Result<(PathBuf, Sidebar)> {
     let tab = env::var("HERDR_TAB_ID")
         .context("herdr-nvim sidebar requires HERDR_TAB_ID (set by herdr for plugin panes)")?;
     let pane = env::var("HERDR_PANE_ID")
@@ -512,8 +562,7 @@ pub fn sidebar_cmd() -> Result<()> {
     let socket = ensure_daemon(&tab, &plugin_root, &config, &cwd)?;
     wait_for_layout_ready();
     refresh_daemon_pane_id(&socket, &pane, &config.sidebar)?;
-
-    attach_remote_ui(&socket, &config.sidebar)
+    Ok((socket, config.sidebar))
 }
 
 #[cfg(unix)]
@@ -583,6 +632,25 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::test_support::{nvim_available, TestDaemon, TestEnv};
+
+    // herdr hands the plugin the herdr server's PATH, which may lack the
+    // folder nvim is in. The error is what the person sees in the sidebar
+    // pane, so it names what was missing and the setting that fixes it.
+    #[test]
+    fn a_missing_nvim_names_the_nvim_bin_setting() {
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for bin in ["herdr-nvim-test-no-such-nvim", "/nonexistent/bin/nvim"] {
+            let mut config = Config::default();
+            config.sidebar.nvim_bin = bin.to_owned();
+            let error = ensure_daemon("wM:t1", &plugin_root, &config, &plugin_root)
+                .map(drop)
+                .map_err(|e| format!("{e:#}"))
+                .unwrap_err();
+            assert!(error.contains(&format!("`{bin}` was not found")), "{error}");
+            assert!(error.contains("`nvim_bin` under [sidebar]"), "{error}");
+        }
+    }
 
     // Regression test for issue #20: a daemon spawned through the pick-file
     // picker inherits only HERDR_PLUGIN_CONTEXT_JSON (plugin panes get no flat
