@@ -2,8 +2,6 @@
   "global": {
     "cmd-e": "mod.open:herdr-nvim",
     "cmd-o": "herdr-nvim.pick",
-    "cmd-shift-e": "herdr-nvim.reveal",
-    "cmd-alt-shift-p": "herdr-nvim.profile",
-    "cmd-alt-shift-l": "herdr-nvim.profile-mark"
+    "cmd-shift-e": "herdr-nvim.reveal"
   }
 }

@@ -224,7 +224,6 @@ pub(crate) fn gather_candidates(
 
     candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,
-        first_op_unix: mined.first_op_unix,
         git_dirty: &git_dirty,
         git_committed_in_session: &git_committed,
         in_git_worktree: &in_git_worktree,

@@ -213,7 +213,6 @@ pub trait Herdr {
 /// whole tab in one command, `app::sidebar`), so it never implements this.
 pub trait Layout: Herdr {
     fn pane_rects(&mut self, tab: &str) -> Result<Vec<PaneRect>>;
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String>;
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)>;
     fn move_pane(
         &mut self,
@@ -376,11 +375,6 @@ impl Layout for CliHerdr {
         parse_pane_rects_value(&value)
     }
 
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String> {
-        let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(string_at(&value, "/result/pane/tab_id")?.to_owned())
-    }
-
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)> {
         let value = Self::run(&args(&[
             "tab",
@@ -520,6 +514,7 @@ impl Layout for CliHerdr {
     }
 }
 
+#[cfg(test)]
 pub fn parse_pane_rects(json: &str) -> Result<Vec<PaneRect>> {
     let value: Value = serde_json::from_str(json).context("invalid pane layout JSON")?;
     parse_pane_rects_value(&value)
@@ -583,7 +578,6 @@ use std::collections::VecDeque;
 pub struct MockHerdr {
     pub ops: Vec<String>,
     pub pane_rects_results: VecDeque<Result<Vec<PaneRect>>>,
-    pub tab_of_pane_results: VecDeque<Result<String>>,
     pub create_tab_results: VecDeque<Result<(String, String)>>,
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
@@ -641,11 +635,6 @@ impl Layout for MockHerdr {
     fn pane_rects(&mut self, tab: &str) -> Result<Vec<PaneRect>> {
         self.ops.push(format!("rects {tab}"));
         Self::next(&mut self.pane_rects_results, "pane_rects")
-    }
-
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String> {
-        self.ops.push(format!("tab_of {pane}"));
-        Self::next(&mut self.tab_of_pane_results, "tab_of_pane")
     }
 
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)> {

@@ -219,27 +219,4 @@ assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<lea
 assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { tree: "nvim", tree_key: "<leader>e" }),
   [["cmd-e", "open or close nvim"]]);
 
-// Profiling: both mods carry the same recorder; off, it runs nothing; the
-// events recorded before a stop still reach that profile.
-{
-  const { readFileSync } = await import("node:fs");
-  const here = new URL("../mods/", import.meta.url);
-  assert.equal(readFileSync(new URL("herdr-nvim-header/profile.js", here), "utf8"),
-    readFileSync(new URL("herdr-nvim/profile.js", here), "utf8"), "the two profile.js copies differ");
-  const prof = await import("../mods/herdr-nvim/profile.js");
-  const calls = [];
-  app.exec = async (cmd, args) => { calls.push([cmd, ...args]); return { code: 0, stdout: "", stderr: "" }; };
-  app.shared["herdr-nvim.profile"] = "";
-  prof.span("tree", "off")(); prof.action("off", Date.now()); prof.rendered("tree", Date.now());
-  assert.equal(calls.length, 0, "profiling off ran a command");
-  app.shared["herdr-nvim.profile"] = "/tmp/p.jsonl";
-  prof.span("tree", "first")(); // written at once
-  prof.span("tree", "listed")(); // buffered: the next write is a second away
-  app.shared["herdr-nvim.profile"] = "";
-  await prof.flush();
-  const out = calls.at(-1);
-  assert.equal(out?.[3], "/tmp/p.jsonl", "the stop lost what was recorded before it");
-  assert.deepEqual(out.slice(4).map((l) => JSON.parse(l).name), ["listed"]);
-}
-
 console.log("js checks: ok");

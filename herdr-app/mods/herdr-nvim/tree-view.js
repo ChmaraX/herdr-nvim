@@ -288,7 +288,6 @@ export class Tree {
     }
     this.busy = true;
     cx.notify();
-    const start = Date.now();
     // nvim can't show an image: the preview takes nvim's place instead (the
     // controller swaps them, sync.js `startSwap`).
     const where = tabOf(this.where());
@@ -299,7 +298,6 @@ export class Tree {
       let terminal = null;
       try { terminal = out && JSON.parse(out).terminal; } catch {}
       if (terminal) run("pane.focus", { terminal });
-      action("tree: file opened in nvim", start);
     }
     this.busy = false;
     cx.notify();

@@ -66,15 +66,38 @@ fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> R
     bail!("{} keeps changing; try again", path.display())
 }
 
-/// Pure: add `ours` to `keys` where free. Returns (added, conflicts).
-/// Actions earlier herdr-nvim installs bound (the separate picker mod, now
-/// `herdr-nvim.pick`): an install replaces them, an uninstall removes them.
-const RETIRED: &[&str] = &["mod.open:herdr-nvim-pick"];
+/// Actions earlier herdr-nvim installs bound that no longer exist (the
+/// separate picker mod, now `herdr-nvim.pick`; the profiler): an install or
+/// uninstall removes them, on whatever key they are.
+const RETIRED: &[&str] = &[
+    "mod.open:herdr-nvim-pick",
+    "herdr-nvim.profile",
+    "herdr-nvim.profile-mark",
+];
 
 fn retired(action: &Value) -> bool {
     action.as_str().is_some_and(|a| RETIRED.contains(&a))
 }
 
+/// Pure: remove every binding to a retired action. Returns what went.
+pub(crate) fn drop_retired(keys: &mut Value) -> Vec<String> {
+    let mut removed = Vec::new();
+    for (section, bindings) in keys.as_object_mut().into_iter().flatten() {
+        let Some(bindings) = bindings.as_object_mut() else {
+            continue;
+        };
+        bindings.retain(|key, action| {
+            let keep = !retired(action);
+            if !keep {
+                removed.push(format!("{section} {key} ({action}, retired)"));
+            }
+            keep
+        });
+    }
+    removed
+}
+
+/// Pure: add `ours` to `keys` where free. Returns (added, conflicts).
 pub(crate) fn merge_keys(keys: &mut Value, ours: &Value) -> (Vec<String>, Vec<String>) {
     let (mut added, mut conflicts) = (Vec::new(), Vec::new());
     for (section, bindings) in ours.as_object().into_iter().flatten() {
@@ -275,11 +298,15 @@ pub fn setup_cmd() -> Result<()> {
             // Checked first: nothing is written when the install can't finish.
             let width = panel_width(&args)?;
             check_layout(&home, width)?;
-            let mut report = (Vec::new(), Vec::new());
+            let (mut report, mut dropped) = ((Vec::new(), Vec::new()), Vec::new());
             edit_json(&keys, &mut |value| {
+                dropped = drop_retired(value);
                 report = merge_keys(value, &ours);
-                Ok(!report.0.is_empty())
+                Ok(!report.0.is_empty() || !dropped.is_empty())
             })?;
+            dropped
+                .iter()
+                .for_each(|line| println!("keys: removed {line}"));
             report
                 .0
                 .iter()
@@ -300,7 +327,8 @@ pub fn setup_cmd() -> Result<()> {
         Some("uninstall") => {
             let mut removed = Vec::new();
             edit_json(&keys, &mut |value| {
-                removed = unmerge_keys(value, &ours);
+                removed = drop_retired(value);
+                removed.extend(unmerge_keys(value, &ours));
                 Ok(!removed.is_empty())
             })?;
             removed
@@ -332,6 +360,21 @@ mod tests {
         assert_eq!(
             keys,
             json!({"global": {"cmd-j o": "mod.open:open-opencode", "cmd-t": "tab.new"}})
+        );
+    }
+
+    #[test]
+    fn retired_actions_go_on_any_key_and_the_persons_own_keys_stay() {
+        let mut keys = json!({
+            "global": {"cmd-alt-shift-p": "herdr-nvim.profile", "cmd-l": "herdr-nvim.profile-mark", "cmd-t": "tab.new"},
+            "terminal": {"cmd-k": "herdr-nvim.profile"}
+        });
+        let mut removed = drop_retired(&mut keys);
+        removed.sort();
+        assert_eq!(removed.len(), 3, "{removed:?}");
+        assert_eq!(
+            keys,
+            json!({"global": {"cmd-t": "tab.new"}, "terminal": {}})
         );
     }
 

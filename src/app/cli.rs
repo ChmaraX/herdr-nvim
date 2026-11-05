@@ -20,7 +20,6 @@ fn app_bin() -> String {
 /// Runs an app command and returns what it made (`{pane, terminal}`, ...).
 /// `HERDR_APP_HOME` (inherited) picks the window, as for `herdr-app` itself.
 pub(crate) fn app_do(command: &str, args: &Value) -> Result<Value> {
-    let _span = crate::profile::span(&format!("app do {command}"));
     let output = Command::new(app_bin())
         .arg("do")
         .arg(command)
@@ -43,7 +42,6 @@ pub(crate) fn app_do(command: &str, args: &Value) -> Result<Value> {
 
 /// What the window shows now (`herdr-app status`): focused space, tab, pane.
 pub(crate) fn app_status() -> Result<Value> {
-    let _span = crate::profile::span("app status");
     let output = Command::new(app_bin())
         .arg("status")
         .stdin(Stdio::null())

@@ -9,7 +9,7 @@ import { closeOverlay, openOverlay, props, theme } from "herdr";
 import { helpGroups } from "./tree-keys.js";
 
 // The tree key's presses as the list shows them: ["space", "e"] -> "space e".
-export function keyLabel(presses) {
+function keyLabel(presses) {
   return presses?.length ? presses.join(" ") : null;
 }
 

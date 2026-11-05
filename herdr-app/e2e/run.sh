@@ -84,12 +84,7 @@ export HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1
 export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$root/work"
-# The run is profiled (src/profile.rs, mods/herdr-nvim/profile.js): the
-# mods' events (the controller's decisions among them) and herdr-nvim's own
-# processes go to profile.jsonl; its report goes with the proof.
-profile=$root/profile.jsonl
-mkdir -p "$HERDR_NVIM_STATE_DIR/profile" && printf '%s' "$profile" > "$HERDR_NVIM_STATE_DIR/profile/on"
-printf '{"frame.welcomed": true, "layout": "main", "herdr-nvim.profile": "%s"}\n' "$profile" > "$HERDR_APP_HOME/shared.json"
+printf '{"frame.welcomed": true, "layout": "main"}\n' > "$HERDR_APP_HOME/shared.json"
 version=$(plutil -extract CFBundleShortVersionString raw "${app_bin%/MacOS/*}/Info.plist" 2>/dev/null || true)
 echo "{\"last_run\": \"$version\", \"presented\": []}" > "$HERDR_APP_HOME/update-notes.json" # no "Updated" toast
 H() { "$app_bin" "$@"; }
@@ -100,10 +95,6 @@ cleanup() {
   say "cleanup (root $root)"
   # The app's own log goes with the proof, failed run or not.
   [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
-  if [ -s "${profile:-}" ]; then
-    cp "$profile" "$proof/profile.jsonl"
-    [ -x "$repo/target/release/herdr-nvim" ] && "$repo/target/release/herdr-nvim" app-profile report "$proof/profile.jsonl" >/dev/null 2>&1
-  fi
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
   [ -n "${rec_pid:-}" ] && kill "$rec_pid" 2>/dev/null
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
@@ -504,24 +495,8 @@ fi
 if begin nvim-tree; then
 # --- tree = "nvim": no Files button; cmd-e opens and closes nvim alone --------
 panel_stays_hidden() { local i; for i in 1 2 3 4 5 6 7 8; do panel_is hidden || return 1; done; }
-# The tree's renders from ms $1 to $2 (the profile's counts, written about
-# once a second): a show too short for panel_is still draws the tree.
-tree_renders() {
-  "$py" - "$profile" "$1" "$2" <<'PY'
-import json, sys
-start, end = int(sys.argv[2]) * 1000, int(sys.argv[3]) * 1000
-n = 0
-for line in open(sys.argv[1]):
-    e = json.loads(line) if line.strip() else {}
-    if e.get("name") == "renders" and start <= e.get("ts", 0) <= end:
-        n += e.get("args", {}).get("tree", 0)
-print(n)
-PY
-}
 "$wrapper" app-config tree nvim >/dev/null
 poll 10 no_files_button || fail "nvim tree: the Files button stayed"
-sleep 1.2
-from=$(now_ms)
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e showed the panel"
 poll 15 sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not open tab A's nvim"
@@ -530,12 +505,9 @@ shot nvim-tree-no-files-button
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e (close) showed the panel"
 poll 10 no_sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not close tab A's nvim"
-sleep 1.5
-drawn=$(tree_renders "$from" "$(now_ms)")
-[ "$drawn" = 0 ] || fail "nvim tree: cmd-e drew the tree ($drawn renders)"
 "$wrapper" app-config tree native >/dev/null
 poll 10 files_button_shown || fail "nvim tree: back to native, the Files button did not come back"
-say "tree = nvim: no Files button; cmd-e opens and closes the tab's nvim, the tree never drawn; native brings the button back"
+say "tree = nvim: no Files button; cmd-e opens and closes the tab's nvim, no panel; native brings the button back"
 fi
 
 if begin nvim-install; then
@@ -595,16 +567,6 @@ grep -q herdr-nvim "$HERDR_APP_HOME/keys.json" && fail "uninstall left keys"
 [ ! -e "$XDG_DATA_HOME/herdr-nvim/app" ] || fail "uninstall left a runtime: $(ls "$XDG_DATA_HOME/herdr-nvim/app")"
 H status | grep -q '"errors": \[\]' || fail "the app reports errors after the uninstall: $(H status)"
 say "uninstall: the layout back to main's content, keys and mods gone, no errors"
-fi
-
-# The profile saw the person's waits and herdr-nvim's own commands.
-if [ -x "$repo/target/release/herdr-nvim" ]; then
-  sleep 1.5 # the mods append once a second
-  "$repo/target/release/herdr-nvim" app-profile report "$profile" >/dev/null || fail "app-profile report failed"
-  sum=${profile%.jsonl}.summary.md
-  grep -q "Files: nvim opened" "$sum" || fail "the profile has no Files action: $(head -20 "$sum")"
-  grep -q "| herdr-nvim toggle |" "$sum" || fail "the profile has no herdr-nvim toggle process: $(grep '^|' "$sum" | head)"
-  say "profile: $(sed -n 3p "$sum" | cut -c1-160)"
 fi
 
 say "PASS: ${only:-every flow}"

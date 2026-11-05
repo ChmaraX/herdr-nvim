@@ -7,7 +7,7 @@
 // they do (`what`, short; `recipe`, the recipe's longer line), and `on`:
 // keystroke (as GPUI names it, or the typed character) → action.
 
-export const KEYS = [
+const KEYS = [
   { group: "Navigate", label: "j k  ↓ ↑", md: "`j`/`k`, ↓/↑", what: "move", recipe: "move",
     on: { j: "down", down: "down", k: "up", up: "up" } },
   { group: "Navigate", label: "g G", md: "`g`/`G`", what: "first / last", recipe: "first / last row",
@@ -54,7 +54,7 @@ export const KEYS = [
 ];
 
 // The tree key's row (herdr-nvim's `[app] tree_key`, read from nvim).
-export const TREE_KEY_ROW = { group: "Navigate", what: "hide the tree, back to nvim (in nvim: show it)",
+const TREE_KEY_ROW = { group: "Navigate", what: "hide the tree, back to nvim (in nvim: show it)",
   md: "the tree key (`space` `e`)", recipe: "hide the tree, back to nvim (nvim stays)" };
 
 // keystroke → action.

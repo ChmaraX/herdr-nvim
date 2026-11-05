@@ -3,7 +3,6 @@
 // place that knows the request shapes (lua/herdr-nvim/fs.lua, `request`) and
 // where a path may go.
 
-import { timedExec } from "./profile.js";
 import { exec, focused, notify, readTextFile, setShared, shared, window } from "herdr";
 import { bin, nvim } from "./lib.js";
 
@@ -51,7 +50,7 @@ export async function fsOp(place, request, opts = {}) {
 }
 
 export async function findFiles(root, query) {
-  const r = await timedExec("tree", "herdr-nvim app-find", bin(), ["app-find", "--root", root, "--query", query]).catch(() => null);
+  const r = await exec(bin(), ["app-find", "--root", root, "--query", query]).catch(() => null);
   return r?.code === 0 ? JSON.parse(r.stdout).paths : [];
 }
 
@@ -73,7 +72,7 @@ let config = null; // {path, text, tree, across}
 export async function appConfig() {
   const text = config?.path ? await readTextFile(config.path).catch(() => null) : undefined;
   if (config && text === config.text) return config;
-  const r = await timedExec("wait", "herdr-nvim app-config", bin(), ["app-config"]).catch(() => null);
+  const r = await exec(bin(), ["app-config"]).catch(() => null);
   let out = {};
   try { out = r?.code === 0 ? JSON.parse(r.stdout) : {}; } catch {}
   const tree = out.tree ?? "native";

@@ -6,7 +6,7 @@
 
 import { gitMarks, listFolder } from "./tree.js";
 
-export const ROWS = 3000;
+const ROWS = 3000;
 
 // `git status` runs at most this often for file events (a build or an agent
 // writing files is a lot of them).

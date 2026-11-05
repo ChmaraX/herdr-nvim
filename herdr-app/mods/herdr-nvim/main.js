@@ -24,7 +24,6 @@ import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props, run } from "herdr";
 import { nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
-import { instant, rendered } from "./profile.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Card } from "./card.js";
 import { Dialog } from "./dialog.js";
@@ -37,15 +36,12 @@ import { Tree } from "./tree-view.js";
 export default class HerdrNvim extends View {
   init(_props, cx) {
     const { overlay, role, dialog, help, bar, preview, card } = props() ?? {};
-    // Its track in a profile (profile.js).
-    this.role = preview ? "preview" : bar || help || dialog || card ? "dialog" : overlay ? "overlay" : role === "sync" ? "sync" : "tree";
     if (preview) this.part = new Preview(props(), cx);
     else if (bar) this.part = new PickBar();
     else if (help) this.part = new KeyHelp(cx);
     else if (dialog) this.part = new Dialog(cx);
     else if (card) this.part = new Card(cx);
     else if (overlay) {
-      instant("overlay", "cmd-e");
       cx.spawn(async () => {
         const p = panelState(layout());
         // The config as it is now (a file read; the shared value follows it
@@ -66,13 +62,8 @@ export default class HerdrNvim extends View {
   }
 
   render(cx) {
-    const start = Date.now();
-    try {
-      if (this.part) return this.part.render(cx);
-      this.sync?.look(cx);
-      return div();
-    } finally {
-      rendered(this.role, start);
-    }
+    if (this.part) return this.part.render(cx);
+    this.sync?.look(cx);
+    return div();
   }
 }

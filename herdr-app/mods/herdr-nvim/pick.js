@@ -9,7 +9,6 @@ import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { hc, notify, openOverlay, terminals, theme } from "herdr";
 import { nvim } from "./lib.js";
-import { action } from "./profile.js";
 
 // `at`: the tab, as `place()` captured it when the key was pressed.
 // One picker at a time. cmd-o again while one starts does nothing; a picker
@@ -21,7 +20,6 @@ let starting = false, shown = null;
 
 export async function pick(at) {
   if (starting) return;
-  const start = Date.now();
   if (shown && terminals().some((t) => t.address === shown && t.state === "live")) {
     await hc(["kill", shown]).catch(() => null);
   }
@@ -50,7 +48,6 @@ export async function pick(at) {
     ] },
   });
   shown = result.terminal;
-  action("cmd-o: picker shown", start);
 }
 
 // One key as a keycap: a small rounded box, as gitview draws its keys

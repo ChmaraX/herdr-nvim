@@ -11,8 +11,7 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { timedExec } from "./profile.js";
-import { appHome, panes, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 
 const KINDS = {
@@ -60,7 +59,7 @@ async function readText(file) {
   try {
     return await fs.readFile(file, "utf8");
   } catch {
-    const r = await timedExec("preview", "preview: read file", "cat", [file]);
+    const r = await exec("cat", [file]);
     if (r.code !== 0) throw new Error(r.stderr);
     return r.stdout;
   }
@@ -74,7 +73,7 @@ async function readBytes(file) {
     const dir = `${appHome()}/${CACHE}`;
     await fs.mkdir(dir, { recursive: true });
     const copy = `${dir}/.copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const r = await timedExec("preview", "preview: copy image", "cp", [file, copy]);
+    const r = await exec("cp", [file, copy]);
     if (r.code !== 0) throw new Error(r.stderr);
     try {
       return await fs.readFile(copy);

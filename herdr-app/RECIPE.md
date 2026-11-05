@@ -147,14 +147,6 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   for none (read when nvim starts); `[sidebar] nvim_bin` is the Neovim to
   run; `[sidebar] position = "bottom"` puts nvim below instead of beside. A
   bad value warns and falls back to the default.
-- **Profiling** (`cmd-alt-shift-p` starts and stops it; `cmd-alt-shift-l`
-  marks a moment that felt slow): herdr-nvim's processes and the mods record
-  into one file under `~/.local/state/herdr-nvim/profile/`. Stopping writes
-  its report beside it, named in a toast: `.trace.json` for
-  ui.perfetto.dev and `.summary.md` with the slowest actions (from the press
-  to the result on screen) and what ran meanwhile, main-thread freezes,
-  the 5 s before each mark, renders, and every step's times. Off, nothing
-  is recorded.
 - **Other mods** open a file in a tab's nvim with
   `<appHome>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`
   (prints `{"terminal": "tN"}`); the panel opens with it.
@@ -182,7 +174,7 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   - a floating 0×0 block (`role: "sync"`), always rendered: the controller
     (`sync.js`) that keeps the panel and each tab's nvim pane together, and
     takes the commands `herdr-nvim.pick`, `.reveal`, `.toggle`,
-    `.swap:<tab>:<file>`, `.welcome`, `.profile` and `.profile-mark`;
+    `.swap:<tab>:<file>`, `.files`, `.welcome` and `.uninstall`;
   - an overlay (`mod.open:herdr-nvim`, `cmd-e`): presses the Files button,
     then closes;
   - props `{preview}`: the preview pane; `{bar}`: the picker's title bar;
@@ -202,14 +194,8 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   copied from `mods/pane/main.js` at install) plus the Preview/Source button.
 - **Keys** (`keys.json`, merged into `global` only where free): `cmd-e` →
   `mod.open:herdr-nvim`, `cmd-o` → `herdr-nvim.pick`, `cmd-shift-e` →
-  `herdr-nvim.reveal`, `cmd-alt-shift-p` → `herdr-nvim.profile`,
-  `cmd-alt-shift-l` → `herdr-nvim.profile-mark`.
-- **Profiling** (`src/profile.rs`, `profile.js` in both mods): while
-  `<state dir>/profile/on` names a file, each process appends Chrome trace
-  events to it (itself, app commands, herdr-core calls, nvim requests); the
-  mods append theirs once a second through `sh`, as the shared value
-  `herdr-nvim.profile` names the file. `app-profile on|off [--report]|report
-  [FILE]|status`.
+  `herdr-nvim.reveal`. An install or uninstall also removes keys bound to
+  actions herdr-nvim no longer has (`setup.rs` `RETIRED`).
 
 ### Layout footprint
 

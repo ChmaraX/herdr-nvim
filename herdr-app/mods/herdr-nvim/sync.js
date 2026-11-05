@@ -40,8 +40,7 @@
 // tab is one record (`tabState`).
 
 import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces, terminals } from "herdr";
-import { markLag, nvim, place, toggleProfile, trace } from "./lib.js";
-import { action, profiling, watchFreezes } from "./profile.js";
+import { nvim, place } from "./lib.js";
 import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { welcome } from "./card.js";
@@ -93,8 +92,6 @@ export class Sync {
         else if (verb === "files") this.filesNvimOnly(cx);
         else if (verb === "uninstall") { this.leaving = true; filesButton(true); }
         else if (verb === "welcome") await welcome({ again: true });
-        else if (verb === "profile") { await toggleProfile(); cx.notify(); }
-        else if (verb === "profile-mark") markLag();
       }
     });
   }
@@ -114,10 +111,7 @@ export class Sync {
   // What our own action will show in `tab` (`toggle`'s or `app-preview`'s
   // answer: opened/closed terminal, preview made/closed).
   expect(tab, made) {
-    const waiting = this.waiting;
-    this.waiting = null;
     this.tabState(tab).expect = {
-      waiting,
       opened: made.terminal ?? null,
       closed: made.closed ?? null,
       preview: Boolean(made.preview),
@@ -132,17 +126,13 @@ export class Sync {
   // that result is assumed, whatever tab is looked at meanwhile.
   nvimOf(tab) {
     const seen = nvimPanes(tab), t = this.tabState(tab), e = t.expect, preview = previewPane(tab);
-    if (e && Date.now() - e.since > EXPECT_MS) {
-      t.expect = null;
-      if (e.waiting) action(e.waiting.name, e.waiting.start, { tab, shown: false });
-    } else if (e) {
+    if (e && Date.now() - e.since > EXPECT_MS) t.expect = null;
+    else if (e) {
       if (e.opened && !seen.includes(e.opened) && !ended(e.opened)) return true;
       if (e.preview && (!preview || preview === e.closedPreview)) return true;
       if (e.closed && seen.includes(e.closed)) return seen.length > 1 || Boolean(preview);
       if (e.closedPreview && preview === e.closedPreview) return seen.length > 0;
       t.expect = null;
-      // The result is on screen: the person's wait ends here (profile).
-      if (e.waiting) action(e.waiting.name, e.waiting.start, { tab });
     }
     return seen.length > 0 || Boolean(preview);
   }
@@ -150,10 +140,6 @@ export class Sync {
   // Each render: what the tab looks like now, what that change asks for
   // (`wanted`), then make it so.
   look(cx) {
-    this.freezeWatch(cx);
-    // A wait in another tab (a close, then a switch away) ends when its
-    // result shows there, not when that tab is looked at next.
-    if (profiling()) for (const [tab, t] of this.tabs) if (t.expect?.waiting) this.nvimOf(tab);
     this.focusTree();
     if (this.busy) return;
     const p = panelState(layout()), f = focused();
@@ -166,7 +152,6 @@ export class Sync {
     // before then, it would look like the person's Files press.
     const to = this.panelWant;
     if (to && p.files !== to.files && Date.now() - to.since <= EXPECT_MS) return;
-    if (to?.name) action(to.name, to.since, { tab: f.tab, shown: p.files === to.files });
     this.panelWant = null;
     // `at`: the whole tab context, fixed now; actions on `cur` use it after
     // their awaits, whichever tab is focused by then.
@@ -205,34 +190,17 @@ export class Sync {
       kept: t.kept,
       hidByTreeKey,
     });
-    if (Object.keys(want).length) {
-      trace("look", { tab: cur.tab, prev: prev && { tab: prev.tab, files: prev.files, nvim: prev.nvim, preview: prev.preview }, cur: { files: cur.files, nvim: cur.nvim, preview: cur.preview }, want, seen: nvimPanes(cur.tab), expect: t.expect });
-    }
     if (want.kept !== undefined) t.kept = want.kept;
-    // Our own show or hide: nothing for the next look to follow. (Named:
-    // in a profile, the time until it shows.)
-    const why = prev && prev.tab !== cur.tab ? "tab switch" : "Files";
-    if (want.panel === "show") { this.panelTo(true, () => showFiles(p), `${why}: panel shown`); cur.files = true; }
-    if (want.panel === "hide") { this.panelTo(false, () => hidePanel(p), `${why}: panel hidden`); cur.files = false; }
-    if (want.nvim) {
-      this.waiting = { name: `${why}: nvim ${cur.files ? "opened" : "closed"}`, start: Date.now() };
-      this.act(cur, p, cx);
-    }
-  }
-
-  // While profiling, the freeze watch runs (profile.js).
-  freezeWatch(cx) {
-    if (profiling()) this.freezes ??= watchFreezes(cx);
-    else if (this.freezes) {
-      this.freezes.cancel();
-      this.freezes = null;
-    }
+    // Our own show or hide: nothing for the next look to follow.
+    if (want.panel === "show") { this.panelTo(true, () => showFiles(p)); cur.files = true; }
+    if (want.panel === "hide") { this.panelTo(false, () => hidePanel(p)); cur.files = false; }
+    if (want.nvim) this.act(cur, p, cx);
   }
 
   // Shows (true) or hides the panel, and remembers that until the layout
   // shows it (`look`).
-  panelTo(files, change, name = null) {
-    this.panelWant = { files, since: Date.now(), name };
+  panelTo(files, change) {
+    this.panelWant = { files, since: Date.now() };
     change();
   }
 
@@ -268,7 +236,6 @@ export class Sync {
     const at = here?.tab === tab ? here
       : { space: spaces().find((s) => s.tabs.some((t) => t.id === tab))?.id ?? null, tab, terminal: null, cwd: null };
     if (!at.space || (!file && !previewPane(tab))) return;
-    this.waiting = { name: file ? "Preview" : "Source", start: Date.now() };
     this.busy = true;
     try {
       if (!file) await this.toggle(at, "open", cx);
@@ -278,12 +245,9 @@ export class Sync {
           const out = await nvim("app-preview", ["--file", file], at);
           try { made = out && JSON.parse(out); } catch {}
         }
-        trace("previewed", { tab, file, made });
         if (made) this.expect(tab, made);
       }
     } finally {
-      if (this.waiting) action(this.waiting.name, this.waiting.start, { tab });
-      this.waiting = null;
       this.busy = false;
       cx.notify();
     }
@@ -297,16 +261,11 @@ export class Sync {
       // every later look (the Files button would do nothing).
       try {
         const state = cur.files ? "open" : "close";
-        trace("act", { tab: cur.tab, state, nvim: cur.nvim });
         if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state, cx);
         cur.nvim = state === "open";
       } catch (e) {
         notify({ title: "herdr-nvim", body: `Could not open or close the tab's nvim: ${e?.message ?? e}`, level: "error" });
       } finally {
-        // Nothing to wait for on screen (no pane made or closed): the wait
-        // was the command.
-        if (this.waiting) action(this.waiting.name, this.waiting.start, { tab: cur.tab });
-        this.waiting = null;
         this.busy = false;
         cx.notify();
       }
@@ -339,7 +298,6 @@ export class Sync {
     if (remembered) t.memory = null;
     const fast = state === "open" && (await this.openFast(at, remembered, cx));
     if (fast) {
-      trace("toggled", { tab: at.tab, state, made: fast, fast: true });
       this.expect(at.tab, fast);
       return fast;
     }
@@ -347,7 +305,6 @@ export class Sync {
     if (out === null) return null;
     let made = {};
     try { made = JSON.parse(out || "{}"); } catch {}
-    trace("toggled", { tab: at.tab, state, made });
     this.expect(at.tab, made);
     // The first nvim pane ever: the welcome, once its pane has the keyboard
     // (`toggle` gave it), so Esc hands it back there.
@@ -440,7 +397,6 @@ export class Sync {
     const f = focused();
     if (!f?.tab || this.busy) return;
     const nvimOpen = this.nvimOf(f.tab);
-    this.waiting = { name: `Files: nvim ${nvimOpen ? "closed" : "opened"}`, start: Date.now() };
     this.act({ tab: f.tab, at: place(f), files: !nvimOpen, nvim: nvimOpen }, null, cx);
   }
 

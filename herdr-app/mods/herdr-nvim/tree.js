@@ -2,9 +2,9 @@
 // git marks. Listing follows the shipped `files` mod (Apache-2.0, Herdr): a
 // POSIX sh glob, `.git` skipped, at most 500 entries per folder.
 
-import { timedExec } from "./profile.js";
+import { exec } from "herdr";
 
-export const PER_FOLDER = 500;
+const PER_FOLDER = 500;
 
 // One process per folder: its entries ("d"/"f" + name), then an "x" record,
 // then the names git ignores there (`check-ignore -z`, nothing outside a repo).
@@ -16,7 +16,7 @@ const LIST = 'dir=$1; shift; n=0; for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; d
 
 // {entries: folders first, then by name; ignored: the names git ignores}.
 export async function listFolder(path) {
-  const r = await timedExec("tree", "tree: list folder", "sh", ["-c", LIST, "herdr-nvim", path]);
+  const r = await exec("sh", ["-c", LIST, "herdr-nvim", path]);
   if (r.code !== 0) throw new Error(r.stderr.trim() || `Cannot list ${path}`);
   const fields = r.stdout.split("\0"), entries = [];
   let i = 0;
@@ -31,7 +31,7 @@ const tops = new Map();
 // Only a repo found is kept: a folder may become one (`git init`).
 async function topOf(cwd) {
   if (!tops.has(cwd)) {
-    const top = await timedExec("tree", "tree: git toplevel", "git", ["rev-parse", "--show-toplevel"], { cwd }).catch(() => null);
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd }).catch(() => null);
     if (top?.code !== 0) return null;
     tops.set(cwd, top.stdout.trim());
   }
@@ -43,7 +43,7 @@ export async function gitMarks(cwd) {
   const top = await topOf(cwd);
   if (!top) return {};
   // Writes nothing under .git, so the folder watch doesn't fire again.
-  const status = await timedExec("tree", "tree: git status", "git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal"], { cwd }).catch(() => null);
+  const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal"], { cwd }).catch(() => null);
   const marks = {};
   if (status?.code !== 0) return marks;
   for (const entry of status.stdout.split("\0").filter(Boolean)) {

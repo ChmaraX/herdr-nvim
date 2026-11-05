@@ -17,7 +17,6 @@ import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { appHome, exec, panes, props, readTextFile, run, shared, spaces, terminals, theme, watchFolder } from "herdr";
 import Pane from "./pane-base.js";
-import { rendered, timedExec } from "./profile.js";
 
 const KINDS = {
   md: "markdown", markdown: "markdown", mdx: "markdown",
@@ -78,7 +77,7 @@ export default class Header extends Pane {
     if (this.watching) return;
     this.watching = "starting";
     cx.spawn(async (cx) => {
-      const out = await timedExec("header", "herdr-nvim app-current", bin(), ["app-current", "--ctx", this.ctxOf(r)]).catch(() => null);
+      const out = await exec(bin(), ["app-current", "--ctx", this.ctxOf(r)]).catch(() => null);
       let at = null;
       try { at = out?.code === 0 ? JSON.parse(out.stdout) : null; } catch {}
       this.file = at?.file ?? null;
@@ -111,18 +110,7 @@ export default class Header extends Pane {
     run(`herdr-nvim.swap:${r.tab}:${encodeURIComponent(file ?? "")}`);
   }
 
-  // Every pane header renders on every change of the app's live data: each
-  // one is counted (and timed when slow) while profiling.
   render(cx) {
-    const start = Date.now();
-    try {
-      return this.draw(cx);
-    } finally {
-      rendered("header", start);
-    }
-  }
-
-  draw(cx) {
     const head = super.render(cx);
     const r = this.role();
     if (r?.role === "nvim") this.follow(r, cx);
