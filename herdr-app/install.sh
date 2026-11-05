@@ -295,4 +295,4 @@ prune_runtimes "$root"
 # end it; the next nvim pane starts it again on this one.
 hc kill herdr-nvim-watch >/dev/null 2>&1 || true
 [ -z "$tree" ] || "$wrapper" app-config tree "$tree"
-echo "herdr-nvim: installed in $home (Files or cmd-e: the file tree with the tab's nvim; cmd-shift-e: into the tree; cmd-o: files from the agent)"
+echo "herdr-nvim: installed in $home"
