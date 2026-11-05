@@ -584,6 +584,25 @@ mod tests {
     use super::*;
     use crate::test_support::{nvim_available, TestDaemon, TestEnv};
 
+    // herdr hands the plugin the herdr server's PATH, which may lack the
+    // folder nvim is in. The error is what the person sees in the sidebar
+    // pane, so it names what was missing and the setting that fixes it.
+    #[test]
+    fn a_missing_nvim_names_the_nvim_bin_setting() {
+        let _env = TestEnv::new();
+        let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for bin in ["herdr-nvim-test-no-such-nvim", "/nonexistent/bin/nvim"] {
+            let mut config = Config::default();
+            config.sidebar.nvim_bin = bin.to_owned();
+            let error = ensure_daemon("wM:t1", &plugin_root, &config, &plugin_root)
+                .map(drop)
+                .map_err(|e| format!("{e:#}"))
+                .unwrap_err();
+            assert!(error.contains(&format!("`{bin}` was not found")), "{error}");
+            assert!(error.contains("`nvim_bin` under [sidebar]"), "{error}");
+        }
+    }
+
     // Regression test for issue #20: a daemon spawned through the pick-file
     // picker inherits only HERDR_PLUGIN_CONTEXT_JSON (plugin panes get no flat
     // vars). The daemon must still end up with HERDR_WORKSPACE_ID/HERDR_TAB_ID
