@@ -12,6 +12,7 @@
 #
 # A smoke test of the flows a person uses: Files and cmd-e (core), cmd-o
 # (picker), the tree's file operations (tree), Preview / Source (preview),
+# `tree = "nvim"` (nvim-tree),
 # daemons ending and uninstall (teardown); about 2 minutes. The logic behind
 # them is checked by the fast suites (cargo test, tests/run.lua,
 # js-checks.mjs). --only picker,preview runs the setup, the install and core,
@@ -33,7 +34,7 @@ keep=0
 app_bin=
 bundle=
 only=
-groups=" picker tree preview nvim-install teardown "
+groups=" picker tree preview nvim-tree nvim-install teardown "
 while [ $# -gt 0 ]; do
   case $1 in
     --proof) proof=$2; shift ;;
@@ -286,6 +287,10 @@ H status | grep -q '"errors": \[\]' || fail "the app reports errors: $(H status)
 
 # --- the flows ----------------------------------------------------------------
 . "$here/lib.sh"
+# The tab bar's buttons are the app's setting `workspace.panels` (shared.json,
+# written a moment after a change).
+files_button_shown() { "$py" -c 'import json,sys; sys.exit(0 if "files" in (json.load(open(sys.argv[1])).get("workspace.panels") or ["files"]) else 1)' "$HERDR_APP_HOME/shared.json"; }
+no_files_button() { ! files_button_shown; }
 ctx="{\"space\":\"$space\",\"tab\":\"$tab_a\",\"terminal\":\"$agent_a\",\"cwd\":\"$demo\"}"
 real_demo=$(cd "$demo" && pwd -P)
 # Each flow after `core` starts from the same place (`baseline`), so `--only`
@@ -496,6 +501,43 @@ panel_is files || fail "the tree went away"
 say "Files closes the preview and brings it back; a code file from the tree puts nvim back in its place"
 fi
 
+if begin nvim-tree; then
+# --- tree = "nvim": no Files button; cmd-e opens and closes nvim alone --------
+panel_stays_hidden() { local i; for i in 1 2 3 4 5 6 7 8; do panel_is hidden || return 1; done; }
+# The tree's renders from ms $1 to $2 (the profile's counts, written about
+# once a second): a show too short for panel_is still draws the tree.
+tree_renders() {
+  "$py" - "$profile" "$1" "$2" <<'PY'
+import json, sys
+start, end = int(sys.argv[2]) * 1000, int(sys.argv[3]) * 1000
+n = 0
+for line in open(sys.argv[1]):
+    e = json.loads(line) if line.strip() else {}
+    if e.get("name") == "renders" and start <= e.get("ts", 0) <= end:
+        n += e.get("args", {}).get("tree", 0)
+print(n)
+PY
+}
+"$wrapper" app-config tree nvim >/dev/null
+poll 10 no_files_button || fail "nvim tree: the Files button stayed"
+sleep 1.2
+from=$(now_ms)
+cmd_e
+panel_stays_hidden || fail "nvim tree: cmd-e showed the panel"
+poll 15 sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not open tab A's nvim"
+panel_stays_hidden || fail "nvim tree: the panel showed with nvim"
+shot nvim-tree-no-files-button
+cmd_e
+panel_stays_hidden || fail "nvim tree: cmd-e (close) showed the panel"
+poll 10 no_sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not close tab A's nvim"
+sleep 1.5
+drawn=$(tree_renders "$from" "$(now_ms)")
+[ "$drawn" = 0 ] || fail "nvim tree: cmd-e drew the tree ($drawn renders)"
+"$wrapper" app-config tree native >/dev/null
+poll 10 files_button_shown || fail "nvim tree: back to native, the Files button did not come back"
+say "tree = nvim: no Files button; cmd-e opens and closes the tab's nvim, the tree never drawn; native brings the button back"
+fi
+
 if begin nvim-install; then
 # --- no Neovim: the card's Install downloads it, then cmd-e opens nvim -------
 # HERDR_NVIM_INSTALL_METHOD=download: Neovim's release into this run's data
@@ -539,7 +581,11 @@ H do space.close "{\"id\":\"$space\",\"confirmed\":true}" >/dev/null
 poll 15 sh -c "! kill -0 $pid_a" || fail "tab A's daemon survived its space"
 poll 15 sh -c "! hc ls --json | grep -q herdr-nvim-watch" || fail "the watcher kept running with no daemons"
 say "closing tab B stopped its daemon, closing the space the rest and the watcher"
+# Uninstalled in nvim mode: the Files button it took out comes back.
+"$wrapper" app-config tree nvim >/dev/null
+poll 10 no_files_button || fail "teardown: nvim mode kept the Files button"
 app_install --uninstall 2>&1 | tee -a "$log" >/dev/null
+poll 10 files_button_shown || fail "uninstall (nvim mode) did not bring the Files button back"
 [ "$(layouts_now)" = "$layouts_installed" ] || fail "uninstall deleted or added a layout: $(layouts_now)"
 shown_is main-copy || fail "uninstall switched the layout away from main-copy"
 ldiff "$layouts/main.json" "$layouts/main-copy.json" --expect "$no_change" || fail "main-copy is not back to main"

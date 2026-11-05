@@ -25,6 +25,7 @@ assert.deepEqual(wanted(tab(true, false), tab(true, true), { ...opts, kept: true
 assert.deepEqual(wanted(tab(true, true), tab(true, true), opts), {});
 // tree = "nvim": the panel never stays.
 assert.deepEqual(wanted(tab(true, true), null, { ...opts, native: false }), { panel: "hide" });
+assert.deepEqual(wanted(tab(true, false), tab(false, false), { ...opts, native: false }), { panel: "hide" });
 
 // The key table: every key one action, the list and the recipe from it.
 assert.equal(ACTIONS.get("j"), "down");
@@ -146,7 +147,9 @@ app.terminals = [{ address: "t9", state: "live", labels: { "herdr-nvim.sidebar":
 app.panes = [{ pane: "p9", terminal: "t9", tab: "t" }];
 app.layout = stack("files", true); // the panel hidden, nvim on screen
 app.ran = [];
-const cx = { spawn: (fn) => { fn(cx); }, notify() {}, sleep: async () => {} };
+// A real wait, on a timer that doesn't keep the checks running (the
+// controller's config loop sleeps between reads for good).
+const cx = { spawn: (fn) => { fn(cx); }, notify() {}, sleep: (ms) => new Promise((done) => setTimeout(done, ms).unref()) };
 const controller = new Sync(cx);
 controller.look(cx); // nvim without its tree: show the panel
 assert.deepEqual(app.ran.map(([name]) => name), ["layout.select", "layout.show"]);

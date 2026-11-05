@@ -13,8 +13,9 @@
 //   nvim open (Changes opens files in it).
 // - the tab's nvim pane appeared or went (picker, `open`, gitview, `:q`): the
 //   panel follows the pane.
-// With `tree = "nvim"` the panel never stays: the Files button's show is
-// turned into "open (or close) the tab's nvim, with nvim's own explorer".
+// With `tree = "nvim"` the tab bar has no Files button (`filesButton`) and
+// the panel never stays: cmd-e opens or closes the tab's nvim alone
+// (`herdr-nvim.files`), with nvim's own explorer.
 //
 // The tree key (`<leader>e` in nvim, the same keys in the tree; both send
 // `herdr-nvim.toggle`) is the one exception to "nvim follows the panel": it
@@ -45,7 +46,7 @@ import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { welcome } from "./card.js";
 import { wanted } from "./sync-rule.js";
-import { ended, goToTree, hidePanel, nvimPanes, ownPanes, panelState, parkedNvim, previewPane, showFiles } from "./panel.js";
+import { ended, filesButton, goToTree, hidePanel, nvimPanes, ownPanes, panelState, parkedNvim, previewPane, showFiles } from "./panel.js";
 
 // How long a preview that went may wait for nvim in its place.
 const GRACE_MS = 1000;
@@ -66,8 +67,17 @@ export class Sync {
     // app restart): they may run an older herdr-nvim, so they are closed,
     // not parked, and the next Files makes a new one (`fresh`).
     this.before = new Set(terminals().filter((t) => t.labels?.["herdr-nvim.sidebar"]).map((t) => t.address));
+    // The config read again each second (a file read; a process only when
+    // it changed): an edit of `tree` turns the Files button off or on within
+    // a second. Not after `herdr-nvim.uninstall`, which put it back.
     cx.spawn(async (cx) => {
-      await treeMode();
+      for (;;) {
+        const mode = await treeMode().catch(() => null);
+        if (mode && !this.leaving) filesButton(mode !== "nvim");
+        await cx.sleep(1000);
+      }
+    });
+    cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
         // `reveal:<tab>` / `toggle:<tab>` come from that tab's nvim
@@ -80,6 +90,8 @@ export class Sync {
         else if (verb === "swap") await this.startSwap(tab, decodeURIComponent(command.split(":").slice(2).join(":")), cx);
         else if (verb === "reveal") await this.reveal(cx);
         else if (verb === "toggle") await this.toggleTree(cx);
+        else if (verb === "files") this.filesNvimOnly(cx);
+        else if (verb === "uninstall") { this.leaving = true; filesButton(true); }
         else if (verb === "welcome") await welcome({ again: true });
         else if (verb === "profile") { await toggleProfile(); cx.notify(); }
         else if (verb === "profile-mark") markLag();
@@ -277,22 +289,15 @@ export class Sync {
     }
   }
 
-  // The panel opened or closed: open or close the tab's nvim to match. With
-  // `tree = "nvim"` the panel is put away and the press toggles nvim alone.
+  // The panel opened or closed: open or close the tab's nvim to match.
   act(cur, p, cx) {
     this.busy = true;
     cx.spawn(async (cx) => {
       // Whatever fails, the controller goes on: a stuck `busy` would stop
       // every later look (the Files button would do nothing).
       try {
-        const mode = await treeMode();
-        let state = cur.files ? "open" : "close";
-        if (mode === "nvim" && cur.files) {
-          this.panelTo(false, () => hidePanel(p));
-          cur.files = false;
-          state = cur.nvim ? "close" : "open";
-        }
-        trace("act", { tab: cur.tab, mode, state, nvim: cur.nvim });
+        const state = cur.files ? "open" : "close";
+        trace("act", { tab: cur.tab, state, nvim: cur.nvim });
         if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state, cx);
         cur.nvim = state === "open";
       } catch (e) {
@@ -429,6 +434,16 @@ export class Sync {
 
   // The tree key in nvim: hide the tree when it shows (nvim stays and keeps
   // the keyboard), else reveal.
+  // `herdr-nvim.files` (cmd-e with `tree = "nvim"`): the tab's nvim opened or
+  // closed; no panel.
+  filesNvimOnly(cx) {
+    const f = focused();
+    if (!f?.tab || this.busy) return;
+    const nvimOpen = this.nvimOf(f.tab);
+    this.waiting = { name: `Files: nvim ${nvimOpen ? "closed" : "opened"}`, start: Date.now() };
+    this.act({ tab: f.tab, at: place(f), files: !nvimOpen, nvim: nvimOpen }, null, cx);
+  }
+
   async toggleTree(cx) {
     if ((await treeMode()) === "nvim") return;
     const f = focused(), p = panelState(layout());

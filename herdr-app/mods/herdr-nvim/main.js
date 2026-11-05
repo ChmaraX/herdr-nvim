@@ -15,13 +15,15 @@
 //   {bar}: the title of cmd-o's picker (pick.js); with props {card}: the
 //   welcome and "Neovim is needed" (card.js);
 // - an overlay, `mod.open:herdr-nvim` (cmd-e): does exactly what the Files
-//   button does, then closes (with `tree = "nvim"` the controller turns that
-//   into nvim alone, as for the button); without the slot in this layout, it
-//   toggles the tab's nvim alone.
+//   button does, then closes; with `tree = "nvim"` it leaves the panel alone
+//   and asks the controller for nvim alone (`herdr-nvim.files`), so no panel
+//   shows for a moment; without the slot in this layout, it toggles the
+//   tab's nvim alone.
 
 import { View, div } from "gpui-kit";
-import { closeOverlay, layout, props } from "herdr";
+import { closeOverlay, layout, props, run } from "herdr";
 import { nvim, place } from "./lib.js";
+import { treeMode } from "./ops.js";
 import { instant, rendered } from "./profile.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Card } from "./card.js";
@@ -46,7 +48,10 @@ export default class HerdrNvim extends View {
       instant("overlay", "cmd-e");
       cx.spawn(async () => {
         const p = panelState(layout());
-        if (!p) await nvim("toggle", [], place());
+        // The config as it is now (a file read; the shared value follows it
+        // only once the controller reads it).
+        if ((await treeMode()) === "nvim") run("herdr-nvim.files");
+        else if (!p) await nvim("toggle", [], place());
         else if (p.files) hidePanel(p);
         else showFiles(p);
         closeOverlay(overlay);

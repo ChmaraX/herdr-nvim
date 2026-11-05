@@ -140,8 +140,10 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   the old version; reopening a tab's pair restarts a clean one, and one with
   unsaved work is kept, with a toast saying to save and reopen.
 - **Settings** (`~/.config/herdr-nvim/config.toml`): `[app] tree = "nvim"`
-  makes Files toggle only the nvim pane, with nvim's own explorer inside
-  (default `"native"`, the tree above); `[app] tree_key` is any lhs, or `""`
+  takes the tab bar's Files button out (the app's `workspace.panels`; only
+  what herdr-nvim took out goes back, on `"native"` or uninstall) and makes
+  cmd-e toggle only the nvim pane, with nvim's own explorer inside (default
+  `"native"`, the tree above); `[app] tree_key` is any lhs, or `""`
   for none (read when nvim starts); `[sidebar] nvim_bin` is the Neovim to
   run; `[sidebar] position = "bottom"` puts nvim below instead of beside. A
   bad value warns and falls back to the default.

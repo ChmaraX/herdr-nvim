@@ -1,7 +1,24 @@
 // The side panel that holds herdr-nvim's tree, as `layout()` describes it, and
 // the commands the tab bar's Files button runs on it (mods/tabs/main.js).
 
-import { panes, run, terminals } from "herdr";
+import { panes, run, setShared, shared, terminals } from "herdr";
+
+// The tab bar's Files button, on or off (`tree = "nvim"`: off; nvim and its
+// own explorer are on cmd-e). The app's own setting for the tab bar's panel
+// buttons (`workspace.panels`, the welcome sets it); herdr-nvim takes out
+// only "files", marks that it did, and puts back only what it took out. One
+// that was off already stays the person's.
+export function filesButton(on) {
+  const panels = shared("workspace.panels") ?? ["files", "changes"];
+  const took = shared("herdr-nvim.files-button-off") === true;
+  if (!on && panels.includes("files")) {
+    setShared("herdr-nvim.files-button-off", true);
+    setShared("workspace.panels", panels.filter((p) => p !== "files"));
+  } else if (on && took) {
+    if (!panels.includes("files")) setShared("workspace.panels", ["files", ...panels]);
+    setShared("herdr-nvim.files-button-off", false);
+  }
+}
 
 // The nodes from the root to the tree's block (the `files` slot), or null.
 function slotPath(node, trail = []) {

@@ -164,6 +164,9 @@ if [ "$mode" = uninstall ]; then
     mkdir -p "$root/bin" && cp "$built" "$root/bin/herdr-nvim"
     cp -R "$repo/lua" "$repo/plugin" "$root/"
   fi
+  # The Files button back first, if `tree = "nvim"` took it out (the
+  # controller does it, sync.js; the mods go below).
+  "$app_bin" do herdr-nvim.uninstall >/dev/null 2>&1 && sleep 0.5 || true
   run_root "$root" app-setup uninstall --keys "$here/keys.json"
   # Unsaved work is never thrown away unasked: those nvims are listed and
   # kept, with the runtime they run.

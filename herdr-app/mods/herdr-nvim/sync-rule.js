@@ -17,7 +17,9 @@ export function wanted(cur, prev, { native, local, kept, hidByTreeKey }) {
   // The panel opened: Files or cmd-e (a tab switch never shows it, and our
   // own shows are in `prev`). Also when this look comes after a tab switch
   // (the controller was busy, or both came within a frame).
-  if (prev && !prev.files && cur.files) return { kept: false, nvim: local };
+  // With `tree = "nvim"` there is no Files button: a panel shown some other
+  // way (the tab bar's memory of a space) is only hidden.
+  if (prev && !prev.files && cur.files) return native ? { kept: false, nvim: local } : { panel: "hide" };
   if (!prev || prev.tab !== cur.tab) return { panel: followTab(kept) };
   if (prev.files !== cur.files) {
     if (hidByTreeKey) return { kept: true };
