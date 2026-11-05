@@ -236,10 +236,14 @@ end
 -- The current file for the tree to follow (real files only), and the folder.
 -- A main window on something that isn't a file (`:help`, a terminal, a new
 -- buffer) has no current file: the tree keeps its selection and the pane
--- header offers no Preview. A floating window (a picker, a hover) changes
--- nothing: the window under it still shows the file.
+-- header offers no Preview. A floating window (a picker, a hover) or an
+-- explorer beside the file changes nothing: the file is still on screen.
+local function is_explorer_ft(ft)
+  return ft == "netrw" or ft == "neo-tree" or ft == "NvimTree" or ft:find("^snacks_picker") ~= nil or ft == "snacks_layout_box"
+end
+
 local function write_current()
-  if vim.api.nvim_win_get_config(0).relative ~= "" then return end
+  if vim.api.nvim_win_get_config(0).relative ~= "" or is_explorer_ft(vim.bo.filetype) then return end
   local name = vim.api.nvim_buf_get_name(0)
   local cwd = real(vim.fn.getcwd())
   local file = (name ~= "" and vim.bo.buftype == "" and vim.fn.filereadable(name) == 1) and real(name) or vim.NIL
@@ -250,8 +254,7 @@ end
 -- Whether an explorer window is already on screen.
 function M.explorer_shown()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
-    local ft = vim.bo[vim.api.nvim_win_get_buf(win)].filetype
-    if ft == "netrw" or ft == "snacks_picker_list" or ft == "neo-tree" or ft == "NvimTree" then return true end
+    if is_explorer_ft(vim.bo[vim.api.nvim_win_get_buf(win)].filetype) then return true end
   end
   return false
 end

@@ -116,6 +116,40 @@ T.test("app: the tree key's presses go into the one state file for the tree", fu
   vim.fn.delete(dir, "rf")
 end)
 
+T.test("app: an explorer window beside the file keeps it the current file (Preview stays)", function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  vim.env.HERDR_NVIM_CURRENT_FILE = dir .. "/current"
+  local file = dir .. "/notes.md"
+  vim.fn.writefile({ "# notes" }, file)
+  app.state = {}
+  local settings = app.settings
+  app.settings = function() return {} end -- no herdr-nvim program here
+  app.setup()
+  app.settings = settings
+  vim.cmd("edit " .. vim.fn.fnameescape(file))
+  local function current() return vim.json.decode(vim.fn.readfile(dir .. "/current")[1]).file end
+  T.eq(current(), vim.uv.fs_realpath(file))
+  for _, ft in ipairs({ "snacks_layout_box", "snacks_picker_list", "snacks_picker_input", "neo-tree", "NvimTree" }) do
+    -- As explorers open: a buffer with its filetype, then a window beside.
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].filetype = ft
+    local win = vim.api.nvim_open_win(buf, true, { split = "right", win = 0 })
+    T.eq(current(), vim.uv.fs_realpath(file), ft .. ": still the file")
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
+  -- Not a file and not an explorer (`:help`, a scratch buffer): none.
+  vim.cmd("enew")
+  vim.bo.buftype = "nofile"
+  vim.cmd("doautocmd BufEnter")
+  T.eq(current(), vim.NIL)
+  vim.cmd("bwipeout! | %bwipeout!")
+  pcall(vim.api.nvim_del_augroup_by_name, "herdr-nvim-app")
+  vim.env.HERDR_NVIM_CURRENT_FILE = nil
+  vim.fn.delete(dir, "rf")
+end)
+
 T.test("app: in nvim mode the explorer key keeps doing what it did", function()
   reset()
   local opened = 0
