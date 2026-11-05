@@ -47,18 +47,11 @@ pub(crate) fn augmented_path_dirs(
 
     // Homebrew on Linux. Its prefix depends on how it was installed: the
     // tarball install (the default on Linux) uses `~/.linuxbrew`, the
-    // system-wide "linuxbrew" one uses `/home/linuxbrew/.linuxbrew`, and some
-    // distributions ship it under `/opt` or `/usr/local`. None of these are
+    // system-wide "linuxbrew" one uses `/home/linuxbrew/.linuxbrew`. Neither is
     // on the minimal PATH that a herdr server inherits when it is started
     // from a systemd unit or over SSH, so a bare `nvim` spawn fails there.
     // `$HOME/.linuxbrew/bin` is added below, with the other home dirs.
-    for dir in [
-        "/home/linuxbrew/.linuxbrew/bin",
-        "/opt/linuxbrew/bin",
-        "/usr/local/linuxbrew/bin",
-    ] {
-        prepend.push(PathBuf::from(dir));
-    }
+    prepend.push(PathBuf::from("/home/linuxbrew/.linuxbrew/bin"));
 
     if let Some(home) = home {
         prepend.push(home.join(".local/bin"));
@@ -132,8 +125,6 @@ mod tests {
         // file or directory".
         let dirs = augmented_path_dirs(&[], Some(Path::new("/home/u")), None);
         assert!(dirs.contains(&p("/home/linuxbrew/.linuxbrew/bin")));
-        assert!(dirs.contains(&p("/opt/linuxbrew/bin")));
-        assert!(dirs.contains(&p("/usr/local/linuxbrew/bin")));
         assert!(dirs.contains(&p("/home/u/.linuxbrew/bin")));
     }
 

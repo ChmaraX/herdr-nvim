@@ -257,7 +257,7 @@ without your Homebrew prefix. Either set an absolute path:
 nvim_bin = "/home/linuxbrew/.linuxbrew/bin/nvim"  # your Homebrew prefix
 ```
 
-or make sure the daemon inherits a PATH that has `nvim` on it. The plugin
+or start the herdr server from a shell whose PATH has `nvim` on it. The plugin
 prepends the common Homebrew prefixes (including Linux's) to the PATH it
 spawns nvim with, so a Homebrew-installed nvim is found either way.
 
