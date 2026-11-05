@@ -7,7 +7,9 @@
 Neovim, built into your [herdr](https://herdr.dev) workspace: a persistent
 nvim sidebar one key away, with quick access to the files your agent works on.
 
-https://github.com/user-attachments/assets/9a6092b4-6851-4e47-a4b7-d09fda1f5121
+> Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
+
+<!-- VIDEO: the Herdr app (cmd-e, a file from the tree, cmd-o, Preview, a comment sent to the agent) -->
 
 > **Pairs well with**
 > - [herdr-gitview](https://github.com/ChmaraX/herdr-gitview): review, stage, and commit agent changes
@@ -27,25 +29,20 @@ https://github.com/user-attachments/assets/9a6092b4-6851-4e47-a4b7-d09fda1f5121
   claude, codex), with file:line and git context.
 - **Inline file:line references.** Drop `path:12-20` into the agent's input
   mid-sentence.
+- **A file tree beside nvim.** The tree comes with the sidebar, rooted at
+  the tab's repo, with LazyVim's explorer keys. Picking a file opens it in
+  the tab's nvim.
+- **Preview.** On a markdown file, an image or an SVG, the **Preview**
+  button on nvim's pane shows it rendered in nvim's place. **Source** brings
+  nvim back as it was.
 
 ## Requirements
 
-nvim ≥ 0.10 · herdr ≥ 0.7.5 (TUI) or the Herdr app 0.1.11+. Without nvim the
-app's installer offers to install it (Homebrew's, else Neovim's own release
-into `~/.local/share/herdr-nvim/nvim`, no sudo).
+The Herdr app 0.1.11+ on macOS or Linux, and nvim ≥ 0.10. Without nvim the
+installer offers to install it (Homebrew's, else Neovim's own release into
+`~/.local/share/herdr-nvim/nvim`, no sudo).
 
 ## Install
-
-One command installs it for whichever Herdr you have (the desktop app, the
-herdr TUI, or both); run it again to upgrade:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh
-```
-
-`--app` or `--tui` picks one (`sh -s -- --app`), `--uninstall` takes it out.
-
-### Herdr app
 
 With the app open, either ask the agent in your Herdr window to *add the mod
 at github.com/ChmaraX/herdr-nvim*, or run:
@@ -54,276 +51,131 @@ at github.com/ChmaraX/herdr-nvim*, or run:
 curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
 ```
 
-It downloads the release's app bundle for your machine (macOS or Linux,
-Intel or ARM; checked against its SHA-256), so no clone and no Rust
-toolchain, then puts the mods in your app, merges the keys (never one you
-already use) and points your layout's **Files** at the tree (on one of
-Herdr's own layouts, a copy of it). Without Neovim 0.10+ it asks first
-whether to install it (`--install-nvim` says yes up front); in the app,
-`cmd-e` with no Neovim shows a card that installs it in a terminal tab. The
-first nvim pane brings a welcome with the keys, once. Options for the app go
-after `--`:
+It downloads the prebuilt binary (no clone, no Rust), adds the mods and the
+keys (never one you already use), and points **Files** at the tree. Run it
+again to upgrade; `--install-nvim` says yes to installing Neovim up front.
+
+Options go after `--`:
 
 ```sh
-curl -fsSL …/install.sh | sh -s -- --app -- --tree nvim        # nvim's own explorer instead of the native tree
 curl -fsSL …/install.sh | sh -s -- --app -- --panel-width 340  # the Files panel's width (default 300)
 curl -fsSL …/install.sh | sh -s -- --app --uninstall           # back to the stock Files browser
 ```
 
-What you get: [Herdr desktop app](#herdr-desktop-app).
+## Keys
 
-### herdr TUI
+| Key | Does |
+| --- | --- |
+| `cmd-e` / Files | open or close the tree with the tab's nvim |
+| `cmd-shift-e` | the keyboard to the tree, on nvim's file |
+| `cmd-o` | a file the agent worked on, opened in nvim |
+| `<leader>e` (in nvim or the tree) | show or hide the tree, nvim staying open |
 
-Both halves come from this repo:
+The first nvim pane shows a welcome with these keys, once
+(`herdr-app do herdr-nvim.welcome` shows it again).
 
-**1. The herdr plugin** (sidebar + picker; `install.sh --tui` runs this):
+## The tree
 
-```sh
-herdr plugin install ChmaraX/herdr-nvim
-# or, for a local checkout: herdr plugin link /path/to/herdr-nvim
-```
+The tree is rooted at the tab's repo and follows nvim's file. Opening a file
+from it shows it in the tab's nvim, which takes the keyboard. It has
+LazyVim's Snacks explorer keys (`/` find, `a` new, `r` rename, `d` delete,
+Tab to select several, …), and `?` lists them all.
 
-Bind keys to the two actions in `~/.config/herdr/config.toml` (herdr binds
-none by default):
+File operations go through the tab's nvim: a rename or a move takes the open
+buffer with it (unsaved edits, undo and language servers follow), and a
+delete closes it. Anything outside the tab's repo asks first.
+
+Prefer nvim's own explorer (Snacks, neo-tree, nvim-tree)? Set
+`tree = "nvim"` (see [Config](#config)): the Files button goes away, and
+`cmd-e` opens nvim alone.
+
+## The file picker
+
+`cmd-o` opens on the files the tab's agent touched this session, newest
+first. It reads them from the agent's session log (pi or Claude Code), adds
+uncommitted git changes, and with no log falls back to the paths on the
+agent's screen. The cursor starts on the newest file, so `⏎` opens it with
+no typing.
+
+Each row shows the path, a `new` badge for files created this session,
+`+N -M` diff stats and how long ago it was touched. Typing fuzzy-matches the
+whole repo (what `git ls-files` reports, `.gitignore` honored), served by
+[fff-search](https://crates.io/crates/fff-search).
+
+## Preview
+
+On nvim's pane header, **Preview** appears while nvim's file is markdown, an
+image or an SVG. The preview takes nvim's exact place: markdown rendered, an
+image fitted. **Source** (**nvim** for an image) swaps nvim back, unsaved
+edits and all. The preview reloads when its file is saved, and an image
+opened any way opens its preview.
+
+## Comments
+
+| Keymap | Command | Action |
+| --- | --- | --- |
+| `<leader>ac` | `:Herdr comment` | comment the current line / selection |
+| `<leader>al` | `:Herdr list` | list comments: `⏎` edit, `d` delete |
+| `<leader>as` | `:Herdr send` | paste all comments into the agent's input |
+| `<leader>aS` | `:Herdr submit` | send all comments to the agent |
+| `<leader>ai` | `:Herdr ref` | `path:line` at the agent's cursor |
+
+They go to the tab's agent (or the space's only one); otherwise nvim asks
+which. Comments are in memory only, follow your edits, and are cleared after
+a send. The sent prompt includes each comment's file:line plus the repo and
+branch. Keymaps, the prefix and the Lua API are the same as in the TUI:
+[TUI.md › Annotations](TUI.md#annotations).
+
+## Config
+
+`~/.config/herdr-nvim/config.toml` (optional; a bad value warns and falls
+back to the default):
 
 ```toml
-[[keys.command]]
-key = "prefix+e"
-type = "plugin_action"
-command = "chmarax.herdr-nvim.toggle"
-description = "nvim sidebar"
+[app]
+tree = "native"         # or "nvim": nvim's own explorer, no Files button
+tree_key = "<leader>e"  # the tree's show/hide key in nvim; "" for none
 
-[[keys.command]]
-key = "prefix+o"
-type = "plugin_action"
-command = "chmarax.herdr-nvim.pick-file"
-description = "open file from agent output"
+[sidebar]
+nvim_bin = "nvim"       # the Neovim to run
+nvim_env = []           # e.g. ["NVIM_APPNAME=myapp"] for a config in ~/.config/myapp
+position = "right"      # or "bottom": nvim below instead of beside
 ```
 
-**2. The nvim plugin** (annotations), with your plugin manager (e.g. lazy.nvim):
+The tree key is taken over when it opens a known explorer (Snacks, neo-tree,
+nvim-tree), mapped when free, and left alone when it does anything else.
+LazyVim's `<leader>E`, `<leader>fe` and `<leader>fE` show the tree too.
 
-```lua
-{ "ChmaraX/herdr-nvim", opts = {} }
-```
+## Troubleshooting
 
-## Herdr desktop app
+- **Neovim missing:** `cmd-e` shows a card with **Install Neovim**.
+- **Where the nvims are:** each tab's nvim lives as long as its tab; closing
+  the tab (or its space) stops it and its language servers, discarding
+  unsaved buffers. To see them with the memory each holds:
 
-herdr-nvim also runs in the new Herdr app (herdr-app 0.1.11+, herdr-core
-0.1.16+) as a mod, from this same repo and the same Rust/Lua core. The
-app's **Files** button (or `cmd-e`) opens a native file tree and, beside it,
-the tab's own nvim in a full-height pane; pressing it again closes both.
-Picking a file in the tree opens it in that nvim; `cmd-shift-e` puts the
-keyboard in the tree, and `<leader>e` (in nvim or in the tree) shows and
-hides the tree like LazyVim's explorer, nvim staying open. The tree has LazyVim's
-explorer keys (find, new, rename, move, copy, delete, …), done by the tab's
-nvim so buffers and language servers follow. `cmd-o` lists the files the
-tab's agent read and edited (from its pi or Claude Code session log), then
-the repo's changes; the annotations work as below. On nvim's pane header,
-a **Preview** button shows a markdown file, an image or an SVG rendered in
-nvim's place (**Source** brings nvim back as it was). To install it:
-[Herdr app](#herdr-app). From a clone (building herdr-nvim with cargo), with
-the app open:
+  ```sh
+  ~/.config/herdr-app/mods/herdr-nvim/bin/herdr-nvim daemons
+  ```
+
+  `daemons stop <tab>` stops one (`--force` discards unsaved work).
+- **After an upgrade:** running nvims keep the old version until their pair
+  is closed and opened again (one with unsaved work is kept, with a toast).
+
+## Development
+
+From a clone (building herdr-nvim with cargo), with the app open:
 
 ```sh
-herdr-app/install.sh                    # install, or upgrade in place
-herdr-app/install.sh --tree nvim        # nvim's own explorer instead of the native tree
-herdr-app/install.sh --panel-width 340  # the Files panel's width (default 300)
-herdr-app/install.sh --uninstall        # back to the stock Files browser
+herdr-app/install.sh              # install, or upgrade in place
+herdr-app/install.sh --uninstall  # take it out
+just ci                           # cargo fmt + cargo test + headless Lua suite
+node herdr-app/e2e/js-checks.mjs  # the mods' logic
+herdr-app/e2e/run.sh              # the main flows in a private app (--bundle: through the root installer)
 ```
 
 A release ships an app bundle per platform (`herdr-app/bundle.sh`: the
 binary, its Lua and the mods), which the root `install.sh` downloads.
 
-The tree's show/hide key is a setting in `~/.config/herdr-nvim/config.toml`:
-
-```toml
-[app]
-tree_key = "<leader>e"  # the default; any nvim lhs, or "" for none
-```
-
-It is taken over when it opens a known explorer (Snacks, neo-tree,
-nvim-tree), mapped when free, and left alone when it does anything else.
-
-What it is, how it behaves and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
+How it's built and how it behaves in detail: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 Other mods open a file in a tab's nvim with
 `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>[:line[:col]]`.
-`herdr-app/e2e/run.sh` is a smoke test of the main flows in a private app
-and core (about a minute; `--bundle` installs through the root installer); `cargo test`, `tests/run.lua` and
-`herdr-app/e2e/js-checks.mjs` check the logic.
-
-The port also changed a few things the TUI plugin does:
-`herdr-nvim daemons stop` and the TUI's daemon cleanup keep a daemon that
-still listens but doesn't answer (reported as an error) instead of dropping
-its records, the `daemons` list gives each daemon 2 s to answer, and the
-picker's finisher writes its errors to `finisher.log` in the state folder.
-
-## The sidebar
-
-`prefix+e` toggles it. Each tab gets its own nvim, backed by a headless
-daemon that survives the toggle. Two tabs can show two different files in two
-sidebars. When you close and reopen a sidebar, it loses nothing.
-
-A daemon lives as long as its tab. Closing the tab (or its whole workspace)
-stops that nvim right away, along with its LSP servers; unsaved buffers in it
-are discarded. Daemons survive a herdr restart, so restored tabs reattach to
-their nvim; any whose tab did not come back are reaped when herdr starts.
-
-To see which tab each hidden nvim belongs to and how much memory it (with its
-LSP servers) holds, run `herdr-nvim daemons` (`--json` for machine-readable
-output). The listing ends with the commands to free them:
-
-```text
-TAB       WORKSPACE / TAB   RAM      UP       STATE
-w26:t2    novu / api        1.4 GB   3h 31m   alive · 2 unsaved
-w26:t5    novu / web        612 MB   12m      alive
-w9:t1     —                 180 MB   2d 4h    orphaned
-
-3 daemons · 2.2 GB total
-stop one: herdr-nvim daemons stop w26:t2   (--force discards unsaved work)
-stop all: herdr-nvim daemons stop --all
-orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)
-```
-
-`daemons stop <tab>` refuses a daemon with unsaved buffers or pending comments
-unless given `--force`; `--orphans` stops the daemons whose tab is gone.
-
-The next toggle in that tab starts a fresh nvim.
-
-## The file picker
-
-`prefix+o` pops a fuzzy file picker. It has two modes:
-
-- **Default view (no query):** the files touched this session, newest first.
-  It mines edits from the agent's session log and adds uncommitted git
-  changes. For agents that herdr does not track, it scrapes recent pane
-  output instead. The cursor starts on the newest file, so `⏎` opens it with
-  no typing.
-- **Typing:** fuzzy matches across the **whole repo**, ranked best first.
-  This includes every file that `git ls-files` reports, and it honors
-  `.gitignore`. The match is on the path and filename, not the file contents.
-
-The repo-wide tier is served by [fff-search](https://crates.io/crates/fff-search)
-(fff.nvim's core matcher): multi-term queries (`cargo toml`), typo
-tolerance, and frecency ranking. If a fff.nvim frecency database exists at
-`~/.cache/nvim/fff_nvim`, the picker reuses it read-only (it copies the DB
-to a temp dir and opens the copy; your database is never opened, locked, or
-written) so files you actually open often rank higher. Set `frecency =
-false` to skip the DB reuse. The agent-touched session tier always ranks
-first and uses its own matcher regardless.
-
-Each row shows:
-
-- the path, relative to the agent's cwd
-- a `new` badge for files created this session
-- green/red `+N -M` diff stats for uncommitted edits
-- a relative touched-age (`2m`, `3h`)
-
-If you start the picker from a non-agent pane (for example, the sidebar
-itself), it reads the agent in the same tab. So it searches the repo that
-you see.
-
-The default view shows the latest `max_files` entries (20). A typed query is
-uncapped.
-
-## Annotations
-
-Each action has a default keymap and a `:Herdr` subcommand (subcommands
-tab-complete):
-
-| Keymap | Command | Action |
-| --- | --- | --- |
-| `<leader>ac` | `:Herdr comment` / `comment_selection()` | comment the current line / selection; visual `v` keymaps using `comment_selection()` send only that span (the command also takes whole-line ranges: `:5,10Herdr comment`) |
-| `<leader>al` | `:Herdr list` | list comments (float): hover to jump, `⏎` edit, `d` delete |
-| `<leader>as` | `:Herdr send` | paste all comments into the agent's input |
-| `<leader>aS` | `:Herdr submit` | send all comments to the agent (auto-submits) |
-| `<leader>ai` | `:Herdr ref` | reference the current line / selection at the agent's cursor (also takes a range: `:5,10Herdr ref`) |
-
-Keymaps are on by default (prefix `<leader>a`) and never override a map you
-already set. To bind your own, set `keymaps = false` and map the command:
-
-```lua
-require("herdr-nvim").setup({ keymaps = false })
-vim.keymap.set("n", "<leader>ac", "<CMD>Herdr comment<CR>", { desc = "Comment" })
-vim.keymap.set("x", "<leader>ac", function() require("herdr-nvim").comment_selection() end, { desc = "Comment" })
-```
-
-Or call the Lua API directly (`comment_line`, `comment_selection`,
-`comment_range(s, e)`, `list_comments`, `send_all{ submit = false|true }`,
-`ref_line`, `ref_selection`, `ref_range(s, e)`).
-See `:help herdr-nvim` for the full reference.
-
-Sending skips the picker when the target is obvious: the lone agent in the
-workspace, or the single agent sharing this tab (the sibling pane). The picker
-only appears when two or more agents could plausibly be meant.
-
-## References
-
-`<leader>ai` (or `:Herdr ref`) drops just `path:12-20` into the agent's input,
-so you can mention code mid-sentence. It never submits.
-
-Comments are ephemeral by design: in-memory only, extmark-tracked (they follow
-your edits), cleared after a successful send. The sent prompt includes each
-comment's file:line plus the repo and branch, so the agent has context.
-
-For a pending-comment indicator (`● 3`) in your statusline:
-`require("herdr-nvim").statusline()`.
-
-## Config
-
-Two small config surfaces, one per half:
-
-**nvim side** — `setup{}` opts:
-
-```lua
-require("herdr-nvim").setup({
-  prefix = "<leader>a",     -- keymap prefix
-  keymaps = true,           -- set false to define your own
-  clear_after_send = true,  -- comments are ephemeral by design
-})
-```
-
-**herdr side** — `~/.config/herdr-nvim/config.toml` (optional; missing or
-malformed files fall back to these defaults):
-
-```toml
-[sidebar]
-nvim_bin = "nvim"     # binary used to spawn the per-tab nvim daemon
-nvim_env = []         # env overrides for that nvim, applied to the daemon,
-                      # the sidebar window, and open-file clients. For
-                      # example, nvim_env = ["NVIM_APPNAME=myapp"] runs the
-                      # sidebar under the config in ~/.config/myapp instead
-                      # of vanilla nvim (replace myapp with your app name).
-position = "right"    # right (default), left, top, or bottom
-
-[picker]
-scan_lines = 300    # pane lines scanned by the fallback text-scrape
-max_files = 20      # session entries shown before you type a query
-                    # (a typed query fuzzy-searches the whole repo, uncapped)
-frecency = true     # let fff reuse ~/.cache/nvim/fff_nvim (read-only copy)
-```
-
-If your normal nvim config lives under a custom `NVIM_APPNAME` (any name you
-launch `nvim` with — e.g. a distro or your own config directory), set
-`sidebar.nvim_env = ["NVIM_APPNAME=myapp"]` so the sidebar's daemon and window
-run that configuration too. Without it the sidebar is vanilla nvim. The daemon
-still injects this plugin's lua over runtimepath after your config loads
-(VimEnter fallback), so annotations work under any appname.
-
-## Troubleshooting
-
-```sh
-herdr-nvim doctor                     # live checks: splits, toggle, daemon, remote-ui
-herdr-nvim doctor --with-agent claude # also verify agent registration
-```
-
-Doctor runs labeled checks in a scratch workspace and always removes them
-afterward. The most common failure is `daemon-healthy` FAIL: the nvim daemon
-did not start. Make sure that `sidebar.nvim_bin` points at a working nvim ≥
-0.10.
-
-## Tests
-
-```sh
-just ci    # cargo fmt + cargo test + headless Lua suite
-```
-test
