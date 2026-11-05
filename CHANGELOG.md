@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.3](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.2...v1.2.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **daemon:** stop hanging when a tab's nvim daemon stops answering ([#63](https://github.com/ChmaraX/herdr-nvim/issues/63)) ([26cd43e](https://github.com/ChmaraX/herdr-nvim/commit/26cd43e38126be8012b59f95fd41ef33574d0d08))
+* **path:** find a Homebrew-installed nvim on Linux ([#65](https://github.com/ChmaraX/herdr-nvim/issues/65)) ([dc2796a](https://github.com/ChmaraX/herdr-nvim/commit/dc2796a0579a7aff6dc5224d951caaa303e08bea))
+* **sidebar:** say why nvim did not start, in the pane ([#66](https://github.com/ChmaraX/herdr-nvim/issues/66)) ([8809489](https://github.com/ChmaraX/herdr-nvim/commit/8809489e63e239d03be35a3cdfa578e52edc790a))
+
 ## [1.2.2](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.1...v1.2.2) (2026-10-20)
 
 
