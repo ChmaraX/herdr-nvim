@@ -38,14 +38,14 @@
 // controller only closes them, which needs no process. What it knows of each
 // tab is one record (`tabState`).
 
-import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces } from "herdr";
+import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces, terminals } from "herdr";
 import { markLag, nvim, place, toggleProfile, trace } from "./lib.js";
 import { action, profiling, watchFreezes } from "./profile.js";
-import { treeMode } from "./ops.js";
+import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { welcome } from "./card.js";
 import { wanted } from "./sync-rule.js";
-import { ended, goToTree, hidePanel, nvimPanes, panelState, previewPane, showFiles } from "./panel.js";
+import { ended, goToTree, hidePanel, nvimPanes, ownPanes, panelState, parkedNvim, previewPane, showFiles } from "./panel.js";
 
 // How long a preview that went may wait for nvim in its place.
 const GRACE_MS = 1000;
@@ -62,6 +62,10 @@ const EXPECT_MS = 3000;
 export class Sync {
   constructor(cx) {
     this.tabs = new Map(); // tab id -> tabState
+    // nvim screens already running when this build loaded (an install, an
+    // app restart): they may run an older herdr-nvim, so they are closed,
+    // not parked, and the next Files makes a new one (`fresh`).
+    this.before = new Set(terminals().filter((t) => t.labels?.["herdr-nvim.sidebar"]).map((t) => t.address));
     cx.spawn(async (cx) => {
       await treeMode();
       for (;;) {
@@ -255,11 +259,13 @@ export class Sync {
     this.waiting = { name: file ? "Preview" : "Source", start: Date.now() };
     this.busy = true;
     try {
-      if (!file) await this.toggle(at, "open");
+      if (!file) await this.toggle(at, "open", cx);
       else {
-        const out = await nvim("app-preview", ["--file", file], at);
-        let made = null;
-        try { made = out && JSON.parse(out); } catch {}
+        let made = await this.previewFast(at, file, cx);
+        if (!made) {
+          const out = await nvim("app-preview", ["--file", file], at);
+          try { made = out && JSON.parse(out); } catch {}
+        }
         trace("previewed", { tab, file, made });
         if (made) this.expect(tab, made);
       }
@@ -287,7 +293,7 @@ export class Sync {
           state = cur.nvim ? "close" : "open";
         }
         trace("act", { tab: cur.tab, mode, state, nvim: cur.nvim });
-        if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state);
+        if (state === "open" ? !cur.nvim : cur.nvim) await this.toggle(cur.at, state, cx);
         cur.nvim = state === "open";
       } catch (e) {
         notify({ title: "herdr-nvim", body: `Could not open or close the tab's nvim: ${e?.message ?? e}`, level: "error" });
@@ -307,7 +313,7 @@ export class Sync {
   // knows the panes, so no process runs for it. A preview in nvim's place
   // closes too and is remembered for the tab (`memory`): the next open
   // shows it again (`toggle --preview`).
-  async toggle(at, state) {
+  async toggle(at, state, cx) {
     const t = this.tabState(at.tab);
     if (state === "close") {
       const terminal = nvimPanes(at.tab)[0] ?? null;
@@ -316,13 +322,22 @@ export class Sync {
       if (pane || preview) {
         // What Files closes now is what it opens next: the preview, or nvim.
         t.memory = preview ? (shared("herdr-nvim.previews") ?? {})[at.tab] ?? null : null;
-        for (const p of [pane, preview]) if (p) run("pane.close", { pane: p });
+        if (preview) run("pane.close", { pane: preview });
+        // nvim's screen is parked, not ended: the next Files shows it again
+        // at once (`openFast`).
+        if (pane) run(this.fresh(terminal) ? "terminal.park" : "pane.close", this.fresh(terminal) ? { terminal } : { pane });
         this.expect(at.tab, { closed: terminal, closed_preview: preview });
         return { closed: terminal };
       }
     }
     const remembered = state === "open" ? t.memory : null;
     if (remembered) t.memory = null;
+    const fast = state === "open" && (await this.openFast(at, remembered, cx));
+    if (fast) {
+      trace("toggled", { tab: at.tab, state, made: fast, fast: true });
+      this.expect(at.tab, fast);
+      return fast;
+    }
     const out = await nvim("toggle", ["--state", state, ...(remembered ? ["--preview", remembered] : [])], at);
     if (out === null) return null;
     let made = {};
@@ -333,6 +348,83 @@ export class Sync {
     // (`toggle` gave it), so Esc hands it back there.
     if (made.terminal) welcome();
     return made;
+  }
+
+  // An nvim screen this build made or showed (not one from before it).
+  fresh(terminal) {
+    return Boolean(terminal) && !this.before.has(terminal);
+  }
+
+  // Waits (at most `ms`) until `ready()` holds: the app applies commands a
+  // moment after they are sent.
+  async until(ready, ms, cx) {
+    for (const end = Date.now() + ms; !ready(); ) {
+      if (Date.now() > end) return false;
+      await cx.sleep(10);
+    }
+    return true;
+  }
+
+  // `pane` focused (`terminal.keep` puts a terminal beside the focused pane).
+  async focusPane(pane, cx) {
+    if (focused()?.pane !== pane) run("pane.focus", { pane });
+    return this.until(() => focused()?.pane === pane, 500, cx);
+  }
+
+  // Files again, with no process to start: in a tab with one pane of its
+  // own, the parked nvim back beside it (`terminal.keep`, focused), or the
+  // preview Files closed; in a preview's place (Source), the parked nvim.
+  // Null: herdr-nvim makes the pane (`toggle`): the first time in a tab, in
+  // a tab with several panes (`keep` can only go beside one), or after an
+  // install or restart (`fresh`).
+  async openFast(at, remembered, cx) {
+    const own = ownPanes(at.tab), preview = previewPane(at.tab), parked = parkedNvim(at.tab);
+    const { across, beside } = await appConfig();
+    if (preview) {
+      if (!this.fresh(parked) || !(await this.focusPane(preview, cx))) return null;
+      run("terminal.keep", { terminal: parked, place: across });
+      // Nested in the preview's slot: closing the preview leaves nvim its size.
+      await this.until(() => nvimPanes(at.tab).includes(parked), 1000, cx);
+      run("pane.close", { pane: preview });
+      return { terminal: parked, closed_preview: preview };
+    }
+    if (own.length !== 1) return null;
+    if (remembered) {
+      run("pane.split", { pane: own[0].pane, direction: beside, mod: "herdr-nvim", props: { preview: remembered, tab: at.tab } });
+      return { preview: true };
+    }
+    if (!this.fresh(parked) || !(await this.focusPane(own[0].pane, cx))) return null;
+    run("terminal.keep", { terminal: parked, place: beside });
+    return { terminal: parked };
+  }
+
+  // Preview with no process to start: `file` rendered in nvim's place (nvim
+  // parked behind it) or in a preview's (that one closed), split across its
+  // pane so the new one takes its exact slot; with neither shown, beside a
+  // tab with one pane. Null: `app-preview` does it.
+  async previewFast(at, file, cx) {
+    const { across, beside } = await appConfig();
+    const props = { preview: file, tab: at.tab };
+    const nvimTerminal = nvimPanes(at.tab)[0] ?? null;
+    const nvimPane = nvimTerminal && panes().find((p) => p.terminal === nvimTerminal)?.pane;
+    const old = previewPane(at.tab), own = ownPanes(at.tab);
+    const shown = () => panes().some((p) => p.tab === at.tab && p.mod === "herdr-nvim" && p.pane !== old);
+    if (nvimPane) {
+      if (!this.fresh(nvimTerminal)) return null;
+      run("pane.split", { pane: nvimPane, direction: across, mod: "herdr-nvim", props });
+      await this.until(shown, 1000, cx);
+      run("terminal.park", { terminal: nvimTerminal });
+      return { preview: true, closed: nvimTerminal };
+    }
+    if (old) {
+      run("pane.split", { pane: old, direction: across, mod: "herdr-nvim", props });
+      await this.until(shown, 1000, cx);
+      run("pane.close", { pane: old });
+      return { preview: true, closed_preview: old };
+    }
+    if (own.length !== 1) return null;
+    run("pane.split", { pane: own[0].pane, direction: beside, mod: "herdr-nvim", props });
+    return { preview: true };
   }
 
   // The tree key in nvim: hide the tree when it shows (nvim stays and keeps
@@ -362,7 +454,7 @@ export class Sync {
         this.prev = { tab: f.tab, files: true, other: false, nvim: true };
         return;
       }
-      if (!terminal) terminal = (await this.toggle(at, "open"))?.terminal;
+      if (!terminal) terminal = (await this.toggle(at, "open", cx))?.terminal;
       if (!terminal) return;
       if (mode === "nvim") return run("pane.focus", { terminal });
       // On nvim's file, on purpose: the tree otherwise keeps the selection

@@ -290,6 +290,11 @@ pub fn setup_cmd() -> Result<()> {
                 .for_each(|line| println!("keys: kept yours: {line}"));
             install_layout(&home, width)?;
             super::stale::report_after_install();
+            match super::sidebar::end_parked(None) {
+                Ok(0) => {}
+                Ok(n) => println!("nvim: {n} parked nvim pane(s) ended; the next Files shows a new one"),
+                Err(error) => eprintln!("herdr-nvim: could not end parked nvim panes: {error:#}"),
+            }
             Ok(())
         }
         Some("uninstall") => {

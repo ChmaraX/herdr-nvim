@@ -29,19 +29,54 @@ pub(crate) fn direction(position: SidebarPosition) -> &'static str {
     }
 }
 
-/// The live sidebar terminal of `tab` (`<space>:<tab>`), if any.
-pub(crate) fn find(tab: &str) -> Result<Option<String>> {
-    let list = rpc::call("terminal.list", json!({"labels": {LABEL: raw_tab(tab)}}))?;
+/// The live sidebar terminals of `tab` (`<space>:<tab>`), or of every tab
+/// (`None`): `(terminal, shown)`. One the mod parked (`terminal.park`: its
+/// pane put away, nvim's screen kept for the next Files, sync.js) is live but
+/// in no pane.
+fn sidebars(tab: Option<&str>) -> Result<Vec<(String, bool)>> {
+    let filter = match tab {
+        Some(tab) => json!({"labels": {LABEL: raw_tab(tab)}}),
+        None => json!({}),
+    };
+    let list = rpc::call("terminal.list", filter)?;
+    let doc = doc::read()?;
     Ok(list
         .get("terminals")
         .and_then(Value::as_array)
-        .and_then(|terminals| {
-            terminals
-                .iter()
-                .filter(|t| t.get("state").and_then(Value::as_str) == Some("live"))
-                .find_map(|t| t.get("address").and_then(Value::as_str))
+        .into_iter()
+        .flatten()
+        .filter(|t| t.get("state").and_then(Value::as_str) == Some("live"))
+        .filter(|t| t.pointer(&format!("/labels/{LABEL}")).is_some())
+        .filter_map(|t| t.get("address").and_then(Value::as_str))
+        .map(|terminal| {
+            let shown = doc
+                .as_ref()
+                .is_some_and(|doc| doc::pane_of(doc, terminal).is_some());
+            (terminal.to_owned(), shown)
         })
-        .map(str::to_owned))
+        .collect())
+}
+
+/// The sidebar terminal `tab` (`<space>:<tab>`) shows, if any.
+pub(crate) fn find(tab: &str) -> Result<Option<String>> {
+    Ok(sidebars(Some(tab))?
+        .into_iter()
+        .find_map(|(terminal, shown)| shown.then_some(terminal)))
+}
+
+/// Ends the parked sidebar terminals of `tab` (every tab: `None`): before a
+/// new one is made for it, and after an install (a parked one shows the nvim
+/// from before; the next Files makes a new one, restarting a stale clean nvim).
+/// The tab's nvim itself keeps running.
+pub(crate) fn end_parked(tab: Option<&str>) -> Result<usize> {
+    let parked: Vec<String> = sidebars(tab)?
+        .into_iter()
+        .filter_map(|(terminal, shown)| (!shown).then_some(terminal))
+        .collect();
+    for terminal in &parked {
+        rpc::call("terminal.kill", json!({"terminal": terminal}))?;
+    }
+    Ok(parked.len())
 }
 
 /// Close the pane showing `terminal` (its program ends with it).
@@ -87,6 +122,9 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
     });
     let config = config::load();
     crate::daemon::ready_to_open(ctx.tab.as_str(), &config.sidebar)?;
+    // One nvim screen per tab: a parked one (from before an install, or in
+    // a tab whose panes changed since) goes.
+    end_parked(Some(ctx.tab.as_str()))?;
     let preview = doc
         .as_ref()
         .and_then(|doc| doc::preview_of(doc, raw_tab(&ctx.tab)));

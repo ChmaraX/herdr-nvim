@@ -45,9 +45,28 @@ export function hidePanel(p) {
   run("layout.hide", { id: p.panel });
 }
 
-// The live herdr-nvim pane terminals of a tab.
-export function nvimPanes(tab) {
+// The tab's live herdr-nvim terminals (nvim's screen in its pane).
+function nvimTerminals(tab) {
   return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
+}
+
+// The ones a pane of the tab shows: the tab's nvim pane.
+export function nvimPanes(tab) {
+  const shown = new Set(panes().map((p) => p.terminal));
+  return nvimTerminals(tab).filter((t) => shown.has(t));
+}
+
+// The tab's parked nvim: running, in no pane (`terminal.park`, sync.js),
+// so the next Files shows it again as it was, with no process to start.
+export function parkedNvim(tab) {
+  const shown = new Set(panes().map((p) => p.terminal));
+  return nvimTerminals(tab).find((t) => !shown.has(t)) ?? null;
+}
+
+// The tab's own panes: not nvim's, not a preview (its agents and shells).
+export function ownPanes(tab) {
+  const nvims = new Set(nvimTerminals(tab));
+  return panes().filter((p) => p.tab === tab && !nvims.has(p.terminal) && p.mod !== "herdr-nvim");
 }
 
 // Whether the app lists a terminal as ended.

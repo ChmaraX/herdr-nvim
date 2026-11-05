@@ -133,7 +133,11 @@ Date.now = () => now() + 3500;
 assert.equal(sync.nvimOf("t"), false, "never listed: the expectation runs out");
 Date.now = now;
 app.terminals = [{ address: "t9", state: "live", labels: { "herdr-nvim.sidebar": "t" } }];
+app.panes = [{ pane: "p9", terminal: "t9", tab: "t" }];
 assert.equal(sync.nvimOf("t"), true);
+// Parked (Files closed it: running, in no pane): not open.
+app.panes = [];
+assert.equal(sync.nvimOf("t"), false, "a parked nvim counts as open");
 
 // The controller's own show, not on screen yet: the next look waits for it
 // (read as is, it is the person closing Files, and nvim would close).

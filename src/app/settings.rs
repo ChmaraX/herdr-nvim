@@ -41,8 +41,10 @@ pub fn app_config_cmd() -> Result<()> {
         json!({
             "tree": config.app.tree.as_str(),
             "tree_key": config.app.tree_key,
-            // How the controller splits for a Preview / Source swap.
+            // How the controller splits for a Preview / Source swap, and
+            // for nvim beside the tab.
             "across": super::sidebar::swap_direction(),
+            "beside": super::sidebar::direction(config.sidebar.position),
             "config": config::config_path().map(|p| p.to_string_lossy().into_owned()),
         })
     );

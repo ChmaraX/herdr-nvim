@@ -62,8 +62,10 @@ installer again upgrades; `--uninstall` takes all of it out.
 
 - **Files = `cmd-e`.** In a tab without them, both open: the panel, and the
   tab's nvim pane with the keyboard. Pressed again, both close. Closing never
-  stops the tab's nvim: reopening reattaches to it, with the same buffers,
-  cursor and language servers.
+  stops the tab's nvim, and its screen is only put away: Files again shows it
+  as it was, at once (about 30 ms), with the same buffers, cursor and
+  language servers. The first open in a tab, or one in a tab with several
+  panes, starts nvim's screen in a new pane (300–500 ms).
 - **One nvim per tab, one panel per window.** The panel follows the tab you
   switch to: shown where that tab's nvim pane is open, hidden where it isn't.
   Looking at a tab never starts an nvim. If nvim's pane opens another way
@@ -115,8 +117,8 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   open buffer, so unsaved edits, undo and language servers follow; a delete
   closes its buffers. Snacks' rename and trash are used when present.
   Anything outside the tab's folder, a symlink's target included, asks first.
-- **Preview / Source** swap in place; nvim keeps running meanwhile, unsaved
-  edits and all. Opening any file in nvim brings nvim back. The preview
+- **Preview / Source** swap in place, in about 40 ms; nvim's screen waits
+  behind the preview, unsaved edits and all. Opening any file in nvim brings nvim back. The preview
   reloads when its file is saved. Files closes a preview with the tree and
   brings it back next time. An image opened any way opens its preview.
 - **Picker** reads the tab's agent: its session log (pi or Claude Code) since
@@ -183,6 +185,17 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
     then closes;
   - props `{preview}`: the preview pane; `{bar}`: the picker's title bar;
     `{card}` and `{dialog}`: the cards and the tree's prompts.
+- **Parked screens** (`sync.js` `openFast`, `previewFast`): closing a tab's
+  nvim pane is `terminal.park` (the screen keeps running in no pane); Files
+  again is `terminal.keep {place: beside}` with the tab's one own pane
+  focused; Preview is `pane.split {mod, props: {preview, tab}}` across nvim's
+  pane, then `terminal.park`; Source is `terminal.keep {place: across}` with
+  the preview focused, then `pane.close` of the preview. No herdr-nvim
+  process runs for any of them. "nvim is open" is a labelled terminal that
+  a pane shows (`panel.js` `nvimPanes`). The first open, a tab with several
+  panes (`keep` can only go beside the focused pane) and a screen from
+  before the mod's build go through `toggle`, which ends the tab's parked
+  screen first.
 - **Mod `herdr-nvim-header`**: the app's shipped pane header (`pane-base.js`,
   copied from `mods/pane/main.js` at install) plus the Preview/Source button.
 - **Keys** (`keys.json`, merged into `global` only where free): `cmd-e` →
@@ -237,6 +250,13 @@ copy of it, else clones it once (`<name>-copy`), and switches to it.
   ends must drop `HC_SCOPE` and `HC_TERMINAL_ID`, or herdr-core ends it too.
 - The tree reaches nvim and back with `pane.go` left and right, so the panel
   must be right of nvim.
+- A parked screen may run the herdr-nvim from before an install: the install
+  ends every parked one, and the controller closes (not parks) a screen that
+  ran before its build loaded, so the next Files makes a new one and
+  restarts a stale clean nvim.
+- `terminal.keep` goes beside the focused pane, so focus is set first and
+  waited for (the app applies commands a moment later); without the wait it
+  lands beside the wrong pane.
 - Cmd+click on a path in a terminal opens the system's app, not nvim (no
   link handlers yet, herdrdev/herdr-app#228).
 - In 0.1.12 the tree can show the focus ring without getting keys: it takes

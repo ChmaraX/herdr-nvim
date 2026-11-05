@@ -149,9 +149,20 @@ for s in json.load(sys.stdin)["spaces"]:
     for x in t["terminals"]:
       if x["terminal"] == sys.argv[1]: print(x["pane"])' "$1"
 }
-sidebar_of() { # the live sidebar terminal of a tab id
-  hc ls --json --label "herdr-nvim.sidebar=$1" | "$py" -c 'import json,sys; t=[t["address"] for t in json.load(sys.stdin)["terminals"] if t["state"]=="live"]; print(t[0] if t else ""); sys.exit(0 if t else 1)'
+sidebars_of() { # the live sidebar terminals of a tab id, one a line
+  hc ls --json --label "herdr-nvim.sidebar=$1" | "$py" -c 'import json,sys; [print(t["address"]) for t in json.load(sys.stdin)["terminals"] if t["state"]=="live"]'
 }
+sidebar_of() { # the tab's nvim pane: its sidebar terminal a pane shows
+  local t
+  for t in $(sidebars_of "$1"); do [ -n "$(pane_of "$t")" ] && { echo "$t"; return 0; }; done
+  return 1
+}
+parked_of() { # the tab's parked nvim: running, in no pane
+  local t
+  for t in $(sidebars_of "$1"); do [ -z "$(pane_of "$t")" ] && { echo "$t"; return 0; }; done
+  return 1
+}
+now_ms() { "$py" -c 'import time; print(int(time.time() * 1000))'; }
 # sock_of <space> <tab>: the tab daemon's socket, waited for (up to 15 s:
 # a daemon makes it a moment after the pane opens); fails without one.
 sock_of() {
@@ -374,6 +385,19 @@ cmd_e
 poll 10 panel_is hidden || fail "cmd-e again did not hide the panel"
 poll 15 no_sidebar_of "$tab_b" || fail "cmd-e again left tab B's nvim pane"
 say "tab switches carry the pair (A: closed, B: open); cmd-e again closed both"
+# Closing parks nvim's screen; cmd-e again shows that same one, no new pane
+# program, with nvim as it was.
+parked=$(parked_of "$tab_b") || fail "closing did not park tab B's nvim (no running nvim screen left)"
+t0=$(now_ms)
+H do mod.open:herdr-nvim >/dev/null
+shown_again() { [ -n "$(pane_of "$parked")" ]; }
+poll 10 shown_again || fail "cmd-e did not show the parked nvim $parked again"
+shown_ms=$(( $(now_ms) - t0 ))
+[ "$(sidebars_of "$tab_b" | wc -l | tr -d ' ')" = 1 ] || fail "tab B has more than one nvim screen: $(sidebars_of "$tab_b" | tr '\n' ' ')"
+[ "$(daemon_pid "$sock_b")" = "$pid_b" ] || fail "tab B's nvim daemon changed"
+cmd_e
+poll 15 no_sidebar_of "$tab_b" || fail "cmd-e left the shown-again nvim"
+say "cmd-e again shows the parked nvim $parked itself (${shown_ms} ms to its pane, as the e2e sees it)"
 
 if begin picker; then
 # --- 2. cmd-o: a file from the agent's work, opened in the tab's nvim ---------
