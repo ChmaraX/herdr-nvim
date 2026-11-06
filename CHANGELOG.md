@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.3...v1.3.0) (2026-11-06)
+
+
+### Features
+
+* herdr desktop app support ([#68](https://github.com/ChmaraX/herdr-nvim/issues/68)) ([ae800f9](https://github.com/ChmaraX/herdr-nvim/commit/ae800f93ed30afde0a7f068b7efb6b57437f1925))
+
 ## [1.2.3](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.2...v1.2.3) (2026-11-05)
 
 
