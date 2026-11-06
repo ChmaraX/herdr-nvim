@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.3.0...v1.3.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **release:** build the Apple Silicon binary on macos-15 ([#70](https://github.com/ChmaraX/herdr-nvim/issues/70)) ([9228fe3](https://github.com/ChmaraX/herdr-nvim/commit/9228fe318cd0e4a9098813b8910efa14737e643c))
+
 ## [1.3.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.2.3...v1.3.0) (2026-11-06)
 
 
