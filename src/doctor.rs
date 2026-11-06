@@ -388,19 +388,9 @@ fn first_split_ratio(layout: &Value) -> Result<f64> {
 }
 
 fn nvim_remote_send(socket: &Path, keys: &str, sidebar: &crate::config::Sidebar) -> Result<()> {
-    let status = daemon::nvim_cmd(sidebar)
-        .arg("--server")
-        .arg(socket)
-        .arg("--remote-send")
-        .arg(keys)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("failed to run nvim --remote-send")?;
-    if !status.success() {
-        bail!("nvim --remote-send exited with failure");
-    }
+    let reply = daemon::remote_send(socket, keys, sidebar, daemon::RPC_TIMEOUT)
+        .context("could not send keys to the daemon")?;
+    daemon::answer(socket, reply, daemon::RPC_TIMEOUT).context("sending keys failed")?;
     Ok(())
 }
 
@@ -466,15 +456,9 @@ fn quit_daemons(runtime_dir: &Path, sidebar: &crate::config::Sidebar) {
             if path.extension().and_then(OsStr::to_str) != Some("sock") {
                 continue;
             }
-            let _ = daemon::nvim_cmd(sidebar)
-                .arg("--server")
-                .arg(&path)
-                .arg("--remote-send")
-                .arg("<Esc><Cmd>qa!<CR>")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            // Bounded, so a hung daemon cannot stall the cleanup; the
+            // explicit one then SIGKILLs what is left (`reap_leftover_nvim`).
+            let _ = daemon::remote_send(&path, "<Esc><Cmd>qa!<CR>", sidebar, daemon::RPC_TIMEOUT);
         }
     }
     sleep(Duration::from_millis(300));

@@ -208,6 +208,14 @@ fn default_true() -> bool {
     true
 }
 
+/// The config file's path for a message: `config_path`, or the default
+/// spelled with `~` when no home is known.
+pub(crate) fn config_file_display() -> String {
+    config_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "~/.config/herdr-nvim/config.toml".to_owned())
+}
+
 /// Path to the config file. `HERDR_NVIM_CONFIG` overrides everything (used by
 /// tests and power users); otherwise `~/.config/herdr-nvim/config.toml` (via
 /// `XDG_CONFIG_HOME`, falling back to `HOME/.config`).

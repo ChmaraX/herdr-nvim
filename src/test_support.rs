@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     config::{Config, Sidebar},
-    daemon::{ensure_daemon, registry, remote_expr},
+    daemon::{ask_expr, ensure_daemon, registry, remote_expr, Reply, RPC_TIMEOUT},
     state::{self, TabId},
 };
 
@@ -145,7 +145,7 @@ impl TestDaemon {
     pub(crate) fn spawn(tab: &str, config: &Config) -> Self {
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let socket = ensure_daemon(tab, &plugin_root, config, &plugin_root).expect("ensure_daemon");
-        let pid = remote_expr(&socket, "getpid()", &config.sidebar)
+        let pid = ask_expr(&socket, "getpid()", &config.sidebar)
             .expect("daemon pid")
             .parse()
             .expect("numeric pid");
@@ -162,8 +162,8 @@ impl TestDaemon {
 
     /// Evaluate `expr` on the daemon; panics if it does not answer.
     pub(crate) fn eval(&self, expr: &str) -> String {
-        remote_expr(&self.socket, expr, &Sidebar::default())
-            .unwrap_or_else(|| panic!("{} daemon did not answer {expr}", self.tab))
+        ask_expr(&self.socket, expr, &Sidebar::default())
+            .unwrap_or_else(|error| panic!("{} daemon did not answer {expr}: {error}", self.tab))
     }
 
     /// Leave a modified, listed buffer in the daemon. `noswapfile`: parallel
@@ -171,6 +171,41 @@ impl TestDaemon {
     /// creation would abort the edit.
     pub(crate) fn dirty_a_buffer(&self) {
         self.eval(r#"execute('setlocal noswapfile | call setline(1, "unsaved")')"#);
+    }
+
+    /// SIGSTOP the daemon: it keeps its socket, which still accepts
+    /// connections, but answers nothing -- a wedged daemon (issue #61).
+    #[cfg(unix)]
+    pub(crate) fn hang(&self) {
+        self.signal("-STOP");
+    }
+
+    /// Busy-loop the daemon's main loop, like a plugin stuck in a loop: its
+    /// socket still takes connections, nothing answers, and it does not act
+    /// on SIGTERM either (nvim handles signals on that same loop).
+    #[cfg(unix)]
+    pub(crate) fn busy(&self) {
+        let reply = crate::daemon::remote_send(
+            &self.socket,
+            "<cmd>lua while true do end<cr>",
+            &Sidebar::default(),
+            RPC_TIMEOUT,
+        );
+        assert!(matches!(reply, Ok(Reply::Answered(_))), "{reply:?}");
+    }
+
+    /// SIGCONT a daemon `hang` stopped.
+    #[cfg(unix)]
+    pub(crate) fn resume(&self) {
+        self.signal("-CONT");
+    }
+
+    #[cfg(unix)]
+    fn signal(&self, signal: &str) {
+        Command::new("kill")
+            .args([signal, &self.pid.to_string()])
+            .status()
+            .expect("run kill");
     }
 
     pub(crate) fn assert_alive(&self) {
@@ -194,7 +229,10 @@ impl TestDaemon {
             "{tab} daemon process still running"
         );
         assert!(
-            remote_expr(&self.socket, "1+1", &Sidebar::default()).is_none(),
+            matches!(
+                remote_expr(&self.socket, "1+1", &Sidebar::default(), RPC_TIMEOUT),
+                Ok(Reply::Refused)
+            ),
             "{tab} daemon still answering"
         );
         assert!(

@@ -17,9 +17,9 @@ use anyhow::Result;
 use crate::{
     config,
     daemon::{
-        self,
-        inventory::{self, Probe},
-        registry,
+        self, inventory,
+        registry::{self, Probe},
+        Liveness,
     },
     state::tab_key,
 };
@@ -39,10 +39,9 @@ pub(crate) enum Plan {
     KeepDirty,
 }
 
-/// Pure: whether a daemon may hold work a restart would lose. Work it
-/// couldn't count is work kept.
+/// Pure: whether a daemon holds work a restart would lose.
 fn has_work(look: &Probe) -> bool {
-    look.unsaved != Some(0) || look.comments != Some(0)
+    look.unsaved > 0 || look.comments > 0
 }
 
 /// Pure: the plan for a daemon that answered the probe, under the installed
@@ -66,11 +65,7 @@ const SHORT_NOTICE: &str =
 
 /// Pure: the notice for a stale daemon that was kept.
 pub(crate) fn dirty_notice(look: &Probe) -> String {
-    let count = |n: Option<u32>, what: &str| match n {
-        Some(0) => None,
-        Some(n) => Some(format!("{n} {what}(s)")),
-        None => Some(format!("{what}s it couldn't count")),
-    };
+    let count = |n: u32, what: &str| (n > 0).then(|| format!("{n} {what}(s)"));
     let work: Vec<String> = [
         count(look.unsaved, "unsaved buffer"),
         count(look.comments, "pending comment"),
@@ -94,9 +89,14 @@ pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<Option<String>> {
     let current = daemon::runtime_stamp(&plugin_root);
     let sidebar = config::load().sidebar;
     let key = tab_key(tab);
-    let Some(look) = current
-        .as_ref()
-        .and_then(|_| inventory::probe(&key, &sidebar))
+    // No stamp installed (a repo build): nothing counts as stale, so the
+    // daemon is not even asked. One that doesn't answer is left to
+    // `ready_to_open`, which says what is wrong with it.
+    if current.is_none() {
+        return Ok(None);
+    }
+    let Ok(Liveness::Answered(look)) = registry::probe(&key, &sidebar)
+        .and_then(|reply| daemon::liveness(&registry::socket_path(tab), reply, None))
     else {
         return Ok(None);
     };
@@ -136,7 +136,7 @@ pub(crate) fn report_after_install() {
     let keys = registry::daemon_keys().unwrap_or_default();
     let running: Vec<inventory::DaemonInfo> = inventory::describe(keys, None, &sidebar)
         .into_iter()
-        .filter(|info| info.probe.is_some())
+        .filter(|info| info.answered().is_some())
         .collect();
     let stale: Vec<&inventory::DaemonInfo> = running.iter().filter(|info| info.stale).collect();
     if stale.is_empty() {
@@ -148,7 +148,7 @@ pub(crate) fn report_after_install() {
     }
     let dirty = stale
         .iter()
-        .filter(|info| info.probe.as_ref().is_some_and(has_work))
+        .filter(|info| info.answered().is_some_and(has_work))
         .count();
     println!(
         "nvim: {} of {} running tab nvim(s) are stale (they run the herdr-nvim from before this \
@@ -177,9 +177,9 @@ mod tests {
 
     fn look(stamp: &str, unsaved: u32, comments: u32) -> Probe {
         Probe {
-            pid: Some(1),
-            unsaved: Some(unsaved),
-            comments: Some(comments),
+            pid: 1,
+            unsaved,
+            comments,
             tab_id: None,
             stamp: stamp.to_owned(),
         }
@@ -193,11 +193,6 @@ mod tests {
         assert_eq!(plan(Some("new"), &look("old", 1, 0)), Plan::KeepDirty);
         assert_eq!(plan(Some("new"), &look("old", 0, 2)), Plan::KeepDirty);
         assert_eq!(plan(None, &look("old", 0, 0)), Plan::Keep, "a repo build");
-        let uncounted = Probe {
-            unsaved: None,
-            ..look("old", 0, 0)
-        };
-        assert_eq!(plan(Some("new"), &uncounted), Plan::KeepDirty);
     }
 
     #[test]

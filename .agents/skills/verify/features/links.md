@@ -7,7 +7,7 @@ Ctrl+click a file path in any pane to open it in the sidebar at that line.
 - path links: text such as `src/a.rs:12:3`. A path needs a directory segment and an extension, so a bare `README.md` does not match.
 - osc8 links: `file://` hyperlinks that an agent prints.
 - resolution: relative paths are tried against the pane's cwd, then against the git root. If a path does not resolve, nothing happens and no message is shown.
-- open: the sidebar opens if needed and shows the file at that line.
+- open: the sidebar opens if needed and shows the file at that line. If that fails (say the tab's nvim daemon is unresponsive: no answer within 10 s), a herdr notification titled "herdr-nvim" says why ("Could not open <path>: …"); the click never hangs.
 
 ## How to get to it (user POV)
 

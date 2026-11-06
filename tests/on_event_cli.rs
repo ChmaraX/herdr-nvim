@@ -8,12 +8,19 @@
 //! Failure modes, and where each is covered:
 //! - Prefix trap: closing workspace `wHnA` must spare `wHnAB`'s daemons.
 //!   Covered: `close_hooks_stop_exactly_the_closed_tabs_daemons`.
-//! - Unresponsive daemon / stale registry entry (a daemon that died without
-//!   cleanup; on Windows a `.pipe` marker with no pipe): the close removes
-//!   the entry. Covered: same test (`wHnA:t9`).
-//! - Quit timeout (a daemon that ignores `qa!`): the hook fails, and the
-//!   daemon keeps its registry entry and state so it stays listable and
-//!   reachable. Covered: same test (`wHnA:t3`, swallows every key).
+//! - Stale registry entry (a daemon that died without cleanup; on Windows a
+//!   `.pipe` marker with no pipe): the close removes the entry. Covered:
+//!   same test (`wHnA:t9`).
+//! - Hung daemon (a plugin stuck in a loop: its socket takes connections,
+//!   nothing answers, SIGTERM is ignored; issue #61): on Unix the close
+//!   kills it by its pid with SIGKILL, with its process group. Covered
+//!   through the shared stop path in
+//!   `registry::tests::a_busy_daemon_is_killed_with_its_process_group`.
+//! - Quit timeout (a daemon that ignores `qa!`): on Unix it is killed by its
+//!   pid once the quit wait is up, and the kill is reported. On Windows,
+//!   which cannot do that, the hook fails, and the daemon keeps its registry
+//!   entry and state so it stays listable and reachable. Covered: same test
+//!   (`wHnA:t3`, swallows every key).
 //! - Partial failure on workspace close: the other daemons of the workspace
 //!   are still stopped. Covered: same test.
 //! - Unsaved buffers in a closing tab: discarded, reported on stderr.
@@ -89,15 +96,24 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
     let event = workspace_closed("wHnA");
     let output = sandbox.run(&["on-event"], Some(&event));
     log.step("workspace_closed wHnA", &event, &output);
-    assert!(
-        !output.status.success(),
-        "a daemon that won't quit fails the hook"
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("wHnA_t3"), "{stderr}");
+    #[cfg(unix)]
+    {
+        assert!(output.status.success(), "{stderr}");
+        assert!(stderr.contains("did not exit"), "{stderr}");
+        stubborn.assert_gone(&sandbox);
+    }
+    #[cfg(windows)]
+    {
+        assert!(
+            !output.status.success(),
+            "a daemon that won't quit fails the hook"
+        );
+        stubborn.assert_alive(&sandbox);
+    }
     a2.assert_gone(&sandbox);
     assert!(!stale.exists(), "stale entry cleaned up");
-    stubborn.assert_alive(&sandbox);
     ab1.assert_alive(&sandbox);
     b1.assert_alive(&sandbox);
 
@@ -111,6 +127,9 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
         .iter()
         .map(|d| d["key"].as_str().unwrap())
         .collect();
+    #[cfg(unix)]
+    assert_eq!(keys, ["wHnAB_t1", "wHnB_t1"]);
+    #[cfg(windows)]
     assert_eq!(keys, ["wHnAB_t1", "wHnA_t3", "wHnB_t1"]);
     log.note("result: pass");
 }

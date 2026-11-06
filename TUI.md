@@ -104,9 +104,25 @@ orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)
 ```
 
 `daemons stop <tab>` refuses a daemon with unsaved buffers or pending comments
-unless given `--force`; `--orphans` stops the daemons whose tab is gone. A
-daemon that still listens but doesn't answer is kept (reported as an error),
-and the list gives each daemon 2 s to answer.
+unless given `--force`; `--orphans` stops the daemons whose tab is gone.
+
+A daemon whose nvim stops answering (a plugin stuck in a loop, say) shows as
+`unresponsive`. The listing gives every daemon 5 s to answer, all of them at
+once, so a hung one never holds it up. herdr-nvim never waits on one forever
+either: toggling the sidebar or opening a file in that tab fails instead (a
+picked or clicked file says so in a notification): after 10 s when the daemon
+was already hung. One that hangs halfway through an open can take up to 27 s,
+the sum of the time limits of the steps involved (10 s + 10 s + 2 s + 5 s),
+not a measured time. A daemon that is only waiting for input — a half-typed
+command, a prompt — is sent `<C-\><C-n>` and asked once more, and answers
+again. No second daemon is started over a hung one. It can only be killed, so
+a plain `daemons stop <tab>` refuses it; `daemons stop <tab> --force` kills it
+(unsaved work in it is lost), and so does closing its tab. A daemon that has
+not exited 10 s after being asked to quit is killed the same way. Killing one
+is not supported on Windows yet: end its `nvim.exe` by hand. A daemon that
+died without cleaning up shows as `stale`; any stop removes it. One that
+answers with an error shows as `error`, with the reason; no stop touches it,
+while the other daemons are listed and stopped as usual.
 
 The next toggle in that tab starts a fresh nvim.
 
@@ -241,6 +257,22 @@ Doctor runs labeled checks in a scratch workspace and always removes them
 afterward. The most common failure is `daemon-healthy` FAIL: the nvim daemon
 did not start. Make sure that `sidebar.nvim_bin` points at a working nvim ≥
 0.10. The picker writes its errors to `finisher.log` in the state folder.
+
+If the sidebar does not start, its pane says why and waits for Enter (herdr
+closes a plugin pane the moment it exits, so an error would otherwise flash
+by). The most common one is `nvim` not being found: herdr hands plugin panes
+the PATH of the herdr server process, which is not necessarily yours — a
+server started from a systemd unit, or over SSH, inherits a minimal PATH
+without your Homebrew prefix. Either set an absolute path:
+
+```toml
+[sidebar]
+nvim_bin = "/home/linuxbrew/.linuxbrew/bin/nvim"  # your Homebrew prefix
+```
+
+or start the herdr server from a shell whose PATH has `nvim` on it. The plugin
+prepends the common Homebrew prefixes (including Linux's) to the PATH it
+spawns nvim with, so a Homebrew-installed nvim is found either way.
 
 ## Tests
 

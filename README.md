@@ -159,6 +159,21 @@ LazyVim's `<leader>E`, `<leader>fe` and `<leader>fE` show the tree too.
   ```
 
   `daemons stop <tab>` stops one (`--force` discards unsaved work).
+- **nvim not answering:** a tab's nvim whose config gets stuck in a loop
+  stops answering. `cmd-e`, a click in the tree and `cmd-o` then fail with a
+  message instead of hanging: after 10 s for one that was already hung, 27 s
+  at worst for an open that hangs halfway through (the sum of the steps'
+  time limits, not a measured time). One that is only waiting for input (a
+  half-typed command, a prompt) is sent `<C-\><C-n>` and carries on. A hung
+  one is listed as `unresponsive` and never replaced by a second nvim on its
+  socket; only a kill ends it, so `daemons stop <tab>` refuses it and
+  `daemons stop <tab> --force` kills it (unsaved work in it is lost), as does
+  closing its tab.
+- **`nvim` not found:** nvim's pane says so and waits for Enter, naming what
+  to fix: set `nvim_bin` under `[sidebar]` to nvim's full path (`command -v
+  nvim` prints it) when the PATH the app passed on has no nvim. A
+  Homebrew-installed nvim is found either way — the common Homebrew prefixes
+  (macOS and Linux) are prepended to the PATH nvim is started with.
 - **After an upgrade:** running nvims keep the old version until their pair
   is closed and opened again (one with unsaved work is kept, with a toast).
 

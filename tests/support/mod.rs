@@ -126,6 +126,21 @@ impl Sandbox {
             .join(format!("{}.{ext}", tab.replace(':', "_")))
     }
 
+    /// Put a `ps` on the binary's PATH that always fails, so the process
+    /// table cannot be read.
+    #[cfg(unix)]
+    pub fn break_ps(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let ps = self.dir.join("bin").join("ps");
+        fs::write(&ps, "#!/bin/sh\necho 'fake ps: broken' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    pub fn fix_ps(&self) {
+        fs::remove_file(self.dir.join("bin").join("ps")).unwrap();
+    }
+
     /// A registry entry nothing answers on (a daemon that died uncleanly).
     pub fn stale_entry(&self, tab: &str) -> PathBuf {
         let entry = self.entry(tab);
@@ -220,6 +235,20 @@ impl Daemon {
             .status
             .success()
             .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// SIGSTOP it: its socket still takes connections, but nothing answers
+    /// -- a hung daemon. Drop's SIGKILL still ends it.
+    #[cfg(unix)]
+    pub fn hang(&self) {
+        Command::new("kill")
+            .args(["-STOP", &self.pid().to_string()])
+            .status()
+            .expect("run kill");
     }
 
     pub fn running(&mut self) -> bool {

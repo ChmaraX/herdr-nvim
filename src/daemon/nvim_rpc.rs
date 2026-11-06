@@ -5,25 +5,53 @@
 //!
 //! The answers are what `--remote-expr` prints, so callers don't change:
 //! Lua's `tostring` of the result (`2`, `abc`, `true`, `vim.NIL`, a table's
-//! address), and none when nvim reports an error or nothing listens.
+//! address).
+//!
+//! Every call comes back as a `Reply`, which tells a daemon that answered
+//! from one that refused the connection, one that took it and said nothing
+//! within the deadline (busy, hung or stopped), and one that answered with
+//! an error -- what `daemon::liveness` needs to decide whether the daemon is
+//! there at all.
 
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
     time::{Duration, Instant},
 };
 
-/// `nvim_eval(expr)`, answered within `timeout` (else none: nvim answers no
-/// request while it waits at a prompt).
-pub(crate) fn eval_within(socket: &Path, expr: &str, timeout: Duration) -> Option<String> {
-    let value = request(socket, "nvim_eval", &[expr], timeout)?;
-    Some(as_lua_string(&value))
+use super::Reply;
+
+/// `nvim_eval(expr)`, answered within `timeout`.
+pub(crate) fn eval(socket: &Path, expr: &str, timeout: Duration) -> Reply {
+    call(socket, "nvim_eval", &[expr], timeout)
 }
 
-/// `nvim_input(keys)`: typed even while nvim waits for a key (a fast call).
-pub(crate) fn input_within(socket: &Path, keys: &str, timeout: Duration) -> bool {
-    request(socket, "nvim_input", &[keys], timeout).is_some()
+/// `nvim_input(keys)`: taken even while nvim waits for a key (a fast call).
+pub(crate) fn input(socket: &Path, keys: &str, timeout: Duration) -> Reply {
+    call(socket, "nvim_input", &[keys], timeout)
+}
+
+fn call(socket: &Path, method: &str, args: &[&str], timeout: Duration) -> Reply {
+    match request(socket, method, args, timeout) {
+        Ok(value) => Reply::Answered(as_lua_string(&value)),
+        Err(Problem::Refused) => Reply::Refused,
+        Err(Problem::TimedOut) => Reply::TimedOut,
+        Err(Problem::Failed(why)) => {
+            Reply::Failed(format!("{method} on {} failed: {why}", socket.display()))
+        }
+    }
+}
+
+/// Why a request has no answer.
+enum Problem {
+    /// Nothing accepted the connection.
+    Refused,
+    /// It was accepted, but no answer came within the deadline.
+    TimedOut,
+    /// nvim answered with an error, or the connection broke mid-request
+    /// (a daemon exiting does that): nothing is known about the daemon.
+    Failed(String),
 }
 
 /// A decoded msgpack value, as far as answers need.
@@ -41,12 +69,22 @@ pub(crate) enum Msg {
     Ext,
 }
 
-fn request(socket: &Path, method: &str, args: &[&str], timeout: Duration) -> Option<Msg> {
+fn request(socket: &Path, method: &str, args: &[&str], timeout: Duration) -> Result<Msg, Problem> {
     let deadline = Instant::now() + timeout;
-    let mut stream = UnixStream::connect(socket).ok()?;
-    stream.set_write_timeout(Some(timeout)).ok()?;
+    // Nothing listens, or a hung daemon whose listen queue is full: either
+    // way nothing took the request. Whether its process is still there is
+    // for `daemon::liveness` to say, from the process table.
+    let mut stream = UnixStream::connect(socket).map_err(|_| Problem::Refused)?;
+    stream
+        .set_write_timeout(Some(timeout.max(Duration::from_millis(1))))
+        .map_err(|error| Problem::Failed(error.to_string()))?;
     const ID: u64 = 1;
-    stream.write_all(&encode_request(ID, method, args)).ok()?;
+    stream
+        .write_all(&encode_request(ID, method, args))
+        .map_err(|error| match error.kind() {
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => Problem::TimedOut,
+            _ => Problem::Failed(format!("could not send it: {error}")),
+        })?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
@@ -59,20 +97,44 @@ fn request(socket: &Path, method: &str, args: &[&str], timeout: Duration) -> Opt
                     if matches!(id, Msg::UInt(n) if *n == ID)
                         || matches!(id, Msg::Int(n) if *n == ID as i64)
                     {
-                        return (*error == Msg::Nil).then(|| result.clone());
+                        return match error {
+                            Msg::Nil => Ok(result.clone()),
+                            error => Err(Problem::Failed(error_text(error))),
+                        };
                     }
                 }
             }
         }
         buf.drain(..at);
-        let left = deadline.checked_duration_since(Instant::now())?;
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(Problem::TimedOut);
+        };
         stream
             .set_read_timeout(Some(left.max(Duration::from_millis(1))))
-            .ok()?;
+            .map_err(|error| Problem::Failed(error.to_string()))?;
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return None,
+            // The daemon closed the connection without answering: one on its
+            // way out does that.
+            Ok(0) => return Err(Problem::Failed("it closed the connection".to_owned())),
+            Err(error) => {
+                return Err(match error.kind() {
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut => Problem::TimedOut,
+                    _ => Problem::Failed(error.to_string()),
+                })
+            }
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
+    }
+}
+
+/// nvim's error, `[code, message]`, as its message alone.
+fn error_text(error: &Msg) -> String {
+    match error {
+        Msg::Array(items) => match items.as_slice() {
+            [_, message] => as_lua_string(message),
+            _ => as_lua_string(error),
+        },
+        error => as_lua_string(error),
     }
 }
 
@@ -244,8 +306,8 @@ mod tests {
     use std::process::{Command, Stdio};
 
     /// Against a real nvim: each answer is what `--remote-expr` prints for
-    /// it, an error or a missing server is none, and a prompt doesn't hold
-    /// the caller past its timeout.
+    /// it, an error is `Failed`, nothing listening is `Refused`, and a
+    /// daemon that says nothing is `TimedOut` within the timeout.
     #[test]
     fn answers_as_remote_expr_prints_them() {
         let socket = std::env::temp_dir().join(format!("hnv-rpc-{}.sock", std::process::id()));
@@ -265,7 +327,10 @@ mod tests {
         while !socket.exists() && start.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(20));
         }
-        let ask = |expr: &str| eval_within(&socket, expr, Duration::from_secs(2));
+        let ask = |expr: &str| match eval(&socket, expr, Duration::from_secs(2)) {
+            Reply::Answered(answer) => Some(answer),
+            _ => None,
+        };
         let remote = |expr: &str| {
             let out = Command::new("nvim")
                 .args(["--headless", "--server"])
@@ -291,14 +356,20 @@ mod tests {
         ] {
             assert_eq!(ask(expr), remote(expr), "{expr}");
         }
-        assert_eq!(ask("nosuchvar"), None);
+        // nvim's own error for it, so `liveness` can tell it from a daemon
+        // that is not there.
+        let undefined = eval(&socket, "nosuchvar", Duration::from_secs(2));
+        assert!(
+            matches!(&undefined, Reply::Failed(error) if error.contains("E121")),
+            "{undefined:?}"
+        );
         assert_eq!(
-            eval_within(
+            eval(
                 Path::new("/nonexistent/x.sock"),
                 "1",
                 Duration::from_secs(1)
             ),
-            None
+            Reply::Refused
         );
         // A socket that never answers (nvim busy, waiting at a prompt):
         // none, within the timeout.
@@ -313,8 +384,8 @@ mod tests {
         });
         let asked = Instant::now();
         assert_eq!(
-            eval_within(&silent, "1+1", Duration::from_millis(300)),
-            None
+            eval(&silent, "1+1", Duration::from_millis(300)),
+            Reply::TimedOut
         );
         assert!(
             asked.elapsed() < Duration::from_millis(900),
@@ -324,10 +395,9 @@ mod tests {
         let _ = hold.join();
         let _ = std::fs::remove_file(&silent);
         // Typed keys reach nvim (`unstick`'s <C-\\><C-n>).
-        assert!(input_within(
-            &socket,
-            ":let g:typed = 1<CR>",
-            Duration::from_secs(2)
+        assert!(matches!(
+            input(&socket, ":let g:typed = 1<CR>", Duration::from_secs(2)),
+            Reply::Answered(_)
         ));
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(ask("g:typed").as_deref(), Some("1"));
