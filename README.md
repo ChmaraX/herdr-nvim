@@ -10,7 +10,7 @@ nvim sidebar one key away, with quick access to the files your agent works on.
 > [!TIP]
 > Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
 
-https://github.com/user-attachments/assets/04565a85-f629-4ca7-8f3b-a39af2bf3adf
+https://github.com/user-attachments/assets/328ab066-29f3-4c39-84c4-30b98449e55e
 
 > **Pairs well with**
 > - [herdr-gitview](https://github.com/ChmaraX/herdr-gitview): review, stage, and commit agent changes
