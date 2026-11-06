@@ -7,9 +7,10 @@
 Neovim, built into your [herdr](https://herdr.dev) workspace: a persistent
 nvim sidebar one key away, with quick access to the files your agent works on.
 
+> [!TIP]
 > Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
 
-<!-- VIDEO: the Herdr app (cmd-e, a file from the tree, cmd-o, Preview, a comment sent to the agent) -->
+https://github.com/user-attachments/assets/04565a85-f629-4ca7-8f3b-a39af2bf3adf
 
 > **Pairs well with**
 > - [herdr-gitview](https://github.com/ChmaraX/herdr-gitview): review, stage, and commit agent changes
