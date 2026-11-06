@@ -16,15 +16,15 @@ use serde::{Serialize, Serializer};
 
 use crate::{
     config::Sidebar,
-    herdr::{CliHerdr, Herdr, TabInfo},
+    herdr::{Herdr, TabInfo},
     state::{tab_key, TabId},
 };
 
 use super::{
-    liveness,
+    liveness, plugin_root,
     process::ProcessTable,
     registry::{daemon_keys, orphans, probe, socket_path_for_key, stop_probed, Probe},
-    Liveness, Reply,
+    runtime_stamp, Liveness, Reply,
 };
 
 const USAGE: &str = "usage: herdr-nvim daemons [--json]\n       \
@@ -89,6 +89,8 @@ pub(crate) struct DaemonInfo {
     /// Resident memory of the daemon plus all of its descendants (LSPs, jobs).
     pub rss_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
+    /// It answers but runs an older runtime than the installed one.
+    pub stale: bool,
 }
 
 impl DaemonInfo {
@@ -133,7 +135,7 @@ impl DaemonInfo {
     }
 
     /// What the daemon answered, if it did.
-    fn answered(&self) -> Option<&Probe> {
+    pub(crate) fn answered(&self) -> Option<&Probe> {
         self.probe.as_ref().ok().and_then(Liveness::answered)
     }
 
@@ -208,6 +210,7 @@ impl Serialize for DaemonInfo {
             state: DaemonState,
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
+            stale: bool,
             error: Option<&'a str>,
         }
         let tab = self.tab.as_ref();
@@ -223,6 +226,7 @@ impl Serialize for DaemonInfo {
             state: self.state(),
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
+            stale: self.stale,
             error: self.error(),
         }
         .serialize(serializer)
@@ -245,8 +249,13 @@ pub(crate) fn collect(h: &mut dyn Herdr, sidebar: &Sidebar) -> Result<Vec<Daemon
 /// A daemon that refuses connections while its process still listens is
 /// hung, not stale (see `liveness`). A probe that fails spoils only its own
 /// daemon's row (`DaemonState::Error`).
-fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> Vec<DaemonInfo> {
+pub(crate) fn describe(
+    keys: Vec<String>,
+    tabs: Option<&[TabInfo]>,
+    sidebar: &Sidebar,
+) -> Vec<DaemonInfo> {
     let procs = ProcessTable::load();
+    let current = plugin_root().ok().and_then(|root| runtime_stamp(&root));
     let probes: Vec<Result<Reply<Probe>>> = thread::scope(|scope| {
         let probes: Vec<_> = keys
             .iter()
@@ -281,6 +290,12 @@ fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> V
                 (Some(pid), Ok(procs)) => (procs.tree_rss(pid), procs.uptime(pid)),
                 _ => (None, None),
             };
+            // Stale: it answered, and the runtime it loaded is not the one
+            // installed now (the Herdr app host; the TUI has no stamp).
+            let stale = match (answered, &current) {
+                (Some(answer), Some(current)) => answer.stamp != *current,
+                _ => false,
+            };
             DaemonInfo {
                 key,
                 tab,
@@ -289,6 +304,7 @@ fn describe(keys: Vec<String>, tabs: Option<&[TabInfo]>, sidebar: &Sidebar) -> V
                 pid,
                 rss_bytes,
                 uptime_secs,
+                stale,
             }
         })
         .collect()
@@ -385,10 +401,11 @@ pub fn daemons_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let command = parse_args(&args)?;
     let sidebar = crate::config::load().sidebar;
-    let mut herdr = CliHerdr;
+    let mut herdr = crate::host::ops().herdr();
+    let herdr = &mut *herdr;
     match command {
         Invocation::List { json } => {
-            let daemons = collect(&mut herdr, &sidebar)?;
+            let daemons = collect(herdr, &sidebar)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&daemons)?);
             } else {
@@ -397,7 +414,7 @@ pub fn daemons_cmd() -> Result<()> {
             Ok(())
         }
         Invocation::Stop { target, force } => {
-            let outcome = stop(&mut herdr, &sidebar, &target, force)?;
+            let outcome = stop(herdr, &sidebar, &target, force)?;
             for line in &outcome.stopped {
                 println!("{line}");
             }
@@ -482,6 +499,9 @@ fn render_table(daemons: &[DaemonInfo]) -> String {
         if let Some(n @ 1..) = daemon.comments() {
             state.push_str(&format!(" · {n} comment(s)"));
         }
+        if daemon.stale {
+            state.push_str(" · stale");
+        }
         rows.push([
             daemon.tab_ref().to_owned(),
             daemon.display_name().unwrap_or_else(dash),
@@ -528,6 +548,12 @@ fn hints(daemons: &[DaemonInfo]) -> String {
         "stop one: herdr-nvim daemons stop {example}   (--force discards unsaved work)\n\
          stop all: herdr-nvim daemons stop --all\n"
     );
+    if daemons.iter().any(|daemon| daemon.stale) {
+        out.push_str(
+            "stale:    runs an older herdr-nvim; reopening its pane (Files or cmd-e, twice) \
+             restarts it unless it has unsaved work\n",
+        );
+    }
     if daemons.iter().any(DaemonInfo::tab_gone) {
         out.push_str("orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)\n");
     }

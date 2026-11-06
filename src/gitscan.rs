@@ -41,7 +41,10 @@ pub(crate) fn toplevel(cwd: &Path) -> Option<PathBuf> {
 
 /// Absolute paths (relative to `toplevel`) with uncommitted changes.
 pub(crate) fn dirty_paths(toplevel: &Path) -> Result<HashSet<String>> {
+    // `--no-optional-locks`: a status that refreshes `.git/index` wakes every
+    // folder watch on the repo (the app's file tree reloads for it).
     let output = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(toplevel)
         .arg("status")

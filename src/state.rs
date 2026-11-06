@@ -30,9 +30,27 @@ pub struct StateFile {
 /// contain a colon (e.g. `wG:t1`); replace it with `_` so the id is a valid,
 /// single path component (`wG_t1`). Shared by `state` and `daemon` so the
 /// orchestrator and the sidebar pane compute the same path.
+///
+/// Herdr app ids are 34 characters each (`sp<32 hex>:tb<32 hex>`), which
+/// would push a socket path past the 104-byte `sun_path` limit under macOS's
+/// long `$TMPDIR`. Any segment longer than [`LONG_SEGMENT`] keeps only its
+/// first [`SHORT_SEGMENT`] characters (the prefix plus 10 random hex digits);
+/// the TUI's short ids (`w26:t2`) are unchanged.
 pub(crate) fn tab_key(key: &str) -> String {
-    key.replace(':', "_")
+    key.split(':')
+        .map(|segment| {
+            if segment.chars().count() > LONG_SEGMENT {
+                segment.chars().take(SHORT_SEGMENT).collect()
+            } else {
+                segment.to_owned()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("_")
 }
+
+const LONG_SEGMENT: usize = 16;
+const SHORT_SEGMENT: usize = 12;
 
 /// A herdr tab id, `<workspace>:<tab>` (e.g. `w26:t2`). The single place that
 /// knows how a tab id splits into its workspace and how it maps to the
@@ -98,6 +116,27 @@ fn state_dir() -> PathBuf {
         })
         .or_else(|| crate::home::home_dir().map(|path| path.join(".local/state/herdr-nvim")))
         .unwrap_or_else(|| PathBuf::from(".herdr-nvim-state"))
+}
+
+/// Where the detached pick-file finisher writes its errors (it has no pane
+/// to show them in): `<state dir>/finisher.log`, appended; else nowhere.
+pub(crate) fn finisher_log() -> std::process::Stdio {
+    let dir = state_dir();
+    let _ = fs::create_dir_all(&dir);
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("finisher.log"))
+        .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from)
+}
+
+/// Where a Herdr app tab's nvim writes its state for the native tree
+/// (`app.lua` `write_state`: `{file, cwd, tree_key, leader, focus}`):
+/// `<state dir>/app-current/<tab key>.json`.
+pub(crate) fn current_file_path(tab: &str) -> PathBuf {
+    state_dir()
+        .join("app-current")
+        .join(format!("{}.json", tab_key(tab)))
 }
 
 fn path_for_key(key: &str) -> PathBuf {
@@ -215,6 +254,25 @@ mod tests {
         // No colon / empty: returned unchanged rather than panicking.
         assert_eq!(TabId::new("w39").workspace(), "w39");
         assert_eq!(TabId::new("").workspace(), "");
+    }
+
+    #[test]
+    fn app_ids_get_short_keys_that_still_scope_by_space() {
+        let space = "sp504eab7fbccc7c1c0542d1b92c4589c1";
+        let tab = TabId::new(format!("{space}:tb35bcddc323a573b5fb48268b602581af"));
+        assert_eq!(tab.workspace(), space);
+        assert_eq!(tab.key(), "sp504eab7fbc_tb35bcddc323");
+        assert!(TabId::key_in_workspace(&tab.key(), space));
+        assert!(!TabId::key_in_workspace(
+            &tab.key(),
+            "sp999eab7fbccc7c1c0542d1b92c4589c1"
+        ));
+        // A socket under macOS's per-user $TMPDIR stays below sun_path's 104 bytes.
+        let socket = format!(
+            "/var/folders/by/ttf99m0s4_qbqfgs1jg8zjmh0000gn/T/herdr-nvim/app/{}.sock",
+            tab.key()
+        );
+        assert!(socket.len() < 104, "{} bytes: {socket}", socket.len());
     }
 
     #[test]

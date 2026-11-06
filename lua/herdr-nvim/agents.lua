@@ -1,14 +1,22 @@
 local M = {}
 local exec_mod = require("herdr-nvim.exec")
 
+-- The agent-list command for this host: the Herdr app's is the herdr-nvim
+-- binary's `app-agents`, which prints the TUI's `herdr agent list` shape.
+local function list_argv()
+  if exec_mod.is_app() then return { exec_mod.self(), "app-agents" }, "herdr-nvim app-agents" end
+  return { "herdr", "agent", "list" }, "herdr agent list"
+end
+
 function M.list(exec)
   exec = exec or exec_mod.default_exec
-  local r = exec({ "herdr", "agent", "list" })
+  local argv, name = list_argv()
+  local r = exec(argv)
   if r.code ~= 0 then
-    return nil, "herdr agent list failed: " .. (r.stderr ~= "" and r.stderr or ("exit " .. r.code))
+    return nil, name .. " failed: " .. (r.stderr ~= "" and r.stderr or ("exit " .. r.code))
   end
   local ok, decoded = pcall(vim.json.decode, r.stdout)
-  if not ok or type(decoded) ~= "table" then return nil, "herdr agent list: unparseable JSON" end
+  if not ok or type(decoded) ~= "table" then return nil, name .. ": unparseable JSON" end
   local raw = (decoded.result or {}).agents or {}
   local out = {}
   local here = vim.env.HERDR_WORKSPACE_ID

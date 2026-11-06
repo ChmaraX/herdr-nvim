@@ -43,6 +43,10 @@ function M.setup(config)
     map("x", p .. "i", function() M.ref_selection() end, "herdr-nvim: reference selection at agent cursor")
     map("n", p .. "i", function() M.ref_line() end, "herdr-nvim: reference line at agent cursor")
   end
+  -- Only in an nvim herdr-nvim started for the Herdr desktop app.
+  if require("herdr-nvim.exec").is_app() then
+    require("herdr-nvim.app").setup()
+  end
 end
 
 -- Internal primitive behind comment_line(), comment_selection(), and :Herdr comment.

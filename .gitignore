@@ -8,3 +8,6 @@ docs/
 /target/
 nvim.log
 doc/tags
+# written by `herdr-app check` when run on a mod folder in the repo
+herdr-app/mods/*/gpui-kit.d.ts
+herdr-app/mods/*/jsconfig.json

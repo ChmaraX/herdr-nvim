@@ -185,9 +185,34 @@ impl Dir {
     }
 }
 
+/// What both hosts answer: the agents, the tabs, and an agent pane's output
+/// and facts. The shared code (picker, daemon inventory and reaping) needs
+/// only these.
 pub trait Herdr {
+    /// Every live tab across all workspaces, with its workspace/tab names
+    /// (`herdr api snapshot`). Used by `daemon::registry::gc` to tell which
+    /// per-tab daemons are still live, and to name them.
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>>;
+    /// Read the pane's recent (unwrapped) output as plain text, newest lines
+    /// last. `lines` bounds how many trailing lines are returned.
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String>;
+    /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
+    /// `agent` label and belong to `workspace`).
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
+    /// The pane's cwd, agent session, and scroll geometry together, from a
+    /// single `pane get` call. Prefer this over calling `pane_cwd` and
+    /// `agent_session` separately when both are needed (as the pick-file
+    /// action phase does) -- each of those is otherwise its own `pane get`
+    /// subprocess spawn against the exact same underlying data. `open-link`
+    /// only ever needs the cwd, so it keeps using `pane_cwd` alone.
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot>;
+}
+
+/// The Herdr TUI's pane surgery (`maneuver`, `doctor`, `open-link`): moving,
+/// parking and splitting panes. The app host has none of it (it splits a
+/// whole tab in one command, `app::sidebar`), so it never implements this.
+pub trait Layout: Herdr {
     fn pane_rects(&mut self, tab: &str) -> Result<Vec<PaneRect>>;
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String>;
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)>;
     fn move_pane(
         &mut self,
@@ -222,25 +247,8 @@ pub trait Herdr {
     fn run_in_pane(&mut self, pane: &str, cmd: &str) -> Result<()>;
     fn close_pane(&mut self, pane: &str) -> Result<()>;
     fn pane_alive(&mut self, pane: &str) -> Result<bool>;
-    /// Every live tab across all workspaces, with its workspace/tab names
-    /// (`herdr api snapshot`). Used by `daemon::registry::gc` to tell which
-    /// per-tab daemons are still live, and to name them.
-    fn tab_infos(&mut self) -> Result<Vec<TabInfo>>;
-    /// Read the pane's recent (unwrapped) output as plain text, newest lines
-    /// last. `lines` bounds how many trailing lines are returned.
-    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String>;
     /// The pane's foreground working directory (used to resolve relative paths).
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf>;
-    /// Agent panes in `workspace` (entries from `herdr agent list` that carry an
-    /// `agent` label and belong to `workspace`).
-    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>>;
-    /// The pane's cwd, agent session, and scroll geometry together, from a
-    /// single `pane get` call. Prefer this over calling `pane_cwd` and
-    /// `agent_session` separately when both are needed (as the pick-file
-    /// action phase does) -- each of those is otherwise its own `pane get`
-    /// subprocess spawn against the exact same underlying data. `open-link`
-    /// only ever needs the cwd, so it keeps using `pane_cwd` alone.
-    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot>;
 }
 
 pub struct CliHerdr;
@@ -305,6 +313,59 @@ impl CliHerdr {
 }
 
 impl Herdr for CliHerdr {
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
+        parse_tab_infos(&Self::run(&args(&["api", "snapshot"]))?)
+    }
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
+        Self::run_text(&args(&[
+            "pane",
+            "read",
+            pane,
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            &lines.to_string(),
+            "--format",
+            "text",
+        ]))
+    }
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
+        let value = Self::run(&args(&["pane", "get", pane]))?;
+        parse_pane_snapshot(&value)
+    }
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
+        let value = Self::run(&args(&["agent", "list"]))?;
+        let agents = value
+            .pointer("/result/agents")
+            .and_then(Value::as_array)
+            .context("herdr agent list response missing result.agents array")?;
+        agents
+            .iter()
+            // Only entries that actually carry an `agent` label are agents;
+            // herdr also reports bare/undetected panes here (no `agent` field).
+            .filter(|agent| agent.get("agent").and_then(Value::as_str).is_some())
+            .filter(|agent| {
+                agent.pointer("/workspace_id").and_then(Value::as_str) == Some(workspace)
+            })
+            .map(|agent| {
+                Ok(AgentInfo {
+                    pane_id: string_at(agent, "/pane_id")?.to_owned(),
+                    tab_id: agent
+                        .pointer("/tab_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    focused: agent
+                        .get("focused")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect()
+    }
+}
+
+impl Layout for CliHerdr {
     fn pane_rects(&mut self, tab: &str) -> Result<Vec<PaneRect>> {
         let pane = Self::panes()?
             .into_iter()
@@ -312,11 +373,6 @@ impl Herdr for CliHerdr {
             .with_context(|| format!("tab {tab} has no live panes"))?;
         let value = Self::run(&args(&["pane", "layout", "--pane", &pane]))?;
         parse_pane_rects_value(&value)
-    }
-
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String> {
-        let value = Self::run(&args(&["pane", "get", pane]))?;
-        Ok(string_at(&value, "/result/pane/tab_id")?.to_owned())
     }
 
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)> {
@@ -452,66 +508,13 @@ impl Herdr for CliHerdr {
             .any(|(pane_id, _tab_id)| pane_id == pane))
     }
 
-    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
-        parse_tab_infos(&Self::run(&args(&["api", "snapshot"]))?)
-    }
-
-    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
-        Self::run_text(&args(&[
-            "pane",
-            "read",
-            pane,
-            "--source",
-            "recent-unwrapped",
-            "--lines",
-            &lines.to_string(),
-            "--format",
-            "text",
-        ]))
-    }
-
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
         let value = Self::run(&args(&["pane", "get", pane]))?;
         parse_pane_cwd(&value)
     }
-
-    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
-        let value = Self::run(&args(&["pane", "get", pane]))?;
-        parse_pane_snapshot(&value)
-    }
-
-    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
-        let value = Self::run(&args(&["agent", "list"]))?;
-        let agents = value
-            .pointer("/result/agents")
-            .and_then(Value::as_array)
-            .context("herdr agent list response missing result.agents array")?;
-        agents
-            .iter()
-            // Only entries that actually carry an `agent` label are agents;
-            // herdr also reports bare/undetected panes here (no `agent` field).
-            .filter(|agent| agent.get("agent").and_then(Value::as_str).is_some())
-            .filter(|agent| {
-                agent.pointer("/workspace_id").and_then(Value::as_str) == Some(workspace)
-            })
-            .map(|agent| {
-                Ok(AgentInfo {
-                    pane_id: string_at(agent, "/pane_id")?.to_owned(),
-                    tab_id: agent
-                        .pointer("/tab_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    focused: agent
-                        .get("focused")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                })
-            })
-            .collect()
-    }
 }
 
+#[cfg(test)]
 pub fn parse_pane_rects(json: &str) -> Result<Vec<PaneRect>> {
     let value: Value = serde_json::from_str(json).context("invalid pane layout JSON")?;
     parse_pane_rects_value(&value)
@@ -575,7 +578,6 @@ use std::collections::VecDeque;
 pub struct MockHerdr {
     pub ops: Vec<String>,
     pub pane_rects_results: VecDeque<Result<Vec<PaneRect>>>,
-    pub tab_of_pane_results: VecDeque<Result<String>>,
     pub create_tab_results: VecDeque<Result<(String, String)>>,
     pub split_pane_results: VecDeque<Result<String>>,
     pub pane_alive_results: VecDeque<Result<bool>>,
@@ -610,14 +612,29 @@ impl MockHerdr {
 
 #[cfg(test)]
 impl Herdr for MockHerdr {
+    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
+        self.ops.push("tab_infos".to_owned());
+        Self::next(&mut self.tab_infos_results, "tab_infos")
+    }
+    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
+        self.ops.push(format!("read_pane {pane} {lines}"));
+        Self::next(&mut self.read_pane_results, "read_pane")
+    }
+    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
+        self.ops.push(format!("agents {workspace}"));
+        Self::next(&mut self.agents_results, "agents")
+    }
+    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
+        self.ops.push(format!("pane_snapshot {pane}"));
+        Self::next(&mut self.pane_snapshot_results, "pane_snapshot")
+    }
+}
+
+#[cfg(test)]
+impl Layout for MockHerdr {
     fn pane_rects(&mut self, tab: &str) -> Result<Vec<PaneRect>> {
         self.ops.push(format!("rects {tab}"));
         Self::next(&mut self.pane_rects_results, "pane_rects")
-    }
-
-    fn tab_of_pane(&mut self, pane: &str) -> Result<String> {
-        self.ops.push(format!("tab_of {pane}"));
-        Self::next(&mut self.tab_of_pane_results, "tab_of_pane")
     }
 
     fn create_tab(&mut self, workspace: &str) -> Result<(String, String)> {
@@ -692,29 +709,9 @@ impl Herdr for MockHerdr {
         Self::next(&mut self.pane_alive_results, "pane_alive")
     }
 
-    fn tab_infos(&mut self) -> Result<Vec<TabInfo>> {
-        self.ops.push("tab_infos".to_owned());
-        Self::next(&mut self.tab_infos_results, "tab_infos")
-    }
-
-    fn read_pane(&mut self, pane: &str, lines: u32) -> Result<String> {
-        self.ops.push(format!("read_pane {pane} {lines}"));
-        Self::next(&mut self.read_pane_results, "read_pane")
-    }
-
     fn pane_cwd(&mut self, pane: &str) -> Result<PathBuf> {
         self.ops.push(format!("pane_cwd {pane}"));
         Self::next(&mut self.pane_cwd_results, "pane_cwd")
-    }
-
-    fn agents(&mut self, workspace: &str) -> Result<Vec<AgentInfo>> {
-        self.ops.push(format!("agents {workspace}"));
-        Self::next(&mut self.agents_results, "agents")
-    }
-
-    fn pane_snapshot(&mut self, pane: &str) -> Result<PaneSnapshot> {
-        self.ops.push(format!("pane_snapshot {pane}"));
-        Self::next(&mut self.pane_snapshot_results, "pane_snapshot")
     }
 }
 

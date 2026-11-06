@@ -24,7 +24,7 @@ use anyhow::Result;
 use crate::{
     bridge,
     extract::parse_token,
-    herdr::{CliHerdr, Herdr},
+    herdr::{CliHerdr, Layout},
     maneuver::Ctx,
     pathkey::absolute,
 };
@@ -162,7 +162,7 @@ pub fn open_link_cmd() -> Result<()> {
         // not a second, independent cwd lookup.
         cwd: cwd.clone(),
     };
-    bridge::open_in_sidebar(&mut herdr, &ctx, &resolved.to_string_lossy(), line)
+    bridge::open_in_sidebar(&ctx, &resolved.to_string_lossy(), line).map(drop)
 }
 
 #[cfg(test)]

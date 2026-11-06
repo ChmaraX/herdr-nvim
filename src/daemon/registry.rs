@@ -18,12 +18,12 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::{
     config::Sidebar,
-    herdr::{CliHerdr, Herdr, TabInfo},
+    herdr::{Herdr, TabInfo},
     state::{self, tab_key, TabId},
 };
 
 use super::{
-    liveness, process, remote_expr, request, Liveness, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT,
+    liveness, process, remote_expr, remote_send, Liveness, Reply, HEALTH_POLL_TIMEOUT, RPC_TIMEOUT,
 };
 
 /// How long `quit` gives a daemon to exit after asking it to: as long as a
@@ -42,13 +42,22 @@ const QUIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 ///
 /// `HERDR_NVIM_RUNTIME_DIR` overrides everything (used by tests); otherwise the
 /// XDG runtime dir, falling back to the platform temp dir.
+///
+/// Each host's daemons have their own folder (the Herdr app's an `app/`
+/// subfolder, `HostOps::socket_subdir`): each host reaps the daemons whose tab
+/// it does not know, so the TUI's `daemon-gc` must never see the app's daemons
+/// (and the app's reconcile must never see the TUI's).
 fn socket_dir() -> PathBuf {
-    env::var_os("HERDR_NVIM_RUNTIME_DIR")
+    let base = env::var_os("HERDR_NVIM_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("XDG_RUNTIME_DIR").map(|path| PathBuf::from(path).join("herdr-nvim"))
         })
-        .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"))
+        .unwrap_or_else(|| env::temp_dir().join("herdr-nvim"));
+    match crate::host::ops().socket_subdir() {
+        Some(sub) => base.join(sub),
+        None => base,
+    }
 }
 
 /// Extension of the per-daemon entries in `socket_dir` (see there).
@@ -130,9 +139,9 @@ pub(crate) fn orphans(keys: &[String], tabs: &[TabInfo]) -> Vec<String> {
 /// Garbage-collect daemons whose tab no longer exists (herdr's `[[startup]]`
 /// hook, after a restart that did not restore every tab).
 pub fn gc_cmd() -> Result<()> {
-    let mut herdr = CliHerdr;
+    let mut herdr = crate::host::ops().herdr();
     let config = crate::config::load();
-    gc(&mut herdr, &config.sidebar)
+    gc(&mut *herdr, &config.sidebar)
 }
 
 /// Stop every daemon whose tab herdr no longer has. herdr being unreachable
@@ -195,16 +204,26 @@ pub(crate) struct Probe {
     pub comments: u32,
     /// Its own `$HERDR_TAB_ID`, if that matches its registry key.
     pub tab_id: Option<TabId>,
+    /// The runtime stamp it was started with ("" before stamps existed, and
+    /// for a daemon of the herdr TUI, which has none): the app's `stale`.
+    pub stamp: String,
 }
 
-/// Vimscript returning `"<pid> <unsaved> <comments> <tab id>"` in one round
-/// trip. Comments are only counted if the plugin's comment store is already
-/// loaded, so the probe never loads modules into the daemon.
+/// Vimscript counting the pending review comments of a daemon that has the
+/// plugin's comment store loaded, and 0 for one that does not, so the probe
+/// never loads modules into the daemon.
+const COMMENTS_EXPR: &str =
+    "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
+     if not c then return 0 end local ok, l = pcall(c.list) \
+     return ok and #l or 0 end)()\")";
+
+/// Vimscript returning `"<pid> <unsaved> <comments> <tab id> <stamp>"` in one
+/// round trip.
 fn probe_expr() -> String {
-    let comments = "luaeval(\"(function() local c = package.loaded['herdr-nvim.comments'] \
-                    if not c then return 0 end local ok, l = pcall(c.list) \
-                    return ok and #l or 0 end)()\")";
-    format!("join([getpid(), {UNSAVED_BUFFERS_EXPR}, {comments}, $HERDR_TAB_ID], ' ')")
+    format!(
+        "join([getpid(), {UNSAVED_BUFFERS_EXPR}, {COMMENTS_EXPR}, $HERDR_TAB_ID, ${}], ' ')",
+        super::STAMP_ENV
+    )
 }
 
 /// Ask the daemon of `key` the `Probe` questions.
@@ -222,7 +241,7 @@ pub(crate) fn probe(key: &str, sidebar: &Sidebar) -> Result<Reply<Probe>> {
 }
 
 fn parse_probe(key: &str, out: &str) -> Result<Probe> {
-    let mut parts = out.splitn(4, ' ');
+    let mut parts = out.splitn(5, ' ');
     let mut number = |what: &str| {
         parts
             .next()
@@ -236,11 +255,13 @@ fn parse_probe(key: &str, out: &str) -> Result<Probe> {
         .next()
         .map(TabId::new)
         .filter(|tab| !tab.as_str().is_empty() && tab.key() == key);
+    let stamp = parts.next().unwrap_or_default().to_owned();
     Ok(Probe {
         pid,
         unsaved,
         comments,
         tab_id,
+        stamp,
     })
 }
 
@@ -289,15 +310,12 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
 /// nothing answers on its socket (Windows). `false` if it is still there;
 /// an error if it could not be asked at all.
 fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
-    // Whatever the daemon made of it (one exiting mid-request drops the
-    // connection: `Reply::Failed`), what counts is whether it then exits.
-    request(
-        socket,
-        &["--remote-send", "<cmd>qa!<cr>"],
-        sidebar,
-        RPC_TIMEOUT,
-    )
-    .context("could not ask it to quit")?;
+    // `<C-\><C-n>` first: out of whatever waits for input (a half-typed
+    // command, a prompt), or `qa!` would be its next keys. Whatever the
+    // daemon made of it (one exiting mid-request drops the connection:
+    // `Reply::Failed`), what counts is whether it then exits.
+    remote_send(socket, "<C-\\><C-n><Cmd>qa!<CR>", sidebar, RPC_TIMEOUT)
+        .context("could not ask it to quit")?;
     let deadline = Instant::now() + QUIT_TIMEOUT;
     #[cfg(unix)]
     return process::wait_gone(
@@ -485,6 +503,13 @@ mod tests {
     // Issue #61 (review of PR #63): not being able to ask a daemon to quit
     // (here: no nvim to run the `qa!` client with) says nothing about the
     // daemon, so it must be an error, never a reason to kill it.
+    //
+    // Windows only: there a request is an `nvim --server` client, which a
+    // broken `nvim_bin` stops from running at all. On Unix every request
+    // goes over the daemon's own socket, with no client to break, so there
+    // is no such failure to test -- a daemon that takes the `qa!` and does
+    // not exit is covered by `a_busy_daemon_is_killed_with_its_process_group`.
+    #[cfg(windows)]
     #[test]
     fn a_quit_that_cannot_be_sent_kills_nothing() {
         if !nvim_available() {

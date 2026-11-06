@@ -185,9 +185,9 @@ impl TestDaemon {
     /// on SIGTERM either (nvim handles signals on that same loop).
     #[cfg(unix)]
     pub(crate) fn busy(&self) {
-        let reply = crate::daemon::request(
+        let reply = crate::daemon::remote_send(
             &self.socket,
-            &["--remote-send", "<cmd>lua while true do end<cr>"],
+            "<cmd>lua while true do end<cr>",
             &Sidebar::default(),
             RPC_TIMEOUT,
         );

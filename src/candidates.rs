@@ -50,7 +50,6 @@ pub struct Candidate {
 
 pub struct BuildInput<'a> {
     pub mined_touches: &'a [sessions::MinedTouch],
-    pub first_op_unix: Option<u64>,
     /// Every currently-dirty git path (`git status`), mined or not.
     pub git_dirty: &'a HashSet<String>,
     pub git_committed_in_session: &'a HashSet<String>,
@@ -228,7 +227,6 @@ mod tests {
     ) -> BuildInput<'a> {
         BuildInput {
             mined_touches,
-            first_op_unix: Some(1000),
             git_dirty,
             git_committed_in_session: git_committed,
             in_git_worktree: in_worktree,
@@ -299,7 +297,6 @@ mod tests {
         }
         let input = BuildInput {
             mined_touches: &[],
-            first_op_unix: None,
             git_dirty: &HashSet::from(["/repo/sed_edited.rs".to_owned()]),
             git_committed_in_session: &HashSet::new(),
             in_git_worktree: &always_true,
@@ -325,7 +322,6 @@ mod tests {
         }];
         let input = BuildInput {
             mined_touches: &[],
-            first_op_unix: None,
             git_dirty: &HashSet::new(),
             git_committed_in_session: &HashSet::new(),
             in_git_worktree: &always_true,

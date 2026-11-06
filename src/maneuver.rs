@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::{
     config::SidebarPosition,
     daemon,
-    herdr::{CliHerdr, Dir, Herdr},
+    herdr::{CliHerdr, Dir, Layout},
     layout::plan_rebuild,
     state::{self, Phase, StateFile},
 };
@@ -30,7 +30,7 @@ pub struct Ctx {
 /// `workspace_cwd` from the context JSON, then `focused_pane_cwd` from the
 /// same JSON, then (only if a very old herdr populated neither field) a
 /// live `pane get` call via `h` as a last resort.
-pub fn read_ctx(h: &mut dyn Herdr) -> Result<Ctx> {
+pub fn read_ctx(h: &mut dyn Layout) -> Result<Ctx> {
     let workspace = env::var("HERDR_WORKSPACE_ID").context("HERDR_WORKSPACE_ID is not set")?;
     let focused_pane = env::var("HERDR_PANE_ID").context("HERDR_PANE_ID is not set")?;
     let plugin_context =
@@ -77,7 +77,7 @@ fn cwd_from_context(context: &Value) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
+pub fn toggle(h: &mut dyn Layout, ctx: &Ctx) -> Result<()> {
     // Opportunistic, best-effort gc: reap stale per-tab daemons left behind by
     // closed tabs. Non-fatal -- a gc failure must never block a toggle.
     let config = crate::config::load();
@@ -103,8 +103,8 @@ pub fn toggle(h: &mut dyn Herdr, ctx: &Ctx) -> Result<()> {
 /// The pane id of `tab`'s sidebar if state records it as fully Open and its
 /// pane is still alive; `None` otherwise (no state, a dead sidebar, or a
 /// mid-open Evacuating checkpoint). Shared by `toggle`'s fast close-and-return
-/// path and `bridge::ensure_sidebar_open`'s idempotent open check.
-pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<String>> {
+/// path and `ensure_open`'s idempotent open check.
+pub(crate) fn live_open_sidebar(h: &mut dyn Layout, tab: &str) -> Result<Option<String>> {
     let Some(existing) = state::load(tab)? else {
         return Ok(None);
     };
@@ -121,7 +121,26 @@ pub(crate) fn live_open_sidebar(h: &mut dyn Herdr, tab: &str) -> Result<Option<S
     }
 }
 
-fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
+/// Idempotently ensure a sidebar is open in `ctx.tab`, returning its pane id.
+///
+/// If state already records a live sidebar for this tab, it is already open —
+/// return it untouched (calling `toggle` here would *close* it). Otherwise (no
+/// state, a dead sidebar, or a mid-open checkpoint) delegate to `toggle`,
+/// which follows its own open/recover semantics and leaves a fresh sidebar in
+/// `ctx.tab`.
+pub(crate) fn ensure_open(h: &mut dyn Layout, ctx: &Ctx) -> Result<String> {
+    if let Some(sidebar) = live_open_sidebar(h, &ctx.tab)? {
+        return Ok(sidebar);
+    }
+    toggle(h, ctx)?;
+    let opened = state::load(&ctx.tab)?
+        .context("sidebar state missing after opening")?
+        .sidebar_pane
+        .context("sidebar pane id missing after opening")?;
+    Ok(opened)
+}
+
+fn open(h: &mut dyn Layout, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     // Best-effort: clear out ready markers abandoned by earlier opens (see
     // `sweep_stale_markers`) before this open adds its own.
     state::sweep_stale_markers();
@@ -249,7 +268,7 @@ fn open(h: &mut dyn Herdr, ctx: &Ctx, position: SidebarPosition) -> Result<()> {
     state::save(&state_file)
 }
 
-pub fn recover(h: &mut dyn Herdr, tab: &str) -> Result<()> {
+pub fn recover(h: &mut dyn Layout, tab: &str) -> Result<()> {
     let Some(mut state_file) = state::load(tab)? else {
         return Ok(());
     };

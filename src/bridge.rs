@@ -1,4 +1,5 @@
-//! `pick-file` orchestration — the file bridge tying M1/M2/M3 together.
+//! `pick-file` orchestration: the agent's output, the picker, and the tab's
+//! nvim.
 //!
 //! Two phases share one entry point ([`pick_file_cmd`]), selected by argv:
 //!
@@ -11,7 +12,7 @@
 //!   the sidebar, and deletes the handoff file.
 //!
 //! Only the pure selection rule [`target_agent_pane`] is unit tested; the two
-//! phases are exercised live in Task 4's end-to-end run.
+//! phases are exercised by the e2e suites (TUI and `herdr-app/e2e`).
 
 use std::{
     collections::HashSet,
@@ -27,18 +28,19 @@ use anyhow::{bail, Context, Result};
 use crate::{
     candidates::{self, BuildInput, Candidate},
     config, daemon, extract, gitscan,
-    herdr::{self, CliHerdr, Herdr},
-    maneuver::{self, Ctx},
+    herdr::{self, Herdr},
+    host::{self, Opened, Pick},
+    maneuver::Ctx,
     pathkey,
     picker::Handoff,
-    sessions, state,
+    sessions,
 };
 
 const PLUGIN_ID: &str = "chmarax.herdr-nvim";
 
-/// How long opening a file in the daemon (`--remote`) may take. Longer than
-/// a plain request (`daemon::RPC_TIMEOUT`): it runs the file's autocmds
-/// (filetype, LSP attach), which a heavy config makes slow.
+/// How long opening a file in the daemon may take. Longer than a plain
+/// request (`daemon::RPC_TIMEOUT`): it runs the file's autocmds (filetype,
+/// LSP attach), which a heavy config makes slow.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
@@ -105,13 +107,18 @@ pub fn target_agent_pane(
 
 /// Phase 1: read the target agent pane, gather candidates from the three
 /// read-only layers (session mining, git worktree status, scrape), and open
-/// the picker.
+/// the picker (the host's own way: a TUI popup, or the app's dialog).
+/// `--list` prints the candidates instead.
 fn start_pick() -> Result<()> {
-    let mut herdr = CliHerdr;
-    let ctx = maneuver::read_ctx(&mut herdr)?;
+    let host = host::ops();
+    let ctx = host.ctx()?;
     let config = config::load();
+    let mut herdr = host.herdr();
 
-    let target = target_agent_pane(&mut herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane)?;
+    let target = match target_agent_pane(&mut *herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane) {
+        Ok(target) => target,
+        Err(error) => return host.show_pick(Pick::NoAgent(error)),
+    };
     let snapshot = herdr.pane_snapshot(&target)?;
     let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
     let text = herdr.read_pane(&target, lines)?;
@@ -121,9 +128,16 @@ fn start_pick() -> Result<()> {
         path.is_file()
     });
 
-    if candidates.is_empty() {
-        notify_no_candidates();
+    if env::args().any(|arg| arg == "--list") {
+        let session = snapshot.agent_session.map(|s| s.value);
+        println!(
+            "{}",
+            serde_json::json!({"agent": target, "session": session, "candidates": candidates})
+        );
         return Ok(());
+    }
+    if candidates.is_empty() {
+        return host.show_pick(Pick::Nothing);
     }
 
     let handoff = Handoff {
@@ -135,9 +149,8 @@ fn start_pick() -> Result<()> {
         cwd: cwd.to_string_lossy().into_owned(),
         max_files: config.picker.max_files,
     };
-    let handoff_path = write_handoff(&handoff)?;
-    open_picker(&handoff_path)?;
-    Ok(())
+    let handoff = write_handoff(&handoff)?;
+    host.show_pick(Pick::Ready { handoff, cwd })
 }
 
 /// Gather candidates from all three layers given the pane's already-fetched
@@ -146,7 +159,7 @@ fn start_pick() -> Result<()> {
 /// the cwd). Never fails: any session-file read error, JSON parse failure,
 /// or git command failure degrades to the remaining layers (brief) -- this
 /// function's return type is `Vec<Candidate>`, not `Result`, on purpose.
-fn gather_candidates(
+pub(crate) fn gather_candidates(
     agent_session: Option<&herdr::AgentSession>,
     scrape_text: &str,
     cwd: &Path,
@@ -216,7 +229,6 @@ fn gather_candidates(
 
     candidates::build_candidates(BuildInput {
         mined_touches: &mined.touches,
-        first_op_unix: mined.first_op_unix,
         git_dirty: &git_dirty,
         git_committed_in_session: &git_committed,
         in_git_worktree: &in_git_worktree,
@@ -260,9 +272,7 @@ fn act_on_pick(handoff_path: &str) -> Result<()> {
         // independent cwd lookup.
         cwd: PathBuf::from(&handoff.cwd),
     };
-    let mut herdr = CliHerdr;
-
-    open_in_sidebar(&mut herdr, &ctx, &candidate.path, candidate.line)
+    open_in_sidebar(&ctx, &candidate.path, candidate.line).map(drop)
 }
 
 /// Ensure the sidebar is open in `ctx.tab`, open `path` (optionally at
@@ -272,95 +282,102 @@ fn act_on_pick(handoff_path: &str) -> Result<()> {
 ///
 /// A failure is also shown as a herdr notification: the user just picked or
 /// clicked a file, and the finisher's stderr goes nowhere.
-pub(crate) fn open_in_sidebar(
-    h: &mut dyn Herdr,
-    ctx: &Ctx,
-    path: &str,
-    line: Option<u32>,
-) -> Result<()> {
-    try_open_in_sidebar(h, ctx, path, line).inspect_err(|error| {
+pub(crate) fn open_in_sidebar(ctx: &Ctx, path: &str, line: Option<u32>) -> Result<Opened> {
+    open_in_sidebar_at(ctx, path, line, None, true).inspect_err(|error| {
         notify(&format!("Could not open {path}: {error:#}"));
     })
 }
 
-fn try_open_in_sidebar(h: &mut dyn Herdr, ctx: &Ctx, path: &str, line: Option<u32>) -> Result<()> {
+/// `open_in_sidebar` with a column too (the app's `open` entry point), and
+/// without the focus when the caller gives it itself (`focus: false`).
+pub(crate) fn open_in_sidebar_at(
+    ctx: &Ctx,
+    path: &str,
+    line: Option<u32>,
+    col: Option<u32>,
+    focus: bool,
+) -> Result<Opened> {
+    let host = host::ops();
+    // A file nvim can't show (an image), shown rendered where the host can.
+    if host.preview(ctx, path)? {
+        return Ok(Opened::default());
+    }
+    let config = config::load();
+    // nvim's pane is open: its daemon runs, the open is the check (bounded,
+    // unstuck if needed): no health check first.
+    if let Some(pane) = host.shown_sidebar(ctx) {
+        open_in_nvim(
+            &daemon::registry::socket_path(&ctx.tab),
+            path,
+            line,
+            col,
+            &config.sidebar,
+        )?;
+        if focus {
+            host.focus(&pane);
+        }
+        return Ok(Opened { pane, notice: None });
+    }
     // Bring the tab's daemon up *before* opening the sidebar. The sidebar pane
     // runs its own `ensure_daemon`; doing ours first (to completion) means the
     // sidebar reuses the already-healthy daemon rather than racing to
     // spawn/bind a competing one on the same socket.
     let plugin_root = daemon::plugin_root()?;
-    let config = config::load();
-    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &ctx.cwd)?;
+    let socket = daemon::ensure_daemon(&ctx.tab, &plugin_root, &config, &host.nvim_folder(ctx))?;
 
-    let sidebar = ensure_sidebar_open(h, ctx)?;
+    let opened = host.ensure_sidebar(ctx)?;
 
-    open_in_nvim(&socket, path, line, &config.sidebar)?;
-    focus_pane(&sidebar);
-    Ok(())
-}
-
-/// Idempotently ensure a sidebar is open in `ctx.tab`, returning its pane id.
-///
-/// If state already records a live sidebar for this tab, it is already open —
-/// return it untouched (calling `maneuver::toggle` here would *close* it).
-/// Otherwise (no state, a dead sidebar, or a mid-open checkpoint) delegate to
-/// `maneuver::toggle`, which follows its own open/recover semantics and leaves
-/// a fresh sidebar in `ctx.tab`.
-fn ensure_sidebar_open(h: &mut dyn Herdr, ctx: &Ctx) -> Result<String> {
-    if let Some(sidebar) = maneuver::live_open_sidebar(h, &ctx.tab)? {
-        return Ok(sidebar);
+    open_in_nvim(&socket, path, line, col, &config.sidebar)?;
+    if focus {
+        host.focus(&opened.pane);
     }
-
-    maneuver::toggle(h, ctx)?;
-    let opened = state::load(&ctx.tab)?
-        .context("sidebar state missing after opening")?
-        .sidebar_pane
-        .context("sidebar pane id missing after opening")?;
     Ok(opened)
 }
 
 /// Open `path` (optionally at `line`) in the headless nvim daemon on `socket`.
 ///
-/// Line jumping is done with `--remote-expr cursor(...)` rather than the tempting
+/// Line jumping is asked for as `cursor(...)` rather than the tempting
 /// `--remote +<line> <path>`: nvim treats `--remote +5` as a *filename* (it opens
 /// a buffer literally named `+5` and leaves the cursor on line 1), so `+<line>`
-/// only works when *launching* nvim, not against a running server. `--remote-expr`
-/// is also mode-independent (works even mid-insert) and needs no path escaping.
+/// only works when *launching* nvim, not against a running server. An
+/// expression is also mode-independent (works even mid-insert) and needs no
+/// path escaping.
 fn open_in_nvim(
     socket: &Path,
     path: &str,
     line: Option<u32>,
+    col: Option<u32>,
     sidebar: &crate::config::Sidebar,
 ) -> Result<()> {
-    // Open (or focus) the file. `--remote` takes the path as a clean argv, so a
-    // path with spaces needs no escaping.
-    daemon::ask(socket, &["--remote", path], sidebar, OPEN_TIMEOUT)
-        .with_context(|| format!("nvim --remote failed to open {path}"))?;
-    // Jump to the line, if known.
-    if let Some(line) = line {
-        daemon::ask_expr(socket, &format!("cursor({line}, 1)"), sidebar).with_context(|| {
-            format!("nvim --remote-expr failed to jump to line {line} in {path}")
-        })?;
+    // Open (or focus) the file and jump to the line, in one request: exactly
+    // what `--remote` does (`nvim_command('drop ' .. fnameescape(path))`, not
+    // silenced as `execute()` would), then `cursor()`.
+    let open = format!(
+        "nvim_command('drop ' . fnameescape({}))",
+        daemon::vim_string_literal(path)
+    );
+    let expr = match line {
+        Some(line) => format!("[{open}, cursor({line}, {})]", col.unwrap_or(1)),
+        None => format!("[{open}]"),
+    };
+    // Bounded, never waited on forever: a daemon that took the request and
+    // said nothing may only be waiting for input (a half-typed command, a
+    // swap-file prompt), so it is unstuck and asked once more; a busy or
+    // hung one gives up at the deadline and says so -- the notification the
+    // person sees for a file they picked or clicked.
+    let mut reply = daemon::remote_expr(socket, &expr, sidebar, OPEN_TIMEOUT)?;
+    if matches!(reply, daemon::Reply::TimedOut) {
+        daemon::unstick(socket, sidebar);
+        reply = daemon::remote_expr(socket, &expr, sidebar, daemon::RPC_TIMEOUT)?;
     }
+    daemon::answer(socket, reply, OPEN_TIMEOUT)
+        .with_context(|| format!("could not open {path} in the tab's nvim"))?;
     Ok(())
-}
-
-/// Focus the sidebar pane so the user lands in nvim. Best-effort: the file is
-/// already loaded in the daemon regardless, so a focus failure is non-fatal.
-fn focus_pane(pane: &str) {
-    let result = Command::new("herdr")
-        .args(["agent", "focus", pane])
-        .status();
-    match result {
-        Ok(status) if status.success() => {}
-        Ok(status) => eprintln!("herdr-nvim: could not focus sidebar pane {pane} (exit {status})"),
-        Err(error) => eprintln!("herdr-nvim: could not focus sidebar pane {pane}: {error}"),
-    }
 }
 
 /// Open the picker as a floating popup pane, passing the handoff path via the
 /// environment.
-fn open_picker(handoff_path: &str) -> Result<()> {
+pub(crate) fn open_picker(handoff_path: &str) -> Result<()> {
     let status = Command::new("herdr")
         .args([
             "plugin",
@@ -389,7 +406,7 @@ fn open_picker(handoff_path: &str) -> Result<()> {
 
 /// Show a herdr notification (best-effort, falling back to stderr) that no file
 /// paths were found. Callers exit 0 after this — an empty result is not an error.
-fn notify_no_candidates() {
+pub(crate) fn notify_no_candidates() {
     if !notify("No file paths found in agent output") {
         eprintln!("herdr-nvim: no file paths found in agent output");
     }
@@ -406,7 +423,7 @@ fn notify(body: &str) -> bool {
 }
 
 /// Serialize `handoff` to a uniquely-named temp file, returning its path.
-fn write_handoff(handoff: &Handoff) -> Result<String> {
+pub(crate) fn write_handoff(handoff: &Handoff) -> Result<String> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
