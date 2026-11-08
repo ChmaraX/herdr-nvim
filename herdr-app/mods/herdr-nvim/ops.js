@@ -10,7 +10,7 @@ import { bin, nvim } from "./lib.js";
 // finds where the tab works from its terminals (where its nvim starts). The
 // tree's root is not it: one the person moved to, or a stopped nvim's.
 export function tabOf(place) {
-  return { space: place.space ?? focused()?.space, tab: place.tab, terminal: null, cwd: null };
+  return { space: place.space ?? focused()?.space, tab: place.tab, terminal: place.terminal ?? null, cwd: place.cwd ?? null };
 }
 
 // Every request the tree makes, by op (fs.lua's `ops`).

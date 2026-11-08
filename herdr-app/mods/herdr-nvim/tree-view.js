@@ -4,10 +4,10 @@
 // it in the tab's nvim pane. It takes the keyboard from `pane.go` and
 // cmd-shift-e (`"focus"`), follows the file nvim shows, and gives the
 // keyboard back with q / Esc.
-
+import * as fs from "fs/promises";
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
-import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
+import { focused, home, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
 import { previewKind } from "./preview.js";
 import { nvim } from "./lib.js";
 import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./ops.js";
@@ -20,7 +20,7 @@ import { goToTree, nvimPanes, panelState } from "./panel.js";
 // with LazyVim's leader.
 const TREE_KEY = ["space", "e"];
 import { GIT_EVERY_MS, TreeModel, dirname } from "./tree-model.js";
-import { markOf } from "./tree.js";
+import { markOf, normalizePath } from "./tree.js";
 import { KeyboardHandover, TabRoots } from "./tree-parts.js";
 
 const HINT = "? keys";
@@ -34,7 +34,10 @@ function place(previous) {
   const f = focused();
   const space = spaces().find((s) => s.id === f?.space) ?? spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const cwd = pane?.cwd || (f?.tab === previous?.tab ? previous?.cwd : null) || f?.cwd || space?.folder || null;
+  const tabPanes = f?.tab ? panes().filter((p) => p.tab === f.tab) : [];
+  const tabCwd = tabPanes.find((p) => p.cwd)?.cwd;
+  const rawCwd = pane?.cwd || tabCwd || (f?.tab === previous?.tab ? previous?.cwd : null) || f?.cwd || space?.folder || home();
+  const cwd = normalizePath(rawCwd);
   return { space: space?.id ?? null, tab: f?.tab ?? null, cwd, machine: space?.machine ?? null };
 }
 
@@ -96,7 +99,26 @@ export class Tree {
     cx.spawn(async (cx) => {
       const now = await current(next);
       if (this.place?.tab !== next.tab) return;
-      this.adopt(next.tab, now.tab_root ?? next.cwd, cx);
+      const h = normalizePath(home());
+      let candidateRoot = normalizePath(now.tab_root || next.cwd || h);
+      if ((!now.file || candidateRoot === h) && next.space) {
+        const sp = spaces().find((s) => s.id === next.space) ?? spaces().find((s) => s.active);
+        if (sp?.name && sp.name !== "~") {
+          const checks = [
+            `${h}/Projetos/${sp.name}`,
+            `${h}/Projetos/${sp.name.replace(/-/g, "")}`,
+            `${h}/${sp.name}`,
+            `${h}/${sp.name.replace(/-/g, "")}`,
+          ];
+          for (const c of checks) {
+            if (await fs.exists(c).catch(() => false)) {
+              candidateRoot = c;
+              break;
+            }
+          }
+        }
+      }
+      this.adopt(next.tab, candidateRoot, cx);
       this.watchCurrent(next, cx, now);
     });
   }
@@ -104,10 +126,11 @@ export class Tree {
   // The tab's folder is `tabRoot`: show the root chosen for this tab, unless
   // the tab's folder changed since (then the folder itself).
   adopt(tab, tabRoot, cx) {
-    if (this.rootTab !== tab || (this.shownTab === tab && this.tabRoot === tabRoot)) return;
+    const norm = normalizePath(tabRoot);
+    if (this.rootTab !== tab || (this.shownTab === tab && this.tabRoot === norm)) return;
     this.shownTab = tab;
-    this.tabRoot = tabRoot;
-    this.setRoot(this.roots.rootFor(tab, tabRoot), cx);
+    this.tabRoot = norm;
+    this.setRoot(this.roots.rootFor(tab, norm), cx);
     cx.notify();
   }
 
@@ -126,23 +149,24 @@ export class Tree {
   // next setRoot (`rootGen`); the same root again (two tabs on one repo, or
   // back to a tab) keeps the loop, the listing and the selection.
   setRoot(root, cx) {
-    if (this.rootTab && root) this.roots.remember(this.rootTab, this.tabRoot, root);
-    if (root && root === this.model.root && !this.error) return;
+    const norm = normalizePath(root);
+    if (this.rootTab && norm) this.roots.remember(this.rootTab, this.tabRoot, norm);
+    if (norm && norm === this.model.root && !this.error) return;
     const gen = (this.rootGen = (this.rootGen ?? 0) + 1);
     const keep = { hidden: this.model.showHidden, ignored: this.model.showIgnored };
-    this.model.reset(root);
+    this.model.reset(norm);
     Object.assign(this.model, { showHidden: keep.hidden, showIgnored: keep.ignored });
     this.selected = 0;
     this.picked.clear();
     this.filter = null;
     this.error = null;
-    if (!root) return;
+    if (!norm) return;
     cx.spawn(async (cx) => {
       try {
         await this.model.reload();
         cx.notify();
         while (this.rootGen === gen) {
-          const changed = await watchFolder(root);
+          const changed = await watchFolder(norm);
           if (this.rootGen !== gen) return;
           // Hidden (Files closed): no listing or git status for every change
           // (a build makes many); it catches up once when shown (`render`).

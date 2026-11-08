@@ -829,6 +829,12 @@ pub(crate) fn plugin_root() -> Result<PathBuf> {
         }
         dir = candidate.parent();
     }
+    if let Some(home) = crate::home::home_dir().map(|h| h.join(".config/herdr-app")) {
+        let mod_root = home.join("mods/herdr-nvim");
+        if mod_root.join("lua").join("herdr-nvim").is_dir() {
+            return Ok(mod_root);
+        }
+    }
     bail!("could not locate plugin root (set HERDR_NVIM_PLUGIN_ROOT)")
 }
 
