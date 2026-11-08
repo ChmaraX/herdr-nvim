@@ -53,6 +53,18 @@ pub(crate) fn app_status() -> Result<Value> {
     serde_json::from_slice(&output.stdout).context("herdr-app status: bad JSON")
 }
 
+/// All machine-qualified spaces/tabs/panes as the window sees them.
+pub(crate) fn app_listing() -> Result<Value> {
+    let output = Command::new(app_bin())
+        .arg("ls")
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        bail!("cannot read the Herdr app's spaces");
+    }
+    serde_json::from_slice(&output.stdout).context("herdr-app ls: bad JSON")
+}
+
 /// The command that runs this binary with the app host's environment: the
 /// `herdr-app/bin/herdr-nvim` wrapper exports `HERDR_NVIM_SELF`. Terminals the
 /// app starts get the core's environment, not ours, so they must go through it.
@@ -124,11 +136,25 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
     // The focused terminal: the agent an agent block shows, else the
     // terminal of the focused pane (from the layout document).
     let pane = text("focused_pane");
-    let terminal = text("agent").or_else(|| {
-        let doc = super::doc::read().ok().flatten()?;
-        let pane = pane?;
-        super::doc::terminal_of_pane(&doc, &pane)
-    });
+    let terminal = if super::remote::machine(&tab).is_some() {
+        let listing = app_listing()?;
+        listing["spaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|s| s["tabs"].as_array().into_iter().flatten())
+            .filter(|t| t["id"] == tab)
+            .flat_map(|t| t["terminals"].as_array().into_iter().flatten())
+            .find(|t| t["pane"].as_str() == pane.as_deref())
+            .and_then(|t| t["terminal"].as_str())
+            .map(str::to_owned)
+    } else {
+        text("agent").or_else(|| {
+            let doc = super::doc::read().ok().flatten()?;
+            let pane = pane?;
+            super::doc::terminal_of_pane(&doc, &pane)
+        })
+    };
     Ok(AppCtx {
         space,
         tab,

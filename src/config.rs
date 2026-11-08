@@ -6,7 +6,7 @@
 //! Missing file -> defaults, silently. Malformed file -> defaults, with one
 //! warning on stderr (never panics or fails the caller).
 
-use std::{env, fs, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -22,10 +22,39 @@ fn is_valid_env_key(key: &str) -> bool {
 pub struct Config {
     #[serde(default)]
     pub sidebar: Sidebar,
+    /// Per-machine Neovim settings; local executable paths must not leak to a remote host.
+    #[serde(default)]
+    pub remote: BTreeMap<String, Remote>,
     #[serde(default)]
     pub picker: Picker,
     #[serde(default, deserialize_with = "lenient_app")]
     pub app: App,
+}
+
+#[derive(Deserialize, PartialEq, Eq, Debug)]
+pub struct Remote {
+    #[serde(default = "default_nvim_bin")]
+    pub nvim_bin: String,
+    #[serde(default)]
+    pub nvim_env: Vec<String>,
+    #[serde(default)]
+    pub position: Option<SidebarPosition>,
+}
+
+impl Config {
+    pub(crate) fn remote_sidebar(&self, machine: &str) -> Sidebar {
+        match self.remote.get(machine) {
+            Some(remote) => Sidebar {
+                nvim_bin: remote.nvim_bin.clone(),
+                nvim_env: remote.nvim_env.clone(),
+                position: remote.position.unwrap_or(self.sidebar.position),
+            },
+            None => Sidebar {
+                position: self.sidebar.position,
+                ..Sidebar::default()
+            },
+        }
+    }
 }
 
 /// `[app]`, read leniently: a value herdr-nvim doesn't know warns and falls
@@ -421,6 +450,19 @@ mod tests {
 
         let config = load();
         assert!(!config.picker.frecency);
+    }
+
+    #[test]
+    fn remote_settings_do_not_inherit_local_executable_paths_or_profiles() {
+        let config: Config = toml::from_str("[sidebar]\nnvim_bin = '/mac/nvim'\nnvim_env = ['NVIM_APPNAME=local']\nposition = 'bottom'\n[remote.box]\nnvim_bin = '/remote/nvim'\nnvim_env = ['NVIM_APPNAME=work']\n").unwrap();
+        let remote = config.remote_sidebar("box");
+        assert_eq!(remote.nvim_bin, "/remote/nvim");
+        assert_eq!(remote.env_override(), vec![("NVIM_APPNAME", "work")]);
+        assert_eq!(remote.position, SidebarPosition::Bottom);
+        let defaults = config.remote_sidebar("other");
+        assert_eq!(defaults.nvim_bin, "nvim");
+        assert!(defaults.nvim_env.is_empty());
+        assert_eq!(defaults.position, SidebarPosition::Bottom);
     }
 
     #[test]

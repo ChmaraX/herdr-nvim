@@ -75,6 +75,48 @@ curl -fsSL …/install.sh | sh -s -- --app --uninstall           # back to the s
 The first nvim pane shows a welcome with these keys, once
 (`herdr-app do herdr-nvim.welcome` shows it again).
 
+## Remote tabs
+
+On a connected remote machine, `cmd-e` opens or hides that tab's remote Neovim.
+The editor loads the remote host's normal configuration, plugins and keymaps;
+use its own explorer inside the pane. Hiding preserves buffers, undo and cursor
+state. Closing the Herdr tab stops its daemon, so save first.
+
+Remote hosts need Neovim 0.10+ and `hc` on their core's PATH. No remote Rust
+binary or Python runtime is required: the local binary uploads a versioned Lua
+helper through the existing Herdr machine connection. Remote editing currently
+requires a POSIX host. The existing installer's local Neovim prerequisite is
+unchanged.
+
+Other mods can open a remote file without testing the path on the desktop:
+
+```sh
+~/.config/herdr-app/mods/herdr-nvim/bin/herdr-nvim open \
+  --tab your-machine/your-tab-id /remote/project/src/file.rs:12:3
+```
+
+Per-machine settings live in the desktop's `~/.config/herdr-nvim/config.toml`:
+
+```toml
+[remote.your-machine]
+nvim_bin = "/remote/path/to/nvim"  # default: nvim on that machine
+nvim_env = ["NVIM_APPNAME=work"]   # optional alternate remote profile
+position = "right"                # otherwise follows sidebar.position
+```
+
+Local executable paths and environment overrides are never copied to remote
+hosts. A running remote editor keeps its previous settings/runtime until quit.
+To stop a clean remote editor explicitly (unsaved buffers are refused):
+
+```sh
+~/.config/herdr-app/mods/herdr-nvim/bin/herdr-nvim app-remote-stop \
+  --tab your-machine/your-tab-id
+```
+
+The native Files tree, agent-file picker, annotations and rendered previews
+remain local-only. Remote commands for those features report that limitation
+instead of falling back to local files or terminals.
+
 ## The tree
 
 The tree is rooted at the tab's repo and follows nvim's file. Opening a file
@@ -186,6 +228,8 @@ herdr-app/install.sh              # install, or upgrade in place
 herdr-app/install.sh --uninstall  # take it out
 just ci                           # cargo fmt + cargo test + headless Lua suite
 node herdr-app/e2e/js-checks.mjs  # the mods' logic
+# Creates and removes its own remote test space/files (local Python 3 test driver):
+python3 herdr-app/e2e/remote-editor.py --machine your-machine --binary target/debug/herdr-nvim
 herdr-app/e2e/run.sh              # the main flows in a private app (--bundle: through the root installer)
 ```
 

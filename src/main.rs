@@ -38,6 +38,7 @@ const SHORT: &[&str] = &[
     "pick-file",
     "open-link",
     "app-config",
+    "app-remote-stop",
 ];
 
 fn deadline(after: std::time::Duration) {
@@ -62,6 +63,17 @@ fn main() {
     // the one the person sees.
     if app && SHORT.contains(&mode.as_str()) {
         deadline(std::time::Duration::from_secs(25));
+    }
+    if app {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        match app::remote::dispatch(&mode, &args) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("herdr-nvim: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     let code = match (mode.as_str(), app) {
         ("toggle", false) => run(maneuver::toggle_cmd),
@@ -101,7 +113,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-remote-stop>"
             );
             2
         }

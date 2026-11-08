@@ -40,7 +40,7 @@
 // tab is one record (`tabState`).
 
 import { focused, layout, nextCommand, notify, panes, run, setShared, shared, spaces, terminals } from "herdr";
-import { nvim, place } from "./lib.js";
+import { isRemoteTab, nvim, place } from "./lib.js";
 import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { welcome } from "./card.js";
@@ -184,8 +184,11 @@ export class Sync {
     this.prev = cur;
     const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && Date.now() - t.keepAt < EXPECT_MS;
     if (prev?.files && !cur.files) t.keepAt = 0;
+    if (isRemoteTab(f.tab) && prev?.tab === cur.tab && !prev.files && cur.files) {
+      notify({ title: "herdr-nvim", body: "Remote tabs use Neovim's own explorer; press cmd-e to open the editor.", level: "info" });
+    }
     const want = wanted(cur, prev, {
-      native: shared("herdr-nvim.tree") !== "nvim",
+      native: shared("herdr-nvim.tree") !== "nvim" && !isRemoteTab(f.tab),
       local: !spaces().find((s) => s.id === f.space)?.machine,
       kept: t.kept,
       hidByTreeKey,
@@ -225,6 +228,10 @@ export class Sync {
   // meanwhile, and the result is assumed until the lists show it, so the
   // moment with neither pane is not read as nvim closing.
   async startSwap(tab, file, cx) {
+    if (isRemoteTab(tab)) {
+      notify({ title: "herdr-nvim", body: "Rendered previews are not available for remote tabs yet.", level: "warning" });
+      return;
+    }
     // A click while another action runs waits its turn (a moment, usually).
     for (const until = Date.now() + WAIT_MS; this.busy && Date.now() < until; ) await cx.sleep(100);
     if (this.busy) {
@@ -278,6 +285,12 @@ export class Sync {
   // closes too and is remembered for the tab (`memory`): the next open
   // shows it again (`toggle --preview`).
   async toggle(at, state, cx) {
+    if (isRemoteTab(at.tab)) {
+      const out = await nvim("toggle", ["--state", state], at);
+      const made = out && JSON.parse(out);
+      if (made) this.expect(at.tab, made);
+      return made;
+    }
     const t = this.tabState(at.tab);
     if (state === "close") {
       const terminal = nvimPanes(at.tab)[0] ?? null;
@@ -427,7 +440,7 @@ export class Sync {
       }
       if (!terminal) terminal = (await this.toggle(at, "open", cx))?.terminal;
       if (!terminal) return;
-      if (mode === "nvim") return run("pane.focus", { terminal });
+      if (mode === "nvim" || isRemoteTab(f.tab)) return run("pane.focus", { terminal });
       // On nvim's file, on purpose: the tree otherwise keeps the selection
       // where the person left it (an empty path: nvim's current file).
       setShared("herdr-nvim.reveal", { tab: f.tab, path: "", n: (shared("herdr-nvim.reveal")?.n ?? 0) + 1 });
