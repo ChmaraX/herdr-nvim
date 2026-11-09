@@ -14,6 +14,7 @@ https://github.com/user-attachments/assets/328ab066-29f3-4c39-84c4-30b98449e55e
 
 > **Pairs well with**
 > - [herdr-gitview](https://github.com/ChmaraX/herdr-gitview): review, stage, and commit agent changes
+> - [herdr-chat](https://github.com/ChmaraX/herdr-chat): a native chat for Pi, Claude Code and Codex
 > - [pi-declutter](https://github.com/ChmaraX/pi-declutter): see what the agent did at a glance
 
 ## Features
