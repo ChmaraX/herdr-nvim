@@ -48,6 +48,7 @@ export default class Header extends Pane {
   role() {
     const { pane, terminal } = props() ?? {};
     if (terminal) {
+      if (terminal.includes("/")) return null;
       const tab = terminals().find((t) => t.address === terminal)?.labels?.["herdr-nvim.sidebar"];
       return tab ? { role: "nvim", tab, terminal } : null;
     }

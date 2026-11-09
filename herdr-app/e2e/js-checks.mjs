@@ -219,4 +219,31 @@ assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<lea
 assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { tree: "nvim", tree_key: "<leader>e" }),
   [["cmd-e", "open or close nvim"]]);
 
+// Remote labels are local to their core; matching a tab must include its machine.
+const { nvimPanes, parkedNvim } = await import("../mods/herdr-nvim/panel.js");
+const { place, isRemoteTab } = await import("../mods/herdr-nvim/lib.js");
+app.spaces = [{ id: "box/s1", machine: "box", tabs: [{ id: "box/t1" }] }];
+app.focused = { space: "box/s1", tab: "box/t1", terminal: "box/t7", cwd: "/remote" };
+app.terminals = [
+  { address: "box/t9", state: "live", labels: { "herdr-nvim.sidebar": "t1" } },
+  { address: "other/t9", state: "live", labels: { "herdr-nvim.sidebar": "t1" } },
+];
+app.panes = [{ pane: "box/p9", terminal: "box/t9", tab: "box/t1" }];
+assert.deepEqual(nvimPanes("box/t1"), ["box/t9"]);
+assert.deepEqual(nvimPanes("other/t1"), []);
+assert.equal(parkedNvim("other/t1"), "other/t9");
+assert.deepEqual(place(), { space: "box/s1", tab: "box/t1", terminal: "box/t7", cwd: "/remote" });
+assert.ok(isRemoteTab("box/t1") && !isRemoteTab("t1"));
+app.exec = async (_cmd, args) => {
+  assert.deepEqual(args.slice(0, 3), ["toggle", "--state", "close"]);
+  assert.equal(JSON.parse(args.at(-1)).tab, "box/t1");
+  return ok(JSON.stringify({ closed: "box/t9" }));
+};
+app.ran = [];
+const remoteSync = new Sync({ spawn() {}, notify() {} });
+await remoteSync.toggle(place(), "close");
+assert.deepEqual(app.ran, [], "remote toggles must use the machine-aware Rust path");
+await remoteSync.startSwap("box/t1", "/remote/image.png", { notify() {} });
+assert.deepEqual(app.ran, [], "unsupported remote previews must not create local preview panes");
+
 console.log("js checks: ok");

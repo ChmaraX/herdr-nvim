@@ -125,25 +125,13 @@ pub(crate) fn open_cmd() -> Result<()> {
     // The tree focuses nvim itself (`pane.focus` from the mod, no app
     // round trips).
     let focus = !args.iter().any(|a| a == "--no-focus");
-    let app_ctx = match cli::flag(&args, "--tab")?.map(str::to_owned) {
-        Some(tab) => {
-            let space = match cli::flag(&args, "--space")?.map(str::to_owned) {
-                Some(space) => space,
-                None => super::doc::read()?
-                    .and_then(|doc| super::doc::space_of(&doc, &tab))
-                    .with_context(|| format!("no tab {tab} in the Herdr app"))?,
-            };
-            cli::AppCtx {
-                space,
-                tab,
-                terminal: None,
-                cwd: None,
-            }
-        }
-        None => cli::read_ctx(&args)?,
-    };
-    let ctx = sidebar::ctx(&app_ctx)?;
+    let app_ctx = cli::target_ctx(&args)?;
     let (path, line, col) = split_location(target);
+    if super::remote::is_remote(&app_ctx) {
+        println!("{}", super::remote::open(&app_ctx, path, line, col, focus)?);
+        return Ok(());
+    }
+    let ctx = sidebar::ctx(&app_ctx)?;
     let path = crate::pathkey::absolute(&path, &ctx.cwd);
     if !path.is_file() {
         bail!("no such file: {}", path.display());

@@ -53,6 +53,66 @@ pub(crate) fn app_status() -> Result<Value> {
     serde_json::from_slice(&output.stdout).context("herdr-app status: bad JSON")
 }
 
+#[derive(Deserialize)]
+pub(crate) struct Listing {
+    spaces: Vec<ListedSpace>,
+}
+
+#[derive(Deserialize)]
+struct ListedSpace {
+    id: String,
+    tabs: Vec<ListedTab>,
+}
+
+#[derive(Deserialize)]
+struct ListedTab {
+    id: String,
+    terminals: Vec<ListedTerminal>,
+}
+
+#[derive(Deserialize)]
+struct ListedTerminal {
+    terminal: String,
+    pane: Option<String>,
+}
+
+impl Listing {
+    pub(crate) fn space_of(&self, tab: &str) -> Option<&str> {
+        self.spaces
+            .iter()
+            .find(|s| s.tabs.iter().any(|t| t.id == tab))
+            .map(|s| s.id.as_str())
+    }
+
+    fn terminal_at(&self, pane: &str) -> Option<&str> {
+        self.terminals()
+            .find(|t| t.pane.as_deref() == Some(pane))
+            .map(|t| t.terminal.as_str())
+    }
+
+    pub(crate) fn contains_terminal(&self, terminal: &str) -> bool {
+        self.terminals().any(|t| t.terminal == terminal)
+    }
+
+    fn terminals(&self) -> impl Iterator<Item = &ListedTerminal> {
+        self.spaces
+            .iter()
+            .flat_map(|s| &s.tabs)
+            .flat_map(|t| &t.terminals)
+    }
+}
+
+pub(crate) fn app_listing() -> Result<Listing> {
+    let output = Command::new(app_bin())
+        .arg("ls")
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        bail!("cannot read the Herdr app's spaces");
+    }
+    serde_json::from_slice(&output.stdout).context("herdr-app ls: bad JSON")
+}
+
 /// The command that runs this binary with the app host's environment: the
 /// `herdr-app/bin/herdr-nvim` wrapper exports `HERDR_NVIM_SELF`. Terminals the
 /// app starts get the core's environment, not ours, so they must go through it.
@@ -124,15 +184,45 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
     // The focused terminal: the agent an agent block shows, else the
     // terminal of the focused pane (from the layout document).
     let pane = text("focused_pane");
-    let terminal = text("agent").or_else(|| {
-        let doc = super::doc::read().ok().flatten()?;
-        let pane = pane?;
-        super::doc::terminal_of_pane(&doc, &pane)
-    });
+    let terminal = if super::remote::machine(&tab).is_some() {
+        let listing = app_listing()?;
+        pane.as_deref()
+            .and_then(|pane| listing.terminal_at(pane))
+            .map(str::to_owned)
+    } else {
+        text("agent").or_else(|| {
+            let doc = super::doc::read().ok().flatten()?;
+            let pane = pane?;
+            super::doc::terminal_of_pane(&doc, &pane)
+        })
+    };
     Ok(AppCtx {
         space,
         tab,
         terminal,
+        cwd: None,
+    })
+}
+
+/// Resolve an explicit tab for file opens, otherwise use the captured/focused context.
+pub(crate) fn target_ctx(args: &[String]) -> Result<AppCtx> {
+    let Some(tab) = flag(args, "--tab")? else {
+        return read_ctx(args);
+    };
+    let space = match flag(args, "--space")? {
+        Some(space) => space.to_owned(),
+        None if super::remote::machine(tab).is_some() => app_listing()?
+            .space_of(tab)
+            .map(str::to_owned)
+            .with_context(|| format!("no tab {tab} in the Herdr app"))?,
+        None => super::doc::read()?
+            .and_then(|doc| super::doc::space_of(&doc, tab))
+            .with_context(|| format!("no tab {tab} in the Herdr app"))?,
+    };
+    Ok(AppCtx {
+        space,
+        tab: tab.to_owned(),
+        terminal: None,
         cwd: None,
     })
 }

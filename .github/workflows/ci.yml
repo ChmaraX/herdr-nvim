@@ -15,7 +15,11 @@ jobs:
           neovim: true
           version: stable
       - uses: extractions/setup-just@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: just ci
+      - run: node herdr-app/e2e/js-checks.mjs
 
   # Windows uses named pipes instead of filesystem sockets and a different
   # process-detach path, so it needs its own job. Crucially, `cargo test` here

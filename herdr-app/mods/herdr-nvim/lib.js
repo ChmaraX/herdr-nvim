@@ -20,6 +20,10 @@ export function place(f = focused()) {
   return { space: f.space, tab: f.tab, terminal, cwd: terminal ? f.cwd ?? null : null };
 }
 
+export function isRemoteTab(tab) {
+  return typeof tab === "string" && tab.includes("/");
+}
+
 export function context() {
   const p = place();
   return p && JSON.stringify(p);
