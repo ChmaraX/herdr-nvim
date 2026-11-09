@@ -184,9 +184,6 @@ export class Sync {
     this.prev = cur;
     const hidByTreeKey = prev?.tab === cur.tab && prev.files && !cur.files && Date.now() - t.keepAt < EXPECT_MS;
     if (prev?.files && !cur.files) t.keepAt = 0;
-    if (isRemoteTab(f.tab) && prev?.tab === cur.tab && !prev.files && cur.files) {
-      notify({ title: "herdr-nvim", body: "Remote tabs use Neovim's own explorer; press cmd-e to open the editor.", level: "info" });
-    }
     const want = wanted(cur, prev, {
       native: shared("herdr-nvim.tree") !== "nvim" && !isRemoteTab(f.tab),
       local: !spaces().find((s) => s.id === f.space)?.machine,

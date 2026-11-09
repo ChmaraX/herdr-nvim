@@ -22,7 +22,7 @@
 
 import { View, div } from "gpui-kit";
 import { closeOverlay, layout, props, run } from "herdr";
-import { nvim, place } from "./lib.js";
+import { isRemoteTab, nvim, place } from "./lib.js";
 import { treeMode } from "./ops.js";
 import { hidePanel, panelState, showFiles } from "./panel.js";
 import { Card } from "./card.js";
@@ -47,7 +47,7 @@ export default class HerdrNvim extends View {
         const p = panelState(layout());
         // The config as it is now (a file read; the shared value follows it
         // only once the controller reads it).
-        if (at?.machine) {
+        if (isRemoteTab(at?.tab)) {
           const out = await nvim("toggle", [], at);
           const made = out && JSON.parse(out);
           closeOverlay(overlay);

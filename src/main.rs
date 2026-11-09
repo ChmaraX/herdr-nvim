@@ -64,17 +64,6 @@ fn main() {
     if app && SHORT.contains(&mode.as_str()) {
         deadline(std::time::Duration::from_secs(25));
     }
-    if app {
-        let args: Vec<String> = std::env::args().skip(2).collect();
-        match app::remote::dispatch(&mode, &args) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("herdr-nvim: {error:#}");
-                std::process::exit(1);
-            }
-        }
-    }
     let code = match (mode.as_str(), app) {
         ("toggle", false) => run(maneuver::toggle_cmd),
         ("toggle", true) => run(app::sidebar::toggle_cmd),
@@ -95,6 +84,7 @@ fn main() {
         ("fs", true) => run(app::tree::fs_cmd),
         ("app-find", true) => run(app::tree::find_cmd),
         ("app-current", true) => run(app::tree::current_cmd),
+        ("app-remote-stop", true) => run(app::remote::stop_cmd),
         ("app-reveal", true) => run(app::tree::reveal_cmd),
         ("app-preview", true) => run(app::sidebar::preview_cmd),
         // The install script runs these before the wrapper exists.
@@ -105,7 +95,7 @@ fn main() {
         ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
         (
             "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
-            | "app-reveal" | "app-preview" | "app-install-nvim",
+            | "app-reveal" | "app-preview" | "app-install-nvim" | "app-remote-stop",
             false,
         ) => {
             eprintln!("herdr-nvim: `{mode}` is for the Herdr app (HERDR_NVIM_HOST=app)");

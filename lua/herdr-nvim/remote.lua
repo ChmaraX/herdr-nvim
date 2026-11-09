@@ -100,10 +100,6 @@ local function snapshot(ctx)
     return { running = false, stale = true }
   end
   result.running = true; result.socket = base .. ".sock"; result.nvim = vim.fn.exepath(ctx.nvim)
-  local meta = metadata(base)
-  if meta and meta.signature ~= ctx.signature then
-    result.notice = "This remote Neovim retains its previous runtime/settings. Save and quit it to apply the update."
-  end
   return result
 end
 
@@ -113,9 +109,14 @@ local function terminal_ids(node, out)
   for _, child in ipairs(node.children or {}) do terminal_ids(child, out) end
 end
 
-local function prepare(ctx)
-  local tab = M.find_tab(core("doc.get", { name = "herdr-app" }), ctx.space, ctx.tab)
+local function lookup(ctx)
+  local doc = core("doc.get", { name = "herdr-app" })
+  local tab = M.find_tab(doc, ctx.space, ctx.tab)
   assert(tab, "The remote tab is closed or its document is unavailable")
+  return doc, tab
+end
+
+local function prepare(ctx, tab)
   local cwd = ctx.cwd
   if not cwd then
     local ids = {}; terminal_ids(tab.root, ids)
@@ -187,7 +188,7 @@ local function serve(ctx)
     stdout = function(_, data) if data then log:write(data); log:flush() end end,
     stderr = function(_, data) if data then log:write(data); log:flush() end end,
   }, function(result) log:write("\nNeovim exit code " .. result.code .. "\n"); done = true end)
-  write(base .. ".json", { pid = job.pid, signature = ctx.signature })
+  write(base .. ".json", { pid = job.pid })
   local signals = {}
   for _, name in ipairs({ "sigterm", "sighup" }) do
     local signal = uv.new_signal()
@@ -210,26 +211,6 @@ end
 
 local function request(op, ctx, script)
   if op == "serve" then serve(ctx); return end
-  prepare(ctx)
-  if op == "info" then
-    local state = snapshot(ctx)
-    state.doc = core("doc.get", { name = "herdr-app" })
-    state.terminals = terminals(ctx); state.tab_root = ctx.root
-    return state
-  end
-  if op == "open" then
-    ensure(ctx, script)
-    if ctx.file then
-      local path = ctx.file
-      if path:sub(1, 2) == "~/" then path = uv.os_homedir() .. path:sub(2) end
-      if path:sub(1, 1) ~= "/" then path = ctx.cwd .. "/" .. path end
-      assert(uv.fs_stat(path) and uv.fs_stat(path).type == "file", "No remote file: " .. path)
-      local lua = "(function() vim.cmd.edit(vim.fn.fnameescape(" .. string.format("%q", path) .. ")); "
-      if ctx.line then lua = lua .. string.format("vim.api.nvim_win_set_cursor(0,{math.min(%d,vim.api.nvim_buf_line_count(0)),%d}); ", math.max(1, ctx.line), math.max(0, (ctx.col or 1)-1)) end
-      evaluate(ctx, lua .. "return vim.json.encode(true) end)()")
-    end
-    return snapshot(ctx)
-  end
   if op == "stop" then
     local state = snapshot(ctx)
     assert(not state.running or #state.modified == 0, "Save the remote Neovim's unsaved buffers before stopping it")
@@ -239,6 +220,32 @@ local function request(op, ctx, script)
         "Remote Neovim did not quit; check for unsaved buffers or a prompt")
     end
     return { running = false }
+  end
+  local doc, tab = lookup(ctx)
+  if op == "info" then return { doc = doc, terminals = terminals(ctx) } end
+  if op == "current" then
+    local state = snapshot(ctx)
+    local stat = state.running and state.file ~= "" and uv.fs_stat(state.file)
+    if not state.running then prepare(ctx, tab) end
+    return { file = stat and stat.type == "file" and state.file or vim.NIL,
+      watch = vim.NIL, tab_root = state.running and state.cwd or ctx.root }
+  end
+  if op == "open" then
+    prepare(ctx, tab)
+    local path = ctx.file
+    if path then
+      if path:sub(1, 2) == "~/" then path = uv.os_homedir() .. path:sub(2) end
+      if path:sub(1, 1) ~= "/" then path = ctx.cwd .. "/" .. path end
+      local stat = uv.fs_stat(path)
+      assert(stat and stat.type == "file", "No remote file: " .. path)
+    end
+    local state = ensure(ctx, script)
+    if path then
+      local lua = "(function() vim.cmd.edit(vim.fn.fnameescape(" .. string.format("%q", path) .. ")); "
+      if ctx.line then lua = lua .. string.format("vim.api.nvim_win_set_cursor(0,{math.min(%d,vim.api.nvim_buf_line_count(0)),%d}); ", math.max(1, ctx.line), math.max(0, (ctx.col or 1)-1)) end
+      evaluate(ctx, lua .. "return vim.json.encode(true) end)()")
+    end
+    return state
   end
   error("Unknown remote Neovim operation: " .. op)
 end

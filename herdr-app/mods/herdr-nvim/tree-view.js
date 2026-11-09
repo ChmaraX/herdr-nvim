@@ -616,7 +616,7 @@ export class Tree {
       this.scrolledTo = key;
       this.scroll.scroll_to_item(this.selected);
     }
-    const empty = this.place?.machine ? `This space is on ${this.place.machine}; press cmd-e to open remote Neovim and use its explorer.`
+    const empty = this.place?.machine ? `This space is on ${this.place.machine}; browse its files with Neovim's own explorer.`
       : this.error ?? (this.filter ? (this.filter.query ? "No match" : "Type to find a file") : !this.model.root ? "No folder" : this.model.entries.has(this.model.root) ? "No files" : "Loading files…");
     return v_flex().id("herdr-nvim-files").size_full().min_h(0).rounded(10).overflow_hidden()
       // The controller hands this tree the keyboard with `pane.go`, which

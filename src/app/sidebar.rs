@@ -304,6 +304,7 @@ pub(crate) fn ensure_open(ctx: &Ctx) -> Result<Opened> {
 /// follows its terminals since (one made in one repo can work in another).
 /// Never this process's own folder: the app's is often `/`.
 pub(crate) fn ctx(app: &AppCtx) -> Result<Ctx> {
+    super::remote::require_local(app)?;
     let live = |terminal: &str| {
         host::terminal(terminal)
             .ok()
@@ -376,7 +377,15 @@ pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
 pub fn toggle_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
     let want = want_from_args(&args)?;
-    let ctx = ctx(&cli::read_ctx(&args)?)?;
+    let app = cli::read_ctx(&args)?;
+    if super::remote::is_remote(&app) {
+        if cli::flag(&args, "--preview")?.is_some() {
+            anyhow::bail!("rendered previews are not available for remote tabs");
+        }
+        println!("{}", super::remote::toggle(&app, want)?);
+        return Ok(());
+    }
+    let ctx = ctx(&app)?;
     let remembered = cli::flag(&args, "--preview")?
         .filter(|file| std::path::Path::new(file).is_file())
         .map(str::to_owned);

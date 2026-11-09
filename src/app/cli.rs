@@ -53,8 +53,56 @@ pub(crate) fn app_status() -> Result<Value> {
     serde_json::from_slice(&output.stdout).context("herdr-app status: bad JSON")
 }
 
-/// All machine-qualified spaces/tabs/panes as the window sees them.
-pub(crate) fn app_listing() -> Result<Value> {
+#[derive(Deserialize)]
+pub(crate) struct Listing {
+    spaces: Vec<ListedSpace>,
+}
+
+#[derive(Deserialize)]
+struct ListedSpace {
+    id: String,
+    tabs: Vec<ListedTab>,
+}
+
+#[derive(Deserialize)]
+struct ListedTab {
+    id: String,
+    terminals: Vec<ListedTerminal>,
+}
+
+#[derive(Deserialize)]
+struct ListedTerminal {
+    terminal: String,
+    pane: Option<String>,
+}
+
+impl Listing {
+    pub(crate) fn space_of(&self, tab: &str) -> Option<&str> {
+        self.spaces
+            .iter()
+            .find(|s| s.tabs.iter().any(|t| t.id == tab))
+            .map(|s| s.id.as_str())
+    }
+
+    fn terminal_at(&self, pane: &str) -> Option<&str> {
+        self.terminals()
+            .find(|t| t.pane.as_deref() == Some(pane))
+            .map(|t| t.terminal.as_str())
+    }
+
+    pub(crate) fn contains_terminal(&self, terminal: &str) -> bool {
+        self.terminals().any(|t| t.terminal == terminal)
+    }
+
+    fn terminals(&self) -> impl Iterator<Item = &ListedTerminal> {
+        self.spaces
+            .iter()
+            .flat_map(|s| &s.tabs)
+            .flat_map(|t| &t.terminals)
+    }
+}
+
+pub(crate) fn app_listing() -> Result<Listing> {
     let output = Command::new(app_bin())
         .arg("ls")
         .stdin(Stdio::null())
@@ -138,15 +186,8 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
     let pane = text("focused_pane");
     let terminal = if super::remote::machine(&tab).is_some() {
         let listing = app_listing()?;
-        listing["spaces"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|s| s["tabs"].as_array().into_iter().flatten())
-            .filter(|t| t["id"] == tab)
-            .flat_map(|t| t["terminals"].as_array().into_iter().flatten())
-            .find(|t| t["pane"].as_str() == pane.as_deref())
-            .and_then(|t| t["terminal"].as_str())
+        pane.as_deref()
+            .and_then(|pane| listing.terminal_at(pane))
             .map(str::to_owned)
     } else {
         text("agent").or_else(|| {
@@ -159,6 +200,29 @@ pub(crate) fn read_ctx(args: &[String]) -> Result<AppCtx> {
         space,
         tab,
         terminal,
+        cwd: None,
+    })
+}
+
+/// Resolve an explicit tab for file opens, otherwise use the captured/focused context.
+pub(crate) fn target_ctx(args: &[String]) -> Result<AppCtx> {
+    let Some(tab) = flag(args, "--tab")? else {
+        return read_ctx(args);
+    };
+    let space = match flag(args, "--space")? {
+        Some(space) => space.to_owned(),
+        None if super::remote::machine(tab).is_some() => app_listing()?
+            .space_of(tab)
+            .map(str::to_owned)
+            .with_context(|| format!("no tab {tab} in the Herdr app"))?,
+        None => super::doc::read()?
+            .and_then(|doc| super::doc::space_of(&doc, tab))
+            .with_context(|| format!("no tab {tab} in the Herdr app"))?,
+    };
+    Ok(AppCtx {
+        space,
+        tab: tab.to_owned(),
+        terminal: None,
         cwd: None,
     })
 }

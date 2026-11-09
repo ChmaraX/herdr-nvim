@@ -61,6 +61,9 @@ pub fn fs_cmd() -> Result<()> {
 /// to `root`, best first.
 pub fn find_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
+    if let Some(ctx) = cli::ctx_from_args(&args)? {
+        super::remote::require_local(&ctx)?;
+    }
     let root = cli::flag(&args, "--root")?.context("--root is required")?;
     let query = cli::flag(&args, "--query")?.unwrap_or_default();
     let index = crate::fff::FffIndex::open(root, config::load().picker.frecency)
@@ -83,7 +86,12 @@ pub fn find_cmd() -> Result<()> {
 /// `herdr-nvim app-current --ctx <tab>`.
 pub fn current_cmd() -> Result<()> {
     let args: Vec<String> = env::args().skip(2).collect();
-    let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
+    let app = cli::read_ctx(&args)?;
+    if super::remote::is_remote(&app) {
+        println!("{}", super::remote::current(&app)?);
+        return Ok(());
+    }
+    let ctx = sidebar::ctx(&app)?;
     let mut watch = state::current_file_path(&ctx.tab);
     if let Some(dir) = watch.parent() {
         // The tree watches this folder before nvim first writes into it,

@@ -36,6 +36,9 @@ mod unix {
             )
             .unwrap();
             fs::write(root.join("state.json"), json!({"running":true,"nvim":"/remote/bin/nvim","socket":"/remote/editor.sock","modified":[]}).to_string()).unwrap();
+            if shown {
+                fs::write(root.join("visible"), "").unwrap();
+            }
             for (name, text) in [
                 (
                     "hc",
@@ -55,6 +58,7 @@ case "$1" in
             info) cat '{0}/info.json' ;;
             open) cat '{0}/state.json' ;;
             stop) printf '{{"running":false}}\n' ;;
+            current) printf '{{"file":"/remote/file.md","watch":null,"tab_root":"/remote"}}\n' ;;
             *) exit 22 ;;
           esac
           exit 0 ;;
@@ -62,7 +66,10 @@ case "$1" in
       shift
     done
     exit 23 ;;
-  label|kill) printf '{{"ok":true}}\n' ;;
+  label)
+    test ! -f '{0}/fail-label' || {{ echo 'label failed' >&2; exit 1; }}
+    printf '{{"ok":true}}\n' ;;
+  kill) rm -f '{0}/visible'; printf '{{"ok":true}}\n' ;;
   *) echo 'local core calls are forbidden in this fixture' >&2; exit 24 ;;
 esac
 "#,
@@ -76,10 +83,17 @@ esac
 printf '%s\n' "$*" >> '{0}/app.log'
 case "$1" in
   do)
-    if [ "$2" = pane.split ]; then printf '{{"terminal":"box/t9","pane":"box/p9"}}\n'
-    else printf '{{"ok":true}}\n'; fi ;;
-  status) printf '{{"tab":"box/t1","focused_pane":"box/p7"}}\n' ;;
-  ls) printf '{{"spaces":[{{"id":"box/s1","tabs":[{{"id":"box/t1","terminals":[{{"terminal":"box/t9"}}]}}]}}]}}\n' ;;
+    case "$2" in
+      pane.split) touch '{0}/visible'; printf '{{"terminal":"box/t9","pane":"box/p9"}}\n' ;;
+      terminal.keep) touch '{0}/visible'; printf '{{"ok":true}}\n' ;;
+      terminal.park) rm -f '{0}/visible'; printf '{{"ok":true}}\n' ;;
+      *) printf '{{"ok":true}}\n' ;;
+    esac ;;
+  status) printf '{{"space":"box/s1","tab":"box/t1","focused_pane":"box/p7","agent":"local/t0"}}\n' ;;
+  ls)
+    terms='[{{"terminal":"box/t7","pane":"box/p7"}}]'
+    test ! -f '{0}/visible' || terms='[{{"terminal":"box/t7","pane":"box/p7"}},{{"terminal":"box/t9","pane":"box/p9"}}]'
+    printf '{{"spaces":[{{"id":"box/s1","tabs":[{{"id":"box/t1","terminals":%s}}]}}]}}\n' "$terms" ;;
   *) exit 25 ;;
 esac
 "#,
@@ -96,8 +110,9 @@ esac
 
         fn run(&self, mode: &str, ctx: Value, rest: &[&str]) -> Output {
             let text = ctx.to_string();
-            let mut args = vec![mode, "--ctx", &text];
+            let mut args = vec![mode];
             args.extend_from_slice(rest);
+            args.extend(["--ctx", &text]);
             let app = self.sandbox.dir.join("bin/herdr-app");
             let hc = self.sandbox.dir.join("bin/hc");
             self.sandbox.run_with_env(
@@ -193,7 +208,7 @@ esac
         let result = f.run("toggle", f.ctx(), &["--state", "close"]);
         assert!(!result.status.success());
         assert!(f.log("app.log").is_empty());
-        assert!(String::from_utf8_lossy(&result.stderr).contains("only terminal"));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("only pane"));
     }
 
     #[test]
@@ -225,13 +240,102 @@ esac
     #[test]
     fn unsupported_remote_features_never_touch_local_files_or_window_structure() {
         let f = Fixture::new("remote-unsupported", false, false);
-        for mode in ["fs", "pick-file", "app-preview", "open-link", "app-find"] {
-            let result = f.run(mode, f.ctx(), &["/remote/file"]);
+        for (mode, args) in [
+            ("fs", vec![r#"{"op":"defaults"}"#]),
+            ("pick-file", vec![]),
+            ("app-preview", vec!["--file", "/remote/file"]),
+            ("open-link", vec!["/remote/file"]),
+            ("app-find", vec!["--root", "/remote"]),
+        ] {
+            let result = f.run(mode, f.ctx(), &args);
             assert!(!result.status.success());
-            assert!(String::from_utf8_lossy(&result.stderr).contains("not available"));
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("not available"),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
         }
         assert!(f.log("hc.log").is_empty());
         assert!(f.log("app.log").is_empty());
+    }
+
+    #[test]
+    fn failed_labels_remove_only_the_new_ui_client() {
+        let f = Fixture::new("remote-label-failure", false, false);
+        fs::write(f.sandbox.dir.join("fail-label"), "").unwrap();
+        let result = f.run("open", f.ctx(), &["/remote/file"]);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("label failed"));
+        assert!(f.log("hc.log").contains("kill box/t9"));
+        assert!(!f.sandbox.dir.join("visible").exists());
+    }
+
+    #[test]
+    fn malformed_terminal_records_are_not_silently_dropped() {
+        let f = Fixture::new("remote-malformed-terminal", false, false);
+        let path = f.sandbox.dir.join("info.json");
+        let mut info: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        info["terminals"] = json!([{"state":"live","labels":{"herdr-nvim.remote-role":"ui"}}]);
+        fs::write(path, info.to_string()).unwrap();
+        assert!(!f.run("open", f.ctx(), &["/remote/file"]).status.success());
+        assert!(f.log("app.log").is_empty());
+    }
+
+    #[test]
+    fn a_mod_pane_is_enough_to_keep_the_tab_when_hiding_its_editor() {
+        let f = Fixture::new("remote-mod-sibling", true, true);
+        let path = f.sandbox.dir.join("info.json");
+        let mut info: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        info["doc"]["value"]["spaces"][0]["tabs"][0]["root"]["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"p-mod","content":{"mod":"board"}}));
+        fs::write(path, info.to_string()).unwrap();
+        assert!(f
+            .run("toggle", f.ctx(), &["--state", "close"])
+            .status
+            .success());
+        assert!(!f.sandbox.dir.join("visible").exists());
+    }
+
+    #[test]
+    fn current_file_does_not_fetch_ui_state_or_change_the_window() {
+        let f = Fixture::new("remote-current", false, false);
+        let result = f.run("app-current", f.ctx(), &[]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&result.stdout).unwrap()["file"],
+            "/remote/file.md"
+        );
+        assert!(f.log("app.log").is_empty());
+        assert!(!f.log("hc.log").contains("worker.lua info"));
+    }
+
+    #[test]
+    fn implicit_context_uses_the_remote_focused_pane_not_an_unrelated_agent() {
+        let f = Fixture::new("remote-focused-context", false, false);
+        let app = f.sandbox.dir.join("bin/herdr-app");
+        let hc = f.sandbox.dir.join("bin/hc");
+        let result = f.sandbox.run_with_env(
+            &["open", "/remote/file"],
+            None,
+            &[
+                ("HERDR_NVIM_HOST", "app"),
+                ("HERDR_APP_BIN", app.to_str().unwrap()),
+                ("HERDR_NVIM_HC", hc.to_str().unwrap()),
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(f.log("hc.log").contains("\"terminal\":\"t7\""));
+        assert!(!f.log("hc.log").contains("local/t0"));
     }
 
     #[test]

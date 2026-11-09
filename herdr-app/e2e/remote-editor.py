@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import time
 
@@ -31,10 +31,13 @@ def main():
         return execute(["hc", "exec", "--on", args.machine, "--timeout", "15", "--", *argv]).stdout
 
     folder = remote(["mktemp", "-d", "/tmp/herdr-nvim-remote-test-XXXXXX"]).strip()
+    path = PurePosixPath(folder)
+    if path.parent != PurePosixPath("/tmp") or not path.name.startswith("herdr-nvim-remote-test-"):
+        raise RuntimeError("Unexpected test directory; refusing to create or remove files there")
     file = folder + "/notes 'unicode-雪'.md"
-    remote(["sh", "-c", 'printf "%s\\n" "# Remote editor test" > "$1"', "test", file])
     created = None
     try:
+        remote(["sh", "-c", 'printf "%s\\n" "# Remote editor test" > "$1"', "test", file])
         created = app("space.new", {"name": "Remote editor test", "folder": folder, "machine": args.machine})
         ctx = {"space": created["space"], "tab": created["tab"], "terminal": created["terminal"], "cwd": folder}
         time.sleep(0.5)

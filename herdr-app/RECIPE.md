@@ -250,14 +250,9 @@ copy of it, else clones it once (`<name>-copy`), and switches to it.
 - In 0.1.12 the tree can show the focus ring without getting keys: it takes
   the keyboard again for 2 s after each arrival (herdrdev/herdr-app#362,
   fixed upstream, not released yet).
-- Remote tabs use `cmd-e` and `open --tab <machine/tab>` with the remote
-  host's own Neovim config/explorer. The native tree, picker, annotations and
-  rendered previews remain local-only. The remote host needs Neovim 0.10+
-  and hc; `src/app/remote.rs` uploads `lua/herdr-nvim/remote.lua`, whose
-  core-owned supervisor ends the daemon when its tab closes. A missing or
-  unfamiliar core document stops nothing. Per-machine `[remote.<name>]`
-  settings choose the remote executable/profile; local paths never carry
-  across. Remote hosts must be POSIX. Tested desktop/remote: macOS/Linux.
+- Remote POSIX hosts need Neovim 0.10+ and hc. `cmd-e` and `open --tab
+  <machine/tab>` use their own Neovim config/explorer; the native tree,
+  picker, annotations and rendered previews remain local-only.
 
 ## Done when
 

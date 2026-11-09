@@ -82,20 +82,15 @@ The editor loads the remote host's normal configuration, plugins and keymaps;
 use its own explorer inside the pane. Hiding preserves buffers, undo and cursor
 state. Closing the Herdr tab stops its daemon, so save first.
 
-Remote hosts need Neovim 0.10+ and `hc` on their core's PATH. No remote Rust
-binary or Python runtime is required: the local binary uploads a versioned Lua
-helper through the existing Herdr machine connection. Remote editing currently
-requires a POSIX host. The existing installer's local Neovim prerequisite is
-unchanged.
-
-Other mods can open a remote file without testing the path on the desktop:
+POSIX remote hosts need Neovim 0.10+ and `hc` on their core's PATH. The
+installer's local Neovim prerequisite is unchanged. Open remote files with:
 
 ```sh
 ~/.config/herdr-app/mods/herdr-nvim/bin/herdr-nvim open \
   --tab your-machine/your-tab-id /remote/project/src/file.rs:12:3
 ```
 
-Per-machine settings live in the desktop's `~/.config/herdr-nvim/config.toml`:
+In the desktop's `~/.config/herdr-nvim/config.toml`:
 
 ```toml
 [remote.your-machine]
@@ -114,8 +109,7 @@ To stop a clean remote editor explicitly (unsaved buffers are refused):
 ```
 
 The native Files tree, agent-file picker, annotations and rendered previews
-remain local-only. Remote commands for those features report that limitation
-instead of falling back to local files or terminals.
+remain local-only.
 
 ## The tree
 

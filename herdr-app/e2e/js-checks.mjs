@@ -232,7 +232,7 @@ app.panes = [{ pane: "box/p9", terminal: "box/t9", tab: "box/t1" }];
 assert.deepEqual(nvimPanes("box/t1"), ["box/t9"]);
 assert.deepEqual(nvimPanes("other/t1"), []);
 assert.equal(parkedNvim("other/t1"), "other/t9");
-assert.equal(place().machine, "box");
+assert.deepEqual(place(), { space: "box/s1", tab: "box/t1", terminal: "box/t7", cwd: "/remote" });
 assert.ok(isRemoteTab("box/t1") && !isRemoteTab("t1"));
 app.exec = async (_cmd, args) => {
   assert.deepEqual(args.slice(0, 3), ["toggle", "--state", "close"]);

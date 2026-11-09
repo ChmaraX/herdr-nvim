@@ -34,6 +34,44 @@ T.test("remote: stale sockets are reaped only for a known dead owner", function(
   T.ok(not remote.dead_owner(nil, function() return false end))
 end)
 
+local function run_helper(op, ctx)
+  local system, stdout = vim.system, io.stdout
+  local calls, output = {}, ""
+  vim.system = function(argv, opts)
+    if argv[1] == "git" then
+      calls[#calls+1] = "git"
+      return { wait = function() return { code = 1, stderr = "not a repository" } end }
+    end
+    T.eq(argv, { "hc", "connect" }) -- info and invalid opens must not contact Neovim
+    local request = vim.json.decode(opts.stdin:match("[^\n]+\n([^\n]+)"))
+    calls[#calls+1] = request.method
+    local value = request.method == "doc.get"
+      and { version = 1, value = { spaces = { { id = "s1", tabs = { { id = "t1" } } } } } }
+      or { terminals = {} }
+    return { wait = function() return { code = 0, stdout = vim.json.encode({ id = 2, result = value }) .. "\n" } end }
+  end
+  io.stdout = { write = function(_, text) output = output .. text end }
+  local ok, err = pcall(remote.main, { [0] = "/tmp/worker.lua", op, vim.json.encode(ctx) })
+  vim.system, io.stdout = system, stdout
+  return ok, err, output, calls
+end
+
+T.test("remote: pane inspection reads one document and never probes the editor", function()
+  local ok, err, output, calls = run_helper("info", { space = "s1", tab = "t1", key = "test", cwd = "/deleted/folder" })
+  T.ok(ok, err)
+  T.eq(calls, { "doc.get", "terminal.list" })
+  T.eq(vim.json.decode(output).doc.version, 1)
+end)
+
+T.test("remote: invalid files fail before starting or probing a daemon", function()
+  local ok, err, _, calls = run_helper("open", {
+    space = "s1", tab = "t1", key = "test", cwd = vim.uv.os_tmpdir(),
+    file = vim.uv.os_tmpdir() .. "/hnvim-missing-" .. vim.uv.hrtime(),
+  })
+  T.ok(not ok and tostring(err):find("No remote file", 1, true))
+  T.eq(calls, { "doc.get", "git" })
+end)
+
 T.test("remote: daemon startup preserves the user's configuration", function()
   if vim.fn.has("win32") == 1 then return end
   local argv = remote.daemon_argv({ nvim = "/remote/bin/nvim", key = "test-startup" })
