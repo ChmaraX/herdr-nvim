@@ -11,7 +11,7 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, exec, panes, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, settings, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 
 const KINDS = {
@@ -133,7 +133,7 @@ export class Preview {
         ? div().m_auto().text_color(t.dim).child(s.error)
         : s.kind === "image"
           ? div().flex_1().min_h(0).w_full().p(14).child(image(s.src).size_full())
-          : TextView.markdown("herdr-nvim-preview", s.text).selectable(true).scrollable(true).flex_1().min_h(0).px(18).py(12);
+          : TextView.markdown("herdr-nvim-preview", s.text).text_size(settings().font_size ?? 14).selectable(true).scrollable(true).flex_1().min_h(0).px(18).py(12);
     return v_flex()
       .id("herdr-nvim-preview")
       .size_full()
