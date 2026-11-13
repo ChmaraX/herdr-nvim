@@ -24,6 +24,14 @@ const CACHE_KEEP = 40;
 // shared(): which file each tab's preview shows, for its pane header.
 const SHOWN = "herdr-nvim.previews";
 
+// The preview's text size, set once on its root: the terminals' font size, so
+// it matches nvim's source it stands in for. Px at zoom 1 (Herdr zooms mods'
+// sizes); Herdr fills it in, 14 unless the person sets one.
+function textSize() {
+  const size = settings().font_size;
+  return typeof size === "number" ? size : 14;
+}
+
 // "markdown", "image", or null: what a file previews as.
 export function previewKind(path) {
   const ext = /\.([^./]+)$/.exec(path ?? "")?.[1]?.toLowerCase();
@@ -133,12 +141,12 @@ export class Preview {
         ? div().m_auto().text_color(t.dim).child(s.error)
         : s.kind === "image"
           ? div().flex_1().min_h(0).w_full().p(14).child(image(s.src).size_full())
-          : TextView.markdown("herdr-nvim-preview", s.text).text_size(settings().font_size ?? 14).selectable(true).scrollable(true).flex_1().min_h(0).px(18).py(12);
+          : TextView.markdown("herdr-nvim-preview", s.text).selectable(true).scrollable(true).flex_1().min_h(0).px(18).py(12);
     return v_flex()
       .id("herdr-nvim-preview")
       .size_full()
       .bg(t.background)
-      .text_size(13)
+      .text_size(textSize())
       .text_color(t.foreground)
       .child(body);
   }
