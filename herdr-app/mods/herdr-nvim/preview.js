@@ -8,14 +8,15 @@
 // Images are drawn with image(), which takes a path inside the app home: a
 // copy goes to `mods/herdr-nvim/.cache` (hidden, so writing there reloads no
 // mod), named by its content. Mermaid blocks in markdown are drawn there too
-// (mermaid.js). The pictures any preview shows are kept, and of the rest the
-// newest CACHE_KEEP.
+// (mermaid.js), once per code and theme, so editing the text around them or
+// reloading draws nothing again. The pictures any preview shows are kept,
+// and of the rest the newest CACHE_KEEP.
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
 import { appHome, exec, panes, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
-import { drawMermaid, hashText, modeOf, pngSize, splitMermaid } from "./mermaid.js";
+import { drawMermaid, modeOf, pngSize, splitMermaid } from "./mermaid.js";
 
 const KINDS = {
   md: "markdown", markdown: "markdown", mdx: "markdown",
@@ -24,6 +25,8 @@ const KINDS = {
 const MAX_BYTES = { markdown: 2 * 1024 * 1024, image: 30 * 1024 * 1024 };
 const CACHE = "mods/herdr-nvim/.cache";
 const CACHE_KEEP = 40;
+// Markdown's padding left and right.
+const PAD_X = 18;
 // shared(): which file each tab's preview shows, for its pane header.
 const SHOWN = "herdr-nvim.previews";
 // shared(): the cache's files, {recent: names newest first, shown: {tab: names}}.
@@ -44,17 +47,57 @@ function withTab(byTab, tab, value) {
   return { ...Object.fromEntries(Object.entries(byTab ?? {}).filter(([t]) => live.has(t))), [tab]: value };
 }
 
-// FNV-1a over the bytes: the cache name of an image's content.
-function hashOf(bytes) {
+// FNV-1a over a cache file's content, an image's bytes or a diagram's code
+// (its UTF-16 units): its name in the cache.
+function hashOf(data) {
+  const unit = typeof data === "string" ? (i) => data.charCodeAt(i) : (i) => data[i];
   let h = 0x811c9dc5;
-  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0;
-  return h.toString(16).padStart(8, "0") + bytes.length.toString(16);
+  for (let i = 0; i < data.length; i++) h = Math.imul(h ^ unit(i), 0x01000193) >>> 0;
+  return h.toString(16).padStart(8, "0") + data.length.toString(16);
+}
+
+// A diagram's two pictures in the cache, by mode.
+const diagramNames = (code) => {
+  const hash = hashOf(code);
+  return { dark: `mermaid-dark-${hash}.png`, light: `mermaid-light-${hash}.png` };
+};
+
+// The cache's shared record (older installs kept a bare list: read as empty).
+function cacheRecord() {
+  const { recent = [], shown = {} } = shared(CACHED) ?? {};
+  return { recent, shown };
+}
+
+// `name` goes into the cache now: the newest of its files, so no preview's
+// clean-up takes it for a leftover.
+function noteCached(name) {
+  const { recent, shown } = cacheRecord();
+  setShared(CACHED, { recent: [name, ...recent.filter((n) => n !== name)], shown });
+}
+
+// `tab`'s preview shows `names` now. Every preview's are kept and, of the
+// other files the record knows, the newest CACHE_KEEP; anything else in the
+// folder goes (a draw that landed after its file changed, a leftover). Files
+// starting with "." are writes in flight (copies, a diagram's partial PNG).
+async function keepCached(tab, names) {
+  const { recent, shown } = cacheRecord();
+  const nowShown = withTab(shown, tab, names);
+  const pinned = new Set(Object.values(nowShown).flat());
+  const spare = recent.filter((n) => !pinned.has(n)).slice(0, CACHE_KEEP);
+  setShared(CACHED, { recent: [...new Set([...names, ...recent])].filter((n) => pinned.has(n) || spare.includes(n)), shown: nowShown });
+  const dir = `${appHome()}/${CACHE}`;
+  const files = await fs.readdir(dir).catch(() => []);
+  // The record as it is now: another preview may have noted a file since.
+  const now = cacheRecord();
+  const keep = new Set([...now.recent, ...Object.values(now.shown).flat()]);
+  for (const f of files) if (!f.startsWith(".") && !keep.has(f)) await fs.unlink(`${dir}/${f}`).catch(() => {});
 }
 
 // An image copied into the cache: its name there.
 async function cached(bytes, ext) {
   const name = `${hashOf(bytes)}.${ext}`;
   const dir = `${appHome()}/${CACHE}`;
+  noteCached(name);
   if (!(await fs.exists(`${dir}/${name}`))) {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(`${dir}/${name}`, bytes);
@@ -62,34 +105,19 @@ async function cached(bytes, ext) {
   return name;
 }
 
-// `tab`'s preview shows these cache files now. Those and every other
-// preview's stay; of the rest, the newest CACHE_KEEP do.
-async function keepShown(tab, names) {
-  const was = shared(CACHED);
-  // Older installs kept only the names.
-  const { recent = [], shown = {} } = Array.isArray(was) ? { recent: was } : was ?? {};
-  const nowShown = withTab(shown, tab, names);
-  const onScreen = new Set(Object.values(nowShown).flat());
-  const order = [...new Set([...names, ...recent])];
-  const gone = new Set(order.filter((n) => !onScreen.has(n)).slice(CACHE_KEEP));
-  // Written before the first await, so two previews never undo each other.
-  setShared(CACHED, { recent: order.filter((n) => !gone.has(n)), shown: nowShown });
-  for (const name of gone) await fs.unlink(`${appHome()}/${CACHE}/${name}`).catch(() => {});
-}
-
-// A diagram drawn (or found drawn) into the cache in `mode` ("dark" or
-// "light"): {name, width, height} in pixels as shown (drawn at twice that),
-// or {error}.
-async function diagram(code, mode) {
-  const name = `mermaid-${mode}-${hashText(code)}.png`;
+// The diagram `name` (one of diagramNames(code)) drawn, or found drawn, into
+// the cache: {width, height} in pixels as shown (drawn at twice that), or
+// {error}.
+async function diagram(code, mode, name) {
   const dir = `${appHome()}/${CACHE}`;
   if (!(await fs.exists(`${dir}/${name}`))) {
+    noteCached(name);
     await fs.mkdir(dir, { recursive: true });
     const error = await drawMermaid(code, mode, `${dir}/${name}`);
     if (error) return { error };
   }
   const size = pngSize(await fs.readFile(`${dir}/${name}`).catch(() => null));
-  return size ? { name, width: size.width / 2, height: size.height / 2 } : { error: "The diagram was not drawn." };
+  return size ? { width: size.width / 2, height: size.height / 2 } : { error: "The diagram was not drawn." };
 }
 
 // A mod reads files only inside the home folder: one elsewhere (/tmp, a
@@ -122,8 +150,9 @@ async function readBytes(file) {
   }
 }
 
-// {kind: "markdown", text, parts?} (parts: with mermaid blocks, each
-// diagram's pictures by mode in `drawn`), {kind: "image", name}, or {error}.
+// {kind: "markdown", text} or, with mermaid blocks, {kind: "markdown",
+// parts} (a diagram's part carries its pictures' names), {kind: "image",
+// name}, or {error}.
 async function load(file) {
   const kind = previewKind(file);
   if (!kind) return { error: "Can't preview this kind of file." };
@@ -137,7 +166,7 @@ async function load(file) {
   if (kind === "markdown") {
     const parts = splitMermaid(data);
     if (!parts.some((p) => p.mermaid !== undefined)) return { kind, text: data };
-    return { kind, text: data, parts: parts.map((p) => (p.mermaid === undefined ? p : { ...p, drawn: {} })) };
+    return { kind, parts: parts.map((p) => (p.mermaid === undefined ? p : { ...p, names: diagramNames(p.mermaid) })) };
   }
   const ext = /\.([^./]+)$/.exec(file)[1].toLowerCase();
   return { kind, name: await cached(data, ext) };
@@ -153,14 +182,21 @@ export class Preview {
     this.shown = null;
     // The diagrams' theme: the one Herdr shows, followed in render().
     this.mode = modeOf(theme().background);
+    // The diagrams drawn for what the pane shows, by picture name:
+    // {width, height} or {error}. A reload keeps those it still shows.
+    this.drawn = new Map();
     this.wake = null;
     setShared(SHOWN, withTab(shared(SHOWN), this.tab, this.file));
     cx.spawn(async (cx) => {
       // A changed path of the folder's root means "anything may have changed".
       const ours = (changed) => !changed.length || changed.some((p) => p === this.file || p === dirname(this.file));
       while (!this.closed) {
-        this.shown = await load(this.file);
-        await this.keepShown();
+        const s = await load(this.file);
+        if (this.closed) break;
+        this.shown = s;
+        const names = this.pictures();
+        for (const name of this.drawn.keys()) if (!names.includes(name)) this.drawn.delete(name);
+        keepCached(this.tab, names); // the pane shows first, the clean-up after
         cx.notify();
         this.nudge();
         while (!this.closed && !ours(await watchFolder(dirname(this.file))));
@@ -187,34 +223,35 @@ export class Preview {
   // shown as it lands.
   async drawDiagrams(cx) {
     while (!this.closed) {
-      const s = this.shown;
       const mode = this.mode;
-      const part = s?.parts?.find((p) => p.drawn && !p.drawn[mode]);
+      const part = this.shown?.parts?.find((p) => p.names && !this.drawn.has(p.names[mode]));
       if (!part) {
         await new Promise((resolve) => (this.wake = resolve));
         continue;
       }
-      part.drawn[mode] = await diagram(part.mermaid, mode).catch((e) => ({ error: String(e?.message ?? e) }));
-      if (this.shown === s) {
-        await this.keepShown();
-        cx.notify();
-      }
+      const name = part.names[mode];
+      const d = await diagram(part.mermaid, mode, name).catch((e) => ({ error: String(e?.message ?? e) }));
+      if (this.closed) break;
+      this.drawn.set(name, d);
+      cx.notify();
     }
   }
 
-  // The cache files on screen now, kept for as long as they are.
-  keepShown() {
+  // The cache files of what the pane shows: an image, or each diagram's
+  // pictures in both themes (so switching back finds them still there).
+  pictures() {
     const s = this.shown;
-    const names = s?.kind === "image" ? [s.name] : (s?.parts ?? []).map((p) => p.drawn?.[this.mode]?.name).filter(Boolean);
-    return keepShown(this.tab, names);
+    if (s?.kind === "image") return [s.name];
+    return (s?.parts ?? []).flatMap((p) => (p.names ? [p.names.dark, p.names.light] : []));
   }
 
   // Markdown with mermaid blocks: the text between them as markdown, each
   // diagram as its picture, at most the pane's width, all in one scroll.
   parts(s, t) {
-    const room = this.width ? Math.max(40, this.width - 36) : null;
+    const room = this.width ? Math.max(40, this.width - 2 * PAD_X) : null;
     const diagramOf = (p, i) => {
-      const d = p.drawn[this.mode];
+      const name = p.names[this.mode];
+      const d = this.drawn.get(name);
       if (!d) return div().py(6).text_color(t.dim).child("Drawing diagram…");
       if (d.error) {
         return v_flex()
@@ -223,14 +260,14 @@ export class Preview {
           .child(markdown(`herdr-nvim-preview-${i}`, "```mermaid\n" + p.mermaid + "\n```"));
       }
       const w = room ? Math.min(d.width, room) : d.width;
-      return div().py(6).child(image(`${CACHE}/${d.name}`).w(w).h((d.height * w) / d.width));
+      return div().py(6).child(image(`${CACHE}/${name}`).w(w).h((d.height * w) / d.width));
     };
     return v_flex()
       .id("herdr-nvim-preview-parts")
       .flex_1()
       .min_h(0)
       .w_full()
-      .px(18)
+      .px(PAD_X)
       .py(12)
       .overflow_y_scrollbar()
       .on_size_change((size, cx) => {
@@ -239,7 +276,7 @@ export class Preview {
           cx.notify();
         }
       })
-      .children(s.parts.map((p, i) => (p.drawn ? diagramOf(p, i) : markdown(`herdr-nvim-preview-${i}`, p.md))));
+      .children(s.parts.map((p, i) => (p.names ? diagramOf(p, i) : markdown(`herdr-nvim-preview-${i}`, p.md))));
   }
 
   render() {
@@ -258,7 +295,7 @@ export class Preview {
           ? div().flex_1().min_h(0).w_full().p(14).child(image(`${CACHE}/${s.name}`).size_full())
           : s.parts
             ? this.parts(s, t)
-            : markdown("herdr-nvim-preview", s.text).scrollable(true).flex_1().min_h(0).px(18).py(12);
+            : markdown("herdr-nvim-preview", s.text).scrollable(true).flex_1().min_h(0).px(PAD_X).py(12);
     return v_flex()
       .id("herdr-nvim-preview")
       .size_full()

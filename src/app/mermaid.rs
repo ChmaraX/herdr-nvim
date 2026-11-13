@@ -23,7 +23,7 @@ use merman::{
 use super::cli;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Theme {
+enum Theme {
     Dark,
     Light,
 }
@@ -53,14 +53,16 @@ pub fn mermaid_cmd() -> Result<()> {
     let out = Path::new(cli::flag(&args, "--out")?.context(usage)?);
     let code = cli::flag(&args, "--code")?.context(usage)?;
     let png = draw(code, theme)?;
-    let partial = out.with_extension(format!("{}.partial", process::id()));
+    // Beside it and hidden: the preview's cache clean-up skips dot-files.
+    let name = out.file_name().context(usage)?.to_string_lossy();
+    let partial = out.with_file_name(format!(".{name}.{}.partial", process::id()));
     fs::write(&partial, png).with_context(|| format!("cannot write {}", partial.display()))?;
     fs::rename(&partial, out).with_context(|| format!("cannot write {}", out.display()))
 }
 
 /// The diagram as PNG bytes at twice its size; an error says what is wrong
 /// with the code (Mermaid's parse error) or why it could not be drawn.
-pub(crate) fn draw(code: &str, theme: Theme) -> Result<Vec<u8>> {
+fn draw(code: &str, theme: Theme) -> Result<Vec<u8>> {
     let control = OperationControl::new();
     let fonts = system_fonts(&control).map_err(|e| anyhow!("cannot load the system fonts: {e}"))?;
     let environment = SvgEnvironment::deterministic()

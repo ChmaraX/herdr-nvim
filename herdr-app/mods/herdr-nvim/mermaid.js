@@ -2,9 +2,10 @@
 // block is drawn by herdr-nvim itself (`app-mermaid`: Mermaid's layouts and
 // themes in Rust, src/app/mermaid.rs), so there is nothing to install.
 //
-// A diagram is drawn once per code and theme, as a PNG at twice its size into
-// the preview's image cache (named by both), so editing the text around it,
-// or reloading the file, draws nothing again.
+// The markdown is split around the diagrams, the text parts as markdown and
+// each diagram as a picture between them: a TextView shows no local image
+// (`![](…)` and `<img>` stay blank, whatever the path), so a diagram can't be
+// one of its images.
 
 import { exec } from "herdr";
 import { bin } from "./lib.js";
@@ -61,13 +62,6 @@ export function splitMermaid(text) {
     const own = p.md.join("\n");
     return { md: takes(i) ? `${own}\n\n${definitions.join("\n")}` : own };
   });
-}
-
-// FNV-1a over a string's UTF-16 units: the cache name of a diagram.
-export function hashText(s) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
-  return h.toString(16).padStart(8, "0") + s.length.toString(16);
 }
 
 // A PNG's size in pixels, from its IHDR chunk; null if it isn't one.
