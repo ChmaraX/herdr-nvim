@@ -112,23 +112,12 @@ image fitted. **Source** (**nvim** for an image) swaps nvim back, unsaved
 edits and all. The preview reloads when its file is saved, and an image
 opened any way opens its preview.
 
-```` ```mermaid ```` blocks in markdown are drawn as diagrams when
-[mermaid-cli](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) is on your
-PATH; without it they stay code blocks. Each diagram is drawn once per code
-and theme (light or dark, following Herdr's), so text edits around it
-redraw nothing; a broken one shows mermaid's error above its code.
-
-```sh
-npm install -g @mermaid-js/mermaid-cli
-```
-
-mmdc draws with a headless browser. If it can't find one, either let
-puppeteer fetch its own (`npx puppeteer browsers install chrome-headless-shell`)
-or point it at an installed Chrome in `~/.puppeteerrc.cjs`:
-
-```js
-module.exports = { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" };
-```
+```` ```mermaid ```` blocks in markdown are drawn as diagrams, with nothing to
+install: herdr-nvim draws them itself with
+[merman](https://github.com/Latias94/merman), a Rust port of Mermaid (its
+layouts and themes, light or dark following Herdr's). Each diagram is drawn
+once per code and theme, so text edits around it redraw nothing; a broken one
+shows Mermaid's error above its code.
 
 ## Comments
 

@@ -1,23 +1,29 @@
-// Mermaid diagrams in the markdown preview (preview.js). Optional: they are
-// drawn by mermaid-cli (`mmdc`) when it is on the PATH; without it, a
-// ```mermaid block stays a code block, as in any other markdown.
+// Mermaid diagrams in the markdown preview (preview.js). Each ```mermaid
+// block is drawn by herdr-nvim itself (`app-mermaid`: Mermaid's layouts and
+// themes in Rust, src/app/mermaid.rs), so there is nothing to install.
 //
 // A diagram is drawn once per code and theme, as a PNG at twice its size into
 // the preview's image cache (named by both), so editing the text around it,
 // or reloading the file, draws nothing again.
 
-import { exec, home } from "herdr";
-import * as fs from "fs/promises";
+import { exec } from "herdr";
+import { bin } from "./lib.js";
 
-// The fence that opens a mermaid block: ```mermaid or ~~~mermaid, up to three
-// spaces in, as CommonMark has it. Other fences are tracked so a mermaid
-// fence inside one (a markdown example) stays text.
+// The fence that opens a code block: ``` or ~~~, up to three spaces in, as
+// CommonMark has it, and its language. Every fence is tracked, so a mermaid
+// fence inside another one (a markdown example) stays text.
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
+// A link reference definition (`[label]: url`), not a footnote (`[^note]:`).
+const LINK_DEFINITION = /^ {0,3}\[(?!\^)[^\]]+\]:\s*\S/;
 
-// The markdown as parts in order: {md} text, {mermaid} a block's code. An
-// unclosed mermaid block (an agent still writing it) stays text.
+// The markdown as parts in order: {md} text, {mermaid} a block's code; text
+// without a mermaid block is one {md} part, the text as it is. An unclosed
+// mermaid block (an agent still writing it) stays text. Each text part is
+// rendered on its own, so it gets the document's link definitions: a
+// reference resolves whichever part its definition is in.
 export function splitMermaid(text) {
   const parts = [];
+  const definitions = [];
   let md = [];
   let open = null; // {fence, mermaid, lines, start}
   const closes = (line) => new RegExp(`^ {0,3}${open.fence[0] === "`" ? "`" : "~"}{${open.fence.length},}\\s*$`).test(line);
@@ -25,7 +31,7 @@ export function splitMermaid(text) {
     if (open) {
       if (closes(line)) {
         if (open.mermaid) {
-          if (md.length) parts.push({ md: md.join("\n") });
+          if (md.length) parts.push({ md });
           md = [];
           parts.push({ mermaid: open.lines.join("\n") });
         } else md.push(open.start, ...open.lines, line);
@@ -35,14 +41,23 @@ export function splitMermaid(text) {
     }
     const m = FENCE.exec(line);
     if (m && !(m[1][0] === "`" && m[2].includes("`"))) open = { fence: m[1], mermaid: m[2].toLowerCase() === "mermaid", lines: [], start: line };
-    else md.push(line);
+    else {
+      md.push(line);
+      if (LINK_DEFINITION.test(line)) definitions.push(line);
+    }
   }
+  const unclosed = open !== null;
   if (open) md.push(open.start, ...open.lines);
-  if (md.length) parts.push({ md: md.join("\n") });
-  return parts;
+  if (md.length) parts.push({ md });
+  if (!parts.some((p) => p.mermaid !== undefined)) return [{ md: text }];
+  // Not after an unclosed fence (the last part's): they would be its code.
+  const takes = (i) => definitions.length && !(unclosed && i === parts.length - 1);
+  return parts.map((p, i) => {
+    if (p.md === undefined) return p;
+    const own = p.md.join("\n");
+    return { md: takes(i) ? `${own}\n\n${definitions.join("\n")}` : own };
+  });
 }
-
-export const hasMermaid = (parts) => parts.some((p) => p.mermaid !== undefined);
 
 // FNV-1a over a string's UTF-16 units: the cache name of a diagram.
 export function hashText(s) {
@@ -58,43 +73,20 @@ export function pngSize(bytes) {
   return { width: at(16), height: at(20) };
 }
 
-// What mmdc's output says went wrong, without its stack: the parse error's
-// lines, else the first line.
-export function mmdcError(stderr) {
-  const lines = (stderr ?? "").split("\n").map((l) => l.trimEnd()).filter((l) => l && !/^\s+at /.test(l));
-  const parse = lines.findIndex((l) => /error/i.test(l));
-  return (parse >= 0 ? lines.slice(parse, parse + 4) : lines.slice(0, 1)).join("\n") || "mmdc failed";
+// Draws one diagram as the PNG `out` (absolute; written whole or not at all):
+// null, or what is wrong (Mermaid's parse error).
+export async function drawMermaid(code, mode, out) {
+  const r = await exec(bin(), ["app-mermaid", "--theme", mode, "--out", out, "--code", code])
+    .catch((e) => ({ code: -1, stderr: String(e?.message ?? e) }));
+  if (r.code === 0) return null;
+  return (r.stderr ?? "").trim().replace(/^herdr-nvim: /, "") || "The diagram could not be drawn.";
 }
 
-// Draws one diagram into `dir` (absolute, the cache) as `name`:
-// {drawn: true}, {missing: true} (no mmdc), or {error}.
-// mmdc runs in the home folder, where puppeteer looks for its config
-// (~/.puppeteerrc.cjs, e.g. one pointing it at an installed Chrome).
-export async function drawMermaid(code, dark, dir, name) {
-  const input = `${dir}/.${name}.mmd`;
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(input, code);
-  try {
-    const args = ["-i", input, "-o", `${dir}/${name}`, "-t", dark ? "dark" : "default", "-b", "transparent", "-s", "2", "-q"];
-    let r;
-    try {
-      r = await exec("mmdc", args, { cwd: home(), timeout: 60000 });
-    } catch {
-      return { missing: true };
-    }
-    if (r.code === 127 || /command not found|No such file or directory \(os error 2\)/.test(r.stderr ?? "")) return { missing: true };
-    if (r.code !== 0) return { error: mmdcError(r.stderr || r.stdout) };
-    return { drawn: true };
-  } finally {
-    await fs.unlink(input).catch(() => {});
-  }
-}
-
-// Whether a theme's background is dark: "#rrggbb" by its luminance; anything
-// else counts as dark, Herdr's default.
-export function isDark(background) {
+// "dark" or "light": the diagrams' theme for a background, "#rrggbb" by its
+// luminance; anything else counts as dark, Herdr's default.
+export function modeOf(background) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(background ?? "");
-  if (!m) return true;
+  if (!m) return "dark";
   const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5 ? "dark" : "light";
 }
