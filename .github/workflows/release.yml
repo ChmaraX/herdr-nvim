@@ -17,6 +17,8 @@ permissions:
 jobs:
   build:
     strategy:
+      # One target's failure must not cancel the others' uploads.
+      fail-fast: false
       matrix:
         include:
           - { os: macos-15, target: aarch64-apple-darwin }
@@ -62,3 +64,8 @@ jobs:
             herdr-nvim-${{ matrix.target }}${{ matrix.exe }}
             herdr-nvim-app-${{ matrix.target }}.tar.gz
             herdr-nvim-app-${{ matrix.target }}.tar.gz.sha256
+      # The published asset, checked by the same test that CI runs, but here a
+      # missing or misnamed Windows binary fails instead of skipping.
+      - if: runner.os == 'Windows'
+        name: plugin install tests (published binary)
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 -RequirePrebuilt

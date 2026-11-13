@@ -1,0 +1,4 @@
+# Link the C runtime statically on Windows, so the released herdr-nvim.exe runs
+# without the Visual C++ Redistributable (vcruntime140.dll) installed.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -1,7 +1,10 @@
 # End-to-end check of the plugin's Windows build hook (herdr/install.ps1), run
 # the way `herdr plugin install` runs it, each case on a fresh copy of the
 # checkout. CI runs it on windows-latest (VS 2026, no VS 2022: #67).
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 [-RequirePrebuilt]
+# -RequirePrebuilt (the release job): the version's Windows binary must be on
+# GitHub, so a missing or misnamed asset fails instead of skipping.
+param([switch]$RequirePrebuilt)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -79,6 +82,9 @@ if ($published) {
     Assert-Installed $dir
     Assert "no source build" (-not (Test-Path -LiteralPath (Join-Path $dir $builtFromSource)))
     Assert-NoDownloadLeft $dir
+}
+elseif ($RequirePrebuilt) {
+    Assert "v$version has the Windows binary on GitHub ($url)" $false
 }
 else {
     Write-Host "  skip  v$version has no Windows binary on GitHub (released before it existed, or not released yet)"

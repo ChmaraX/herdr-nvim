@@ -9,6 +9,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root "bin"
 $exe = Join-Path $bin "herdr-nvim.exe"
 $download = Join-Path $bin "herdr-nvim.download.exe"
+$old = Join-Path $bin "herdr-nvim.old.exe"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
 $version = (Select-String -LiteralPath (Join-Path $root "herdr-plugin.toml") -Pattern '^version = "(.*)"' |
@@ -38,6 +39,21 @@ function Invoke-Exe([string]$path, [string]$arguments = "") {
     $process.ExitCode
 }
 
+# Windows can't overwrite a running exe (an open sidebar runs bin\herdr-nvim.exe
+# until it closes), but it can rename one. So the old exe moves aside first.
+function Install-Exe([string]$from) {
+    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+    try {
+        if (Test-Path -LiteralPath $exe) { Move-Item -LiteralPath $exe -Destination $old -Force }
+        Copy-Item -LiteralPath $from -Destination $exe -Force
+    }
+    catch {
+        Fail "could not replace $exe ($($_.Exception.Message)). Close the herdr-nvim sidebars and install again."
+    }
+    # Still running: the next install removes it.
+    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+}
+
 function Install-Prebuilt {
     if (-not $target) {
         Say "no prebuilt binary for $arch"
@@ -45,27 +61,28 @@ function Install-Prebuilt {
     }
     $url = "https://github.com/ChmaraX/herdr-nvim/releases/download/v$version/herdr-nvim-$target.exe"
     try {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $download
-        }
-        catch {
-            Say "could not download $url ($($_.Exception.Message))"
-            return $false
-        }
-        # Every build prints usage and exits 2 when run with no arguments, so
-        # any other result means the binary never ran (truncated, blocked, ...).
-        try { $status = Invoke-Exe $download } catch { $status = $_.Exception.Message }
-        if ($status -ne 2) {
-            Say "prebuilt binary for $target did not run (exit $status)"
-            return $false
-        }
-        Move-Item -LiteralPath $download -Destination $exe -Force
-        return $true
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $download
     }
-    finally {
-        Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
+    catch {
+        Say "could not download $url ($($_.Exception.Message))"
+        return $false
     }
+    # Every build prints usage and exits 2 when run with no arguments, so
+    # anything else means the binary never ran (truncated, blocked, ...).
+    try {
+        $status = Invoke-Exe $download
+    }
+    catch {
+        Say "prebuilt binary for $target did not start ($($_.Exception.Message))"
+        return $false
+    }
+    if ($status -ne 2) {
+        Say "prebuilt binary for $target did not run (exit $status)"
+        return $false
+    }
+    Install-Exe $download
+    return $true
 }
 
 # cargo finds the MSVC build tools itself (any Visual Studio or Build Tools
@@ -84,10 +101,21 @@ function Install-FromSource {
     if (-not [System.IO.Path]::IsPathRooted($targetDir)) {
         $targetDir = Join-Path $root $targetDir
     }
-    Copy-Item -LiteralPath (Join-Path $targetDir "release\herdr-nvim.exe") -Destination $exe -Force
+    $built = Join-Path $targetDir "release\herdr-nvim.exe"
+    if (-not (Test-Path -LiteralPath $built)) {
+        Fail "cargo build --release succeeded but $built was not created"
+    }
+    Install-Exe $built
 }
 
-if (-not (Install-Prebuilt)) {
-    Say "falling back to a source build"
-    Install-FromSource
+# Like install.sh's trap: the download never outlives the script, on any path
+# (a stale one from an interrupted run included).
+try {
+    if (-not (Install-Prebuilt)) {
+        Say "falling back to a source build"
+        Install-FromSource
+    }
+}
+finally {
+    Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
 }

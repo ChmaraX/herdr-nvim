@@ -52,5 +52,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: herdr/install.ps1
+      - name: plugin install tests
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1
