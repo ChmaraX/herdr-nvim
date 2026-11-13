@@ -44,6 +44,9 @@ The Herdr app 0.1.11+ on macOS or Linux, and nvim ≥ 0.10. Without nvim the
 installer offers to install it (Homebrew's, else Neovim's own release into
 `~/.local/share/herdr-nvim/nvim`, no sudo).
 
+On Windows, the herdr TUI plugin works; see
+[TUI.md › Install](TUI.md#install).
+
 ## Install
 
 With the app open, either ask the agent in your Herdr window to *add the mod
