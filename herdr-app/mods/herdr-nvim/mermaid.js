@@ -10,9 +10,10 @@ import { exec } from "herdr";
 import { bin } from "./lib.js";
 
 // The fence that opens a code block: ``` or ~~~, up to three spaces in, as
-// CommonMark has it, and its language. Every fence is tracked, so a mermaid
-// fence inside another one (a markdown example) stays text.
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
+// CommonMark has it, then its info string (the language first). Every fence
+// is tracked, so a mermaid fence inside another one (a markdown example)
+// stays text.
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // A link reference definition (`[label]: url`), not a footnote (`[^note]:`).
 const LINK_DEFINITION = /^ {0,3}\[(?!\^)[^\]]+\]:\s*\S/;
 
@@ -40,8 +41,11 @@ export function splitMermaid(text) {
       continue;
     }
     const m = FENCE.exec(line);
-    if (m && !(m[1][0] === "`" && m[2].includes("`"))) open = { fence: m[1], mermaid: m[2].toLowerCase() === "mermaid", lines: [], start: line };
-    else {
+    // A backtick fence's info string has no backtick: ```` ```x ```` is code
+    // in a paragraph.
+    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      open = { fence: m[1], mermaid: m[2].trim().split(/\s/)[0].toLowerCase() === "mermaid", lines: [], start: line };
+    } else {
       md.push(line);
       if (LINK_DEFINITION.test(line)) definitions.push(line);
     }
