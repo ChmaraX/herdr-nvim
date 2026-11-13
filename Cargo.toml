@@ -14,6 +14,13 @@ crossterm = "0.28"
 # prebuilt release binaries, so the extra dependency weight is a CI/build
 # cost, not a user-facing one.
 fff-search = "0.10.6"
+# The app's markdown preview draws Mermaid diagrams (`app-mermaid`) with
+# Mermaid's own layouts and themes, measured and painted with the system fonts.
+merman = { version = "0.10.0", default-features = false, features = ["all-diagrams", "layout-cytoscape", "png", "system-fonts"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Fonts from Core Text: about 35 ms a diagram instead of a 1 s font scan.
+merman = { version = "0.10.0", default-features = false, features = ["experimental-system-font-query"] }
 
 [target.'cfg(unix)'.dependencies]
 # tcflush: keys typed into an nvim pane before nvim attaches are dropped.

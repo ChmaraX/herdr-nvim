@@ -38,6 +38,7 @@ const SHORT: &[&str] = &[
     "pick-file",
     "open-link",
     "app-config",
+    "app-mermaid",
 ];
 
 fn deadline(after: std::time::Duration) {
@@ -89,6 +90,8 @@ fn main() {
         ("app-setup", _) => run(app::setup::setup_cmd),
         ("app-config", _) => run(app::settings::app_config_cmd),
         ("app-nvim-check", _) => run(nvim_check::check_cmd),
+        // The markdown preview's diagrams.
+        ("app-mermaid", _) => run(app::mermaid::mermaid_cmd),
         // The "Neovim is needed" card's Install button (a terminal tab).
         ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
         (
@@ -101,7 +104,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-mermaid>"
             );
             2
         }
