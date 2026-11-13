@@ -48,7 +48,11 @@ installer again upgrades; `--uninstall` takes all of it out.
   or an SVG (11.5px, a 1px `border` pill). The preview takes nvim's place at
   nvim's size: markdown rendered, an image fitted with 14px around it. Its
   header reads `Preview · <file>` with a **Source** button (**nvim** for an
-  image).
+  image). Its ```` ```mermaid ```` blocks are diagrams when `mmdc` is on the
+  PATH (else code blocks): the text between them markdown, each diagram at
+  its own size up to the pane's width, one scroll; "Drawing diagram…" in
+  `dim` until it lands; a broken one shows mermaid's error in `ansi1` above
+  its code.
 - **Picker** (`cmd-o`): an 820×470 dialog, "Open file from agent output" on a
   38px `chrome` bar with its keys as keycaps. Below it, a terminal picker:
   the agent's files newest first, then uncommitted git changes with `+N -M`
@@ -121,6 +125,11 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   behind the preview, unsaved edits and all. Opening any file in nvim brings nvim back. The preview
   reloads when its file is saved. Files closes a preview with the tree and
   brings it back next time. An image opened any way opens its preview.
+- **Mermaid** (`mermaid.js`): `mmdc -t dark|default -b transparent -s 2`,
+  run in the home folder (where puppeteer finds `~/.puppeteerrc.cjs`), into
+  the preview's cache as `mermaid-<hash of theme and code>.png`, one diagram
+  at a time beside the file watch; an existing PNG is reused. No `mmdc`
+  (exec fails or exits 127) leaves the block as code with a hint.
 - **Picker** reads the tab's agent: its session log (pi or Claude Code) since
   the agent started, then git changes; with no log, the paths on its screen.
   ⏎ opens the file in the tab's nvim, Esc closes. With nothing to list, an

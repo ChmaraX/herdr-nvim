@@ -30,6 +30,7 @@ export const run = (name, args) => app.ran.push([name, args]);
 export const notify = () => {};
 export const nextCommand = () => new Promise(() => {});
 export const appHome = () => "/nonexistent-app-home";
+export const home = () => "/nonexistent-home";
 export const readTextFile = async () => { throw new Error("no files in this check"); };
 export const watchFolder = () => new Promise(() => {});
 export const window = () => ({ platform: "macos" });

@@ -219,4 +219,35 @@ assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<lea
 assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { tree: "nvim", tree_key: "<leader>e" }),
   [["cmd-e", "open or close nvim"]]);
 
+// Mermaid in the preview: fenced ```mermaid blocks split out of the text
+// (not one inside another fence, nor an unclosed one), a PNG's size read,
+// mmdc's error kept to its message, and no mmdc meaning "missing".
+const { splitMermaid, hasMermaid, pngSize, mmdcError, isDark, drawMermaid } = await import("../mods/herdr-nvim/mermaid.js");
+assert.deepEqual(splitMermaid("# T\n\n```mermaid\ngraph TD\n  A-->B\n```\nafter"),
+  [{ md: "# T\n" }, { mermaid: "graph TD\n  A-->B" }, { md: "after" }]);
+assert.deepEqual(splitMermaid("~~~ Mermaid\nx\n~~~"), [{ mermaid: "x" }]);
+assert.deepEqual(splitMermaid("````md\n```mermaid\nx\n```\n````"), [{ md: "````md\n```mermaid\nx\n```\n````" }]);
+assert.deepEqual(splitMermaid("a\n```mermaid\nx"), [{ md: "a\n```mermaid\nx" }]);
+assert.equal(hasMermaid(splitMermaid("```js\nx\n```")), false);
+assert.deepEqual(pngSize(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 1, 124, 0, 0, 3, 92])), { width: 380, height: 860 });
+assert.equal(pngSize(new Uint8Array(30)), null);
+assert.equal(mmdcError("\nError: Parse error on line 2:\n...A-->\n---^\nExpecting 'X'\n    at f (x.js:1:1)\n"), "Error: Parse error on line 2:\n...A-->\n---^\nExpecting 'X'");
+assert.equal(isDark("#1a1b26"), true);
+assert.equal(isDark("#fafafa"), false);
+const tmp = await (await import("node:fs/promises")).mkdtemp(`${(await import("node:os")).tmpdir()}/hn-mermaid-`);
+app.exec = async () => { throw new Error("not found"); };
+assert.deepEqual(await drawMermaid("graph TD", true, tmp, "a.png"), { missing: true });
+app.exec = async () => ({ code: 127, stdout: "", stderr: "zsh: command not found: mmdc" });
+assert.deepEqual(await drawMermaid("graph TD", true, tmp, "a.png"), { missing: true });
+app.exec = async () => ({ code: 1, stdout: "", stderr: "Error: Parse error on line 1:\n    at x" });
+assert.deepEqual(await drawMermaid("graph TD", true, tmp, "a.png"), { error: "Error: Parse error on line 1:" });
+let ran;
+app.exec = async (cmd, args, opts) => { ran = { cmd, args, opts }; return { code: 0, stdout: "", stderr: "" }; };
+assert.deepEqual(await drawMermaid("graph TD", false, tmp, "a.png"), { drawn: true });
+assert.equal(ran.cmd, "mmdc");
+assert.equal(ran.opts.cwd, "/nonexistent-home");
+assert.deepEqual(ran.args.slice(2), ["-o", `${tmp}/a.png`, "-t", "default", "-b", "transparent", "-s", "2", "-q"]);
+assert.deepEqual((await import("node:fs")).readdirSync(tmp), [], "the input file was left behind");
+await (await import("node:fs/promises")).rm(tmp, { recursive: true });
+
 console.log("js checks: ok");
