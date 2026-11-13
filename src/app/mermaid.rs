@@ -89,14 +89,21 @@ fn draw(code: &str, theme: Theme) -> Result<Vec<u8>> {
 /// The machine's fonts, for measuring and painting alike. macOS answers from
 /// Core Text (about 35 ms); elsewhere every font file is scanned.
 fn system_fonts(control: &OperationControl) -> Result<NativeFontContext, NativeFontError> {
-    // The default budgets are less than a Mac's: 2 GiB of font files to
-    // scan, 64 MiB of fonts to use (its emoji font alone is 190 MB).
+    // merman's limits guard against hostile font folders, and going over one
+    // is an error, not a cut-off. A Mac's or a big Linux install's fonts go
+    // over the defaults (a Mac's emoji font alone is 190 MB, over the 64 MiB
+    // of fonts in use), so each is 16 times merman's default.
+    let default = NativeFontLimits::default();
     let options = NativeFontOptions::default()
         .with_system_fonts(true)
         .with_limits(NativeFontLimits {
-            max_system_scan_bytes: 16 << 30,
-            max_bytes: 1 << 30,
-            ..NativeFontLimits::default()
+            max_bytes: default.max_bytes * 16,
+            max_directory_entries: default.max_directory_entries * 16,
+            max_system_files: default.max_system_files * 16,
+            max_system_scan_bytes: default.max_system_scan_bytes * 16,
+            max_system_faces: default.max_system_faces * 16,
+            max_system_cmap_bytes: default.max_system_cmap_bytes * 16,
+            ..default
         });
     #[cfg(target_os = "macos")]
     return options.load_platform(control);
