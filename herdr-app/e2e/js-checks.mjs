@@ -222,10 +222,9 @@ assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { t
 // Mermaid in the preview: fenced ```mermaid blocks split out of the text
 // (not one inside another fence, nor an unclosed one), each text part with
 // the document's link definitions (not footnotes, not after an unclosed
-// fence), and a PNG's size read. A line starting with backticks that hold
-// more backticks is code in a paragraph, not a fence (else it hides every
-// diagram after it).
-const { splitMermaid, pngSize, modeOf } = await import("../mods/herdr-nvim/mermaid.js");
+// fence). A line starting with backticks that hold more backticks is code
+// in a paragraph, not a fence (else it hides every diagram after it).
+const { splitMermaid } = await import("../mods/herdr-nvim/mermaid.js");
 assert.deepEqual(splitMermaid("# T\n\n```mermaid\ngraph TD\n  A-->B\n```\nafter"),
   [{ md: "# T\n" }, { mermaid: "graph TD\n  A-->B" }, { md: "after" }]);
 assert.deepEqual(splitMermaid("~~~ Mermaid\nx\n~~~"), [{ mermaid: "x" }]);
@@ -240,10 +239,5 @@ assert.deepEqual(splitMermaid("[a]: http://a\n```mermaid\nx\n```\n```js\nunclose
 assert.deepEqual(splitMermaid("```` ```mermaid ```` blocks are drawn.\n\n```mermaid\nx\n```"),
   [{ md: "```` ```mermaid ```` blocks are drawn.\n" }, { mermaid: "x" }]);
 assert.deepEqual(splitMermaid("```mermaid title=\"Plan\"\nx\n```"), [{ mermaid: "x" }]);
-assert.deepEqual(pngSize(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 1, 124, 0, 0, 3, 92])), { width: 380, height: 860 });
-assert.equal(pngSize(new Uint8Array(30)), null);
-assert.equal(modeOf("#1a1b26"), "dark");
-assert.equal(modeOf("#fafafa"), "light");
-assert.equal(modeOf(undefined), "dark");
 
 console.log("js checks: ok");

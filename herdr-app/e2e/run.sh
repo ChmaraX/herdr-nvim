@@ -71,7 +71,10 @@ say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$log"; }
 fail() { say "FAIL: $*"; type H >/dev/null 2>&1 && H shot "$proof/FAIL.png" >/dev/null 2>&1; exit 1; }
 
 # --- the private instance ---------------------------------------------------
-root=$(mktemp -d /tmp/hnv-e2e.XXXX)
+# Under the home folder, not /tmp: a mod reads files only inside it (the
+# preview reads its own image cache), as a real app home (~/.config) is.
+mkdir -p "$HOME/.cache"
+root=$(mktemp -d "$HOME/.cache/hnv-e2e.XXXX")
 for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$v"; done
 export HERDR_APP_HOME=$root/home HC_SESSION=hn${root: -4} XDG_STATE_HOME=$root/state
 export XDG_CONFIG_HOME=$root/config XDG_DATA_HOME=$root/data
@@ -490,6 +493,65 @@ poll 5 no_preview || fail "the preview stayed beside nvim"
 poll 10 nvim_on package.json || fail "nvim is not on package.json"
 panel_is files || fail "the tree went away"
 say "Files closes the preview and brings it back; a code file from the tree puts nvim back in its place"
+# Mermaid: an agent's plan with diagrams, drawn by the binary into the
+# preview's cache in the app's theme; a broken one shows its error, the text
+# around them is markdown with its references, and a theme switch draws the
+# other theme's pictures while keeping the first's.
+cache=$HERDR_APP_HOME/mods/herdr-nvim/.cache
+appearance() { # the app's light or dark theme, as Settings sets it
+  "$py" -c 'import json,sys; p=sys.argv[1]; import os; d=json.load(open(p)) if os.path.exists(p) else {}; d["appearance"]=sys.argv[2]; json.dump(d, open(p, "w"))' "$HERDR_APP_HOME/settings.json" "$1"
+}
+drawn() { ls "$cache" 2>/dev/null | grep -c "^mermaid-$1-" || true; }
+drawn_is() { [ "$(drawn "$1")" = "$2" ]; }
+cat > "$demo/plan.md" <<'EOF'
+# Plan
+
+```` ```mermaid ```` blocks are drawn; see the [Herdr site][herdr].
+
+```mermaid
+flowchart TD
+  A[Read the issue] --> B{Reproduced?}
+  B -- yes --> C[Write the fix]
+  B -- no --> D[Ask for steps]
+```
+
+After the flowchart, [the site again][herdr].
+
+```js
+export const plan = "unchanged";
+```
+
+```mermaid
+flowchart TD
+  A[unclosed --> B
+```
+
+```mermaid
+sequenceDiagram
+  User->>Preview: open plan.md
+  Preview-->>User: diagrams
+```
+
+[herdr]: https://herdr.dev
+EOF
+open_in_nvim "$demo/plan.md"
+sleep 1
+H do "herdr-nvim.swap:$tab_a:$(enc "$demo/plan.md")" >/dev/null
+poll 10 has_preview || fail "Preview of plan.md did not show"
+poll 20 drawn_is dark 2 || fail "the plan's two diagrams were not drawn dark: $(ls "$cache")"
+sleep 1
+shot 04b-mermaid-dark
+printf '\nOne more line under the plan.\n' >> "$demo/plan.md"
+sleep 2
+drawn_is dark 2 || fail "editing the text around the diagrams drew them again: $(ls "$cache")"
+appearance light
+poll 20 drawn_is light 2 || fail "the theme switch did not draw the diagrams light: $(ls "$cache")"
+sleep 1
+shot 04c-mermaid-light
+drawn_is dark 2 || fail "the light diagrams evicted the dark ones on screen a moment ago"
+appearance dark
+ls "$cache" > "$proof/mermaid-cache.txt"
+say "Mermaid: two diagrams drawn dark, then light on a theme switch, none drawn again for a text edit (cache: mermaid-cache.txt)"
 fi
 
 if begin nvim-tree; then
