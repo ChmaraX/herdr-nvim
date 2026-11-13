@@ -24,9 +24,9 @@ const CACHE_KEEP = 40;
 // shared(): which file each tab's preview shows, for its pane header.
 const SHOWN = "herdr-nvim.previews";
 
-// The preview's text size, set once on its root: the terminals' font size, so
-// it matches nvim's source it stands in for. Px at zoom 1 (Herdr zooms mods'
-// sizes); Herdr fills it in, 14 unless the person sets one.
+// The preview's text size, set once on its root: the terminals' font size (the
+// shown layout's, else the person's, else Herdr's 14), so the preview reads at
+// the size of the nvim buffer it replaces. Px at zoom 1; Herdr zooms mods' sizes.
 function textSize() {
   const size = settings().font_size;
   return typeof size === "number" ? size : 14;
