@@ -2,6 +2,9 @@ name: ci
 on:
   push:
   pull_request:
+# The jobs only read the checkout.
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
