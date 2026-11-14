@@ -112,6 +112,13 @@ image fitted. **Source** (**nvim** for an image) swaps nvim back, unsaved
 edits and all. The preview reloads when its file is saved, and an image
 opened any way opens its preview.
 
+```` ```mermaid ```` blocks in markdown are drawn as diagrams, with nothing to
+install: herdr-nvim draws them itself with
+[merman](https://github.com/Latias94/merman), a Rust port of Mermaid (its
+layouts and themes, light or dark following Herdr's). Each diagram is drawn
+once per code and theme, so text edits around it redraw nothing; a broken one
+shows Mermaid's error above its code.
+
 ## Comments
 
 | Keymap | Command | Action |

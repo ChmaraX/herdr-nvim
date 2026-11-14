@@ -219,4 +219,25 @@ assert.deepEqual(rows.map(([k]) => k), ["cmd-e", "cmd-k o", "cmd-shift-e", "<lea
 assert.deepEqual(welcomeRows({ global: { "cmd-e": "mod.open:herdr-nvim" } }, { tree: "nvim", tree_key: "<leader>e" }),
   [["cmd-e", "open or close nvim"]]);
 
+// Mermaid in the preview: fenced ```mermaid blocks split out of the text
+// (not one inside another fence, nor an unclosed one), each text part with
+// the document's link definitions (not footnotes, not after an unclosed
+// fence). A line starting with backticks that hold more backticks is code
+// in a paragraph, not a fence (else it hides every diagram after it).
+const { splitMermaid } = await import("../mods/herdr-nvim/mermaid.js");
+assert.deepEqual(splitMermaid("# T\n\n```mermaid\ngraph TD\n  A-->B\n```\nafter"),
+  [{ md: "# T\n" }, { mermaid: "graph TD\n  A-->B" }, { md: "after" }]);
+assert.deepEqual(splitMermaid("~~~ Mermaid\nx\n~~~"), [{ mermaid: "x" }]);
+assert.deepEqual(splitMermaid("````md\n```mermaid\nx\n```\n````"), [{ md: "````md\n```mermaid\nx\n```\n````" }]);
+assert.deepEqual(splitMermaid("a\n```mermaid\nx"), [{ md: "a\n```mermaid\nx" }]);
+assert.deepEqual(splitMermaid("```js\nx\n```\n[a]: http://a"), [{ md: "```js\nx\n```\n[a]: http://a" }]);
+assert.deepEqual(splitMermaid("See [a][] and [b].[^n]\n```mermaid\nx\n```\n[b] again.\n\n```txt\n[c]: not one\n```\n[a]: http://a\n[b]: http://b \"B\"\n[^n]: note"),
+  [{ md: "See [a][] and [b].[^n]\n\n[a]: http://a\n[b]: http://b \"B\"" }, { mermaid: "x" },
+   { md: "[b] again.\n\n```txt\n[c]: not one\n```\n[a]: http://a\n[b]: http://b \"B\"\n[^n]: note\n\n[a]: http://a\n[b]: http://b \"B\"" }]);
+assert.deepEqual(splitMermaid("[a]: http://a\n```mermaid\nx\n```\n```js\nunclosed"),
+  [{ md: "[a]: http://a\n\n[a]: http://a" }, { mermaid: "x" }, { md: "```js\nunclosed" }]);
+assert.deepEqual(splitMermaid("```` ```mermaid ```` blocks are drawn.\n\n```mermaid\nx\n```"),
+  [{ md: "```` ```mermaid ```` blocks are drawn.\n" }, { mermaid: "x" }]);
+assert.deepEqual(splitMermaid("```mermaid title=\"Plan\"\nx\n```"), [{ mermaid: "x" }]);
+
 console.log("js checks: ok");

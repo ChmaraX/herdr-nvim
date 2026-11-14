@@ -48,7 +48,10 @@ installer again upgrades; `--uninstall` takes all of it out.
   or an SVG (11.5px, a 1px `border` pill). The preview takes nvim's place at
   nvim's size: markdown rendered, an image fitted with 14px around it. Its
   header reads `Preview · <file>` with a **Source** button (**nvim** for an
-  image).
+  image). Its ```` ```mermaid ```` blocks are diagrams: the text between
+  them markdown, each diagram at its own size up to the pane's width, one
+  scroll; "Drawing diagram…" in `dim` until it lands; a broken one shows
+  Mermaid's error in `ansi1` above its code.
 - **Picker** (`cmd-o`): an 820×470 dialog, "Open file from agent output" on a
   38px `chrome` bar with its keys as keycaps. Below it, a terminal picker:
   the agent's files newest first, then uncommitted git changes with `+N -M`
@@ -121,6 +124,10 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   behind the preview, unsaved edits and all. Opening any file in nvim brings nvim back. The preview
   reloads when its file is saved. Files closes a preview with the tree and
   brings it back next time. An image opened any way opens its preview.
+- **Mermaid**: each diagram is drawn once per code and theme, so editing
+  the text around it, or reloading, draws nothing again; a save keeps the
+  diagrams on screen. A theme switch draws the other theme's, and switching
+  back finds them still there. Link references resolve in every text part.
 - **Picker** reads the tab's agent: its session log (pi or Claude Code) since
   the agent started, then git changes; with no log, the paths on its screen.
   ⏎ opens the file in the tab's nvim, Esc closes. With nothing to list, an
@@ -165,7 +172,10 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
     operations, done by nvim); `pick-file` (prints `{"terminal": "tN"}`, a
     picker in a hidden core terminal, or `{"empty": "<why>"}`);
     `app-preview`; `app-current` (nvim's file); `app-nvim-check`;
-    `app-install-nvim`;
+    `app-install-nvim`; `app-mermaid --theme dark|light --out <png> --code
+    <text>` (one diagram, drawn by merman with the system fonts it measures
+    with, as a PNG at 2x on a transparent background, written beside as a
+    dot-file and renamed);
   - each takes `--ctx` (the focused space, tab, terminal), exits 3 with
     `{"nvim_missing": …}` when there's no usable Neovim, and ends within 30 s.
 - **Mod `herdr-nvim`** (`place: none`, focusable), by where it is shown:
@@ -179,6 +189,13 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
     then closes;
   - props `{preview}`: the preview pane; `{bar}`: the picker's title bar;
     `{card}` and `{dialog}`: the cards and the tree's prompts.
+- **The preview's cache** (`mods/herdr-nvim/.cache`, `preview.js`): images
+  copied in by content hash, diagrams as `mermaid-<theme>-<hash>.png` (split
+  out of the markdown by `mermaid.js`: a TextView shows no local image). One
+  draw loop per preview, one diagram at a time. Shared
+  `herdr-nvim.preview-cache` `{recent, shown}`: what every preview shows
+  (a diagram's both themes) stays; of the rest, the newest 40; files the
+  record doesn't know are deleted, dot-files (writes in flight) kept.
 - **Parked screens** (`sync.js` `openFast`, `previewFast`): closing a tab's
   nvim pane is `terminal.park` (the screen keeps running in no pane); Files
   again is `terminal.keep {place: beside}` with the tab's one own pane
@@ -269,6 +286,10 @@ copy of it, else clones it once (`<name>-copy`), and switches to it.
   edits.
 - Preview on a markdown file replaces nvim at its size; Source brings the
   same nvim back.
+- A markdown file with two diagrams and a broken one previews as both
+  diagrams drawn in the app's theme and the broken one's error above its
+  code; a text edit draws nothing again; switching to light draws the light
+  ones and keeps the dark ones.
 - `<leader>ac` then `<leader>aS`: the agent receives the comment with its
   `file:line`, submitted.
 - With no Neovim, `cmd-e` shows the card; after Install, `cmd-e` opens nvim
