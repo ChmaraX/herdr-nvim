@@ -14,7 +14,7 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, exec, panes, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, settings, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 import { drawMermaid, modeOf, pngSize, splitMermaid } from "./mermaid.js";
 
@@ -31,6 +31,14 @@ const PAD_X = 18;
 const SHOWN = "herdr-nvim.previews";
 // shared(): the cache's files, {recent: names newest first, shown: {tab: names}}.
 const CACHED = "herdr-nvim.preview-cache";
+
+// The preview's text size, set once on its root: the terminals' font size (the
+// shown layout's, else the person's, else Herdr's 14), so the preview reads at
+// the size of the nvim buffer it replaces. Px at zoom 1; Herdr zooms mods' sizes.
+function textSize() {
+  const size = settings().font_size;
+  return typeof size === "number" ? size : 14;
+}
 
 // "markdown", "image", or null: what a file previews as.
 export function previewKind(path) {
@@ -300,7 +308,7 @@ export class Preview {
       .id("herdr-nvim-preview")
       .size_full()
       .bg(t.background)
-      .text_size(13)
+      .text_size(textSize())
       .text_color(t.foreground)
       .child(body);
   }
