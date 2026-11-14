@@ -2,8 +2,9 @@
 # the way `herdr plugin install` runs it, each case on a fresh copy of the
 # checkout. CI runs it on windows-latest (VS 2026, no VS 2022: #67).
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 [-RequirePrebuilt]
-# -RequirePrebuilt (the release job): the version's Windows binary must be on
-# GitHub, so a missing or misnamed asset fails instead of skipping.
+# -RequirePrebuilt (the release job): only the first case, and the version's
+# Windows binary must be on GitHub, so a missing or misnamed asset fails
+# instead of skipping. CI already ran the source-build cases on this commit.
 param([switch]$RequirePrebuilt)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -64,7 +65,17 @@ function Assert-Installed([string]$dir) {
 }
 
 function Assert-NoDownloadLeft([string]$dir) {
-    Assert "no partial download left in bin\" (@(Get-ChildItem -LiteralPath (Join-Path $dir "bin") -Filter "*.download.exe").Count -eq 0)
+    Assert "no staged exe left in bin\" (-not (Test-Path -LiteralPath (Join-Path $dir "bin\herdr-nvim.new.exe")))
+}
+
+function Get-Aside([string]$dir) {
+    @(Get-ChildItem -LiteralPath (Join-Path $dir "bin") -Filter "herdr-nvim.old-*.exe")
+}
+
+function Finish {
+    if ($failures) { Write-Host "FAILED: $failures check(s)"; exit 1 }
+    Write-Host "OK"
+    exit 0
 }
 
 $builtFromSource = "target\release\herdr-nvim.exe"
@@ -89,22 +100,50 @@ elseif ($RequirePrebuilt) {
 else {
     Write-Host "  skip  v$version has no Windows binary on GitHub (released before it existed, or not released yet)"
 }
+if ($RequirePrebuilt) { Finish }
 
 Write-Host "== no Windows binary for this version (404): builds from source with the MSVC cargo finds"
-$dir = New-Checkout "0.0.0"
-$r = Invoke-Hook $dir $true
+$built = New-Checkout "0.0.0"
+$r = Invoke-Hook $built $true
 Assert "exit 0" ($r.Exit -eq 0)
-Assert-Installed $dir
-Assert "built from source" (Test-Path -LiteralPath (Join-Path $dir $builtFromSource))
-Assert-NoDownloadLeft $dir
+Assert-Installed $built
+Assert "built from source" (Test-Path -LiteralPath (Join-Path $built $builtFromSource))
+Assert-NoDownloadLeft $built
+
+# A sidebar keeps bin\herdr-nvim.exe running, and Windows can't overwrite a
+# running exe. A copy of ping.exe stands in for it there, running, so the lock
+# is the real image lock. Reinstalls reuse the build above (cargo has nothing to do).
+Write-Host "== reinstall twice while the installed exe runs, then once after it ends"
+$exe = Join-Path $built "bin\herdr-nvim.exe"
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot "System32\PING.EXE") -Destination $exe -Force
+$running = Start-Process -FilePath $exe -ArgumentList "-n 600 127.0.0.1" -WindowStyle Hidden -PassThru
+try {
+    $r = Invoke-Hook $built $true
+    Assert "first reinstall: exit 0" ($r.Exit -eq 0)
+    Assert-Installed $built
+    Assert "first reinstall: the running exe is set aside" ((Get-Aside $built).Count -eq 1)
+    $r = Invoke-Hook $built $true
+    Assert "second reinstall, the first still running: exit 0" ($r.Exit -eq 0)
+    Assert-Installed $built
+    Assert "second reinstall: the still-running exe stays set aside" ((Get-Aside $built).Count -eq 1)
+    Assert-NoDownloadLeft $built
+}
+finally {
+    Stop-Process -Id $running.Id -Force -ErrorAction SilentlyContinue
+    $running.WaitForExit()
+}
+$r = Invoke-Hook $built $true
+Assert "after it ends: exit 0" ($r.Exit -eq 0)
+Assert-Installed $built
+Assert "after it ends: no set-aside exe left" ((Get-Aside $built).Count -eq 0)
 
 Write-Host "== no Windows binary and no cargo: fails and says cargo is missing"
 $dir = New-Checkout "0.0.0"
 $r = Invoke-Hook $dir $false
 Assert "exit non-zero" ($r.Exit -ne 0)
 Assert "the error names cargo" ($r.Stderr -match "no cargo")
+Assert "the error says the release has no Windows binary yet" ($r.Stderr -match "no Windows binary on GitHub yet")
 Assert "nothing installed" (-not (Test-Path -LiteralPath (Join-Path $dir "bin\herdr-nvim.exe")))
 Assert-NoDownloadLeft $dir
 
-if ($failures) { Write-Host "FAILED: $failures check(s)"; exit 1 }
-Write-Host "OK"
+Finish

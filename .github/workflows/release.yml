@@ -64,8 +64,9 @@ jobs:
             herdr-nvim-${{ matrix.target }}${{ matrix.exe }}
             herdr-nvim-app-${{ matrix.target }}.tar.gz
             herdr-nvim-app-${{ matrix.target }}.tar.gz.sha256
-      # The published asset, checked by the same test that CI runs, but here a
-      # missing or misnamed Windows binary fails instead of skipping.
+      # The published asset, downloaded and run by the same test that CI runs
+      # (only its prebuilt case), where a missing or misnamed Windows binary
+      # fails instead of skipping.
       - if: runner.os == 'Windows'
         name: plugin install tests (published binary)
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 -RequirePrebuilt
