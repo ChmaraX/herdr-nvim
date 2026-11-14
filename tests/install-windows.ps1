@@ -68,8 +68,8 @@ function Assert-NoDownloadLeft([string]$dir) {
     Assert "no staged exe left in bin\" (-not (Test-Path -LiteralPath (Join-Path $dir "bin\herdr-nvim.new.exe")))
 }
 
-function Get-Aside([string]$dir) {
-    @(Get-ChildItem -LiteralPath (Join-Path $dir "bin") -Filter "herdr-nvim.old-*.exe")
+function Get-AsideCount([string]$dir) {
+    @(Get-ChildItem -LiteralPath (Join-Path $dir "bin") -Filter "herdr-nvim.old-*.exe").Count
 }
 
 function Finish {
@@ -84,8 +84,7 @@ $version = (Select-String -LiteralPath (Join-Path $repo "herdr-plugin.toml") -Pa
 
 Write-Host "== release v$version has the Windows binary: install.ps1 downloads it, no cargo needed"
 $url = "https://github.com/ChmaraX/herdr-nvim/releases/download/v$version/herdr-nvim-x86_64-pc-windows-msvc.exe"
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$published = try { Invoke-WebRequest -UseBasicParsing -Method Head -Uri $url | Out-Null; $true } catch { $false }
+$published = (Invoke-Captured "curl.exe" "--fail --silent --show-error --location --head --output NUL $url" $repo $true).Exit -eq 0
 if ($published) {
     $dir = New-Checkout $null
     $r = Invoke-Hook $dir $false
@@ -121,11 +120,11 @@ try {
     $r = Invoke-Hook $built $true
     Assert "first reinstall: exit 0" ($r.Exit -eq 0)
     Assert-Installed $built
-    Assert "first reinstall: the running exe is set aside" ((Get-Aside $built).Count -eq 1)
+    Assert "first reinstall: the running exe is set aside" ((Get-AsideCount $built) -eq 1)
     $r = Invoke-Hook $built $true
     Assert "second reinstall, the first still running: exit 0" ($r.Exit -eq 0)
     Assert-Installed $built
-    Assert "second reinstall: the still-running exe stays set aside" ((Get-Aside $built).Count -eq 1)
+    Assert "second reinstall: the still-running exe stays set aside" ((Get-AsideCount $built) -eq 1)
     Assert-NoDownloadLeft $built
 }
 finally {
@@ -135,7 +134,7 @@ finally {
 $r = Invoke-Hook $built $true
 Assert "after it ends: exit 0" ($r.Exit -eq 0)
 Assert-Installed $built
-Assert "after it ends: no set-aside exe left" ((Get-Aside $built).Count -eq 0)
+Assert "after it ends: no set-aside exe left" ((Get-AsideCount $built) -eq 0)
 
 Write-Host "== no Windows binary and no cargo: fails and says cargo is missing"
 $dir = New-Checkout "0.0.0"

@@ -70,22 +70,36 @@ function Install-Exe {
     if ($aside) { Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue }
 }
 
+# curl.exe, like install.sh's curl: Windows PowerShell 5.1's own web client
+# fails on GitHub's downloads ("the connection was closed unexpectedly").
+# Windows 10 1803 and later ship it. Returns the final HTTP status, "000" when
+# there was none; curl's own errors go to this script's stderr.
+function Save-Url([string]$url, [string]$path) {
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $curl) {
+        Say "no curl.exe to download with"
+        return "000"
+    }
+    $arguments = "--silent --show-error --location --retry 2 --output `"$path`" --write-out %{http_code} $url"
+    $info = New-Object System.Diagnostics.ProcessStartInfo -ArgumentList $curl.Path, $arguments
+    $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    $http = $process.StandardOutput.ReadToEnd().Trim()
+    $process.WaitForExit()
+    $http
+}
+
 function Install-Prebuilt {
     if (-not $target) {
         Say "no prebuilt binary for $arch"
         return $false
     }
     $url = "https://github.com/ChmaraX/herdr-nvim/releases/download/v$version/herdr-nvim-$target.exe"
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $staged
-    }
-    catch {
-        $response = $_.Exception.PSObject.Properties["Response"]
-        if ($response -and $response.Value -and [int]$response.Value.StatusCode -eq 404) {
-            $script:notPublished = $true
-        }
-        Say "could not download $url ($($_.Exception.Message))"
+    $http = Save-Url $url $staged
+    if ($http -ne "200") {
+        if ($http -eq "404") { $script:notPublished = $true }
+        Say "could not download $url (HTTP $http)"
         return $false
     }
     # Every build prints usage and exits 2 when run with no arguments, so
