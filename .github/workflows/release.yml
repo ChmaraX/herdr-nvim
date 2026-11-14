@@ -17,12 +17,16 @@ permissions:
 jobs:
   build:
     strategy:
+      # One target's failure must not cancel the others' uploads.
+      fail-fast: false
       matrix:
         include:
           - { os: macos-15, target: aarch64-apple-darwin }
           - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          # The plugin's Windows install (herdr/install.ps1) downloads this.
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, exe: .exe }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -46,14 +50,23 @@ jobs:
           TMPDIR: ${{ runner.temp }}
       - run: nvim --headless --noplugin -u NONE -l tests/run.lua
       - run: cargo build --release --target ${{ matrix.target }}
-      - run: cp target/${{ matrix.target }}/release/herdr-nvim herdr-nvim-${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/herdr-nvim${{ matrix.exe }} herdr-nvim-${{ matrix.target }}${{ matrix.exe }}
+        shell: bash
       # The Herdr app's install (the root install.sh downloads it): the same
-      # binary with its Lua and the app's mods, and its SHA-256.
-      - run: herdr-app/bundle.sh target/${{ matrix.target }}/release/herdr-nvim ${{ matrix.target }} .
+      # binary with its Lua and the app's mods, and its SHA-256. The app has
+      # no Windows install yet, so Windows ships the plugin binary alone.
+      - if: runner.os != 'Windows'
+        run: herdr-app/bundle.sh target/${{ matrix.target }}/release/herdr-nvim ${{ matrix.target }} .
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           files: |
-            herdr-nvim-${{ matrix.target }}
+            herdr-nvim-${{ matrix.target }}${{ matrix.exe }}
             herdr-nvim-app-${{ matrix.target }}.tar.gz
             herdr-nvim-app-${{ matrix.target }}.tar.gz.sha256
+      # The published asset, downloaded and run by the same test that CI runs
+      # (only its prebuilt case), where a missing or misnamed Windows binary
+      # fails instead of skipping.
+      - if: runner.os == 'Windows'
+        name: plugin install tests (published binary)
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 -RequirePrebuilt

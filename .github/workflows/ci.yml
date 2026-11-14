@@ -2,6 +2,9 @@ name: ci
 on:
   push:
   pull_request:
+# The jobs only read the checkout.
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -43,3 +46,14 @@ jobs:
       # Same Lua test surface the Linux job exercises, on Windows nvim.
       - name: lua tests
         run: nvim --headless --noplugin -u NONE -l tests/run.lua
+
+  # The plugin's Windows build hook, run the way `herdr plugin install` runs
+  # it: the prebuilt download, the source-build fallback, and the error when
+  # neither works. This image has VS 2026 and no VS 2022 (#67).
+  plugin-install-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: plugin install tests
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1
