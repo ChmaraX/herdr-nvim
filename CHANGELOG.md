@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.3.1...v1.4.0) (2026-11-14)
+
+
+### Features
+
+* **app:** draw mermaid diagrams in the markdown preview ([#76](https://github.com/ChmaraX/herdr-nvim/issues/76)) ([06127e9](https://github.com/ChmaraX/herdr-nvim/commit/06127e9312382eb9cb806cb5a2b0e2ef6eb7b63c))
+
+
+### Bug Fixes
+
+* **app:** size the markdown preview from the app's font size ([#75](https://github.com/ChmaraX/herdr-nvim/issues/75)) ([50b87a6](https://github.com/ChmaraX/herdr-nvim/commit/50b87a6219c148fd102b239e02071d54b53c385b))
+
 ## [1.3.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.3.0...v1.3.1) (2026-11-06)
 
 
