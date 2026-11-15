@@ -267,8 +267,8 @@ copy of it, else clones it once (`<name>-copy`), and switches to it.
 - In 0.1.12 the tree can show the focus ring without getting keys: it takes
   the keyboard again for 2 s after each arrival (herdrdev/herdr-app#362,
   fixed upstream, not released yet).
-- Local spaces only. Tested on macOS; Linux should work (the same scripts, a
-  Linux bundle) but is untested; Windows isn't supported.
+- Local spaces only. Tested on macOS and Windows; Linux should work (the same scripts, a
+  Linux bundle) but is untested.
 
 ## Done when
 

@@ -214,10 +214,13 @@ mkdir -p "$runtime"
 staged=$(mktemp -d "$runtime/.new.XXXXXX")
 mkdir -p "$staged/bin"
 cp "$built" "$staged/bin/herdr-nvim"
+[ ! -f "$built.exe" ] && [[ "$built" != *.exe ]] || cp "$built" "$staged/bin/herdr-nvim.exe"
 cp "$here/install-nvim.sh" "$staged/bin/install-nvim.sh"
 cp -R "$repo/lua" "$repo/plugin" "$staged/"
-stamp=$(cd "$staged" && find bin lua plugin -type f | LC_ALL=C sort | xargs shasum -a 256 |
-  shasum -a 256 | cut -c1-16)
+[ ! -d "$repo/colors" ] || cp -R "$repo/colors" "$staged/"
+sha_cmd() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
+stamp=$(cd "$staged" && find bin lua plugin -type f | LC_ALL=C sort | xargs sha_cmd |
+  sha_cmd | cut -c1-16)
 echo "$stamp" > "$staged/runtime-stamp"
 root=$runtime/$stamp
 if [ -d "$root" ]; then
@@ -256,6 +259,18 @@ export HERDR_APP_HOME='$home'
 exec '$root/bin/herdr-nvim' "\$@"
 WRAPPER
     chmod +x "$new/bin/herdr-nvim"
+    if [ -f "$built.exe" ] || [[ "$built" == *.exe ]] || [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN ]]; then
+      cp "$built" "$new/bin/herdr-nvim.exe"
+      cat > "$new/bin/herdr-nvim.cmd" <<CMD
+@echo off
+set HERDR_NVIM_HOST=app
+set HERDR_NVIM_SELF=%~dp0herdr-nvim.exe
+set HERDR_NVIM_PLUGIN_ROOT=$root
+set HERDR_APP_BIN=$app_bin
+set HERDR_APP_HOME=$home
+"$root\\bin\\herdr-nvim.exe" %*
+CMD
+    fi
   else
     echo "$MARK" > "$new/.herdr-nvim"
   fi

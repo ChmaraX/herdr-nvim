@@ -13,7 +13,6 @@
 //! directly (so the same command works on Windows, which has no `sh`), so the
 //! binary augments its own PATH instead — once, at the very start of `main`.
 
-#[cfg(unix)]
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -88,6 +87,34 @@ pub(crate) fn augment_path() {
             // Safe: `main` calls this before spawning any threads, so there is
             // no concurrent access to the process environment.
             env::set_var("PATH", joined);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let existing: Vec<PathBuf> = env::var_os("PATH")
+            .map(|path| env::split_paths(&path).collect())
+            .unwrap_or_default();
+        let mut prepend: Vec<PathBuf> = Vec::new();
+        for dir in [
+            r"C:\Program Files\Neovim\bin",
+            r"C:\Program Files (x86)\Neovim\bin",
+        ] {
+            let p = PathBuf::from(dir);
+            if p.is_dir() && !existing.contains(&p) {
+                prepend.push(p);
+            }
+        }
+        if let Some(home) = crate::home::home_dir() {
+            let local_nvim = home.join(r"AppData\Local\Programs\Neovim\bin");
+            if local_nvim.is_dir() && !existing.contains(&local_nvim) {
+                prepend.push(local_nvim);
+            }
+        }
+        if !prepend.is_empty() {
+            let dirs = prepend.into_iter().chain(existing).collect::<Vec<_>>();
+            if let Ok(joined) = env::join_paths(dirs) {
+                env::set_var("PATH", joined);
+            }
         }
     }
 }

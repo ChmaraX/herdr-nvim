@@ -277,6 +277,9 @@ function M.explore_on_ui()
 end
 
 function M.setup()
+  if vim.g.colors_name == nil or vim.g.colors_name == "default" then
+    pcall(vim.cmd.colorscheme, "tokyonight")
+  end
   local group = vim.api.nvim_create_augroup("herdr-nvim-app", { clear = true })
   vim.api.nvim_create_autocmd({ "BufEnter", "DirChanged" }, { group = group, callback = write_current })
   -- A rename of the current file (the tree's `r`, done in a helper window)

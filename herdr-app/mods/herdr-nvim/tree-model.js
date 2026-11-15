@@ -4,7 +4,7 @@
 // Paths are absolute; a folder's entries are listed on first open and again
 // when something under the root changes (a folder watch, no polling).
 
-import { gitMarks, listFolder } from "./tree.js";
+import { gitMarks, listFolder, normalizePath } from "./tree.js";
 
 const ROWS = 3000;
 
@@ -23,7 +23,12 @@ async function each(items, fn) {
 }
 
 export function dirname(path) {
-  return path.replace(/\/[^/]*$/, "") || "/";
+  const norm = normalizePath(path);
+  const idx = norm.lastIndexOf("/");
+  if (idx < 0) return norm;
+  if (idx === 0) return "/";
+  if (idx === 2 && norm[1] === ":") return norm.slice(0, 3) || `${norm.slice(0, 2)}/`;
+  return norm.slice(0, idx);
 }
 
 export class TreeModel {
@@ -35,7 +40,7 @@ export class TreeModel {
 
   reset(root) {
     this.version = (this.version ?? 0) + 1;
-    this.root = root;
+    this.root = normalizePath(root);
     this.marksAt = 0;
     this.entries = new Map(); // folder -> [{name, dir}]
     this.loads = new Map(); // folder -> the latest listing's number
@@ -48,24 +53,30 @@ export class TreeModel {
   // The latest listing of a folder wins, whichever finishes first; one that
   // changed nothing changes no rows. Returns whether it changed any.
   async load(folder) {
-    const root = this.root, seq = (this.loads.get(folder) ?? 0) + 1;
-    this.loads.set(folder, seq);
-    const { entries, ignored } = await listFolder(folder);
-    if (this.root !== root || this.loads.get(folder) !== seq) return false;
+    const norm = normalizePath(folder);
+    const root = this.root, seq = (this.loads.get(norm) ?? 0) + 1;
+    this.loads.set(norm, seq);
+    const { entries, ignored } = await listFolder(norm);
+    if (this.root !== root || this.loads.get(norm) !== seq) return false;
     const same = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir);
-    const was = this.ignored.get(folder);
-    if (same(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
-    this.entries.set(folder, entries);
-    this.ignored.set(folder, ignored);
+    const was = this.ignored.get(norm);
+    if (same(this.entries.get(norm), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
+    this.entries.set(norm, entries);
+    this.ignored.set(norm, ignored);
     this.version++;
     return true;
   }
 
   async reload() {
-    await each([this.root, ...this.open], (folder) => this.load(folder).catch(() => {}));
-    await this.refreshMarks();
+    await each([this.root, ...this.open], async (folder) => {
+      try {
+        await this.load(folder);
+      } catch (e) {
+        console.error("load error:", folder, e);
+      }
+    });
+    await this.refreshMarks().catch(() => {});
   }
-
   async refreshMarks() {
     const root = this.root;
     this.marksAt = Date.now();
@@ -125,11 +136,12 @@ export class TreeModel {
   }
 
   walk(folder = this.root, depth = 0, out = []) {
-    for (const entry of this.entries.get(folder) ?? []) {
+    const norm = normalizePath(folder);
+    for (const entry of this.entries.get(norm) ?? this.entries.get(folder) ?? []) {
       if (out.length >= ROWS) break;
-      if (!this.shown(folder, entry)) continue;
-      const abs = `${folder}/${entry.name}`;
-      out.push({ ...entry, abs, depth, ignored: this.ignored.get(folder)?.has(entry.name) ?? false });
+      if (!this.shown(norm, entry)) continue;
+      const abs = `${norm}/${entry.name}`;
+      out.push({ ...entry, abs, depth, ignored: this.ignored.get(norm)?.has(entry.name) ?? false });
       if (entry.dir && this.open.has(abs)) this.walk(abs, depth + 1, out);
     }
     return out;

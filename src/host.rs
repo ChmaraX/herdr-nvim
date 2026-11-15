@@ -45,7 +45,28 @@ pub fn choose() -> Host {
 fn from_value(value: Option<&str>) -> Host {
     match value.map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case("app") => Host::App,
-        _ => Host::Herdr,
+        Some(value) if value.eq_ignore_ascii_case("herdr") || value.eq_ignore_ascii_case("tui") => {
+            Host::Herdr
+        }
+        _ => {
+            if env::var_os("HERDR_APP_HOME").is_some()
+                || env::current_exe()
+                    .ok()
+                    .and_then(|p| {
+                        p.to_str().map(|s| {
+                            let lower = s.to_ascii_lowercase();
+                            lower.contains("herdr-app")
+                                || lower.contains(r"mods\herdr-nvim")
+                                || lower.contains("mods/herdr-nvim")
+                        })
+                    })
+                    .unwrap_or(false)
+            {
+                Host::App
+            } else {
+                Host::Herdr
+            }
+        }
     }
 }
 
