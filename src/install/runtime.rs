@@ -67,7 +67,6 @@ pub struct LiveRuntimes {
 
 #[derive(Default)]
 pub struct PruneReport {
-    pub removed: Vec<PathBuf>,
     pub kept_live: Vec<PathBuf>,
     /// Windows refused: something runs from it (a sidebar, the watcher).
     pub kept_locked: Vec<PathBuf>,
@@ -153,9 +152,8 @@ impl RuntimeStore {
                 report.kept_live.push(path);
                 continue;
             }
-            match osfs::remove_tree(&path) {
-                Ok(()) => report.removed.push(path),
-                Err(_) => report.kept_locked.push(path),
+            if osfs::remove_tree(&path).is_err() {
+                report.kept_locked.push(path);
             }
         }
         // The layout from before versioned runtimes: bin/lua/plugin at the
@@ -167,7 +165,6 @@ impl RuntimeStore {
                 for part in ["bin", "lua", "plugin", STAMP_FILE] {
                     let _ = osfs::remove_tree(&self.dir.join(part));
                 }
-                report.removed.push(self.dir.clone());
             }
         }
         report

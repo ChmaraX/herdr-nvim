@@ -161,93 +161,9 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    /// The listing fixture `herdr-app/e2e/app-list-fixture.ps1` builds on
-    /// every OS: 600 entries and a `.git`.
-    #[cfg(unix)]
-    fn fixture(at: &Path) {
-        let git = Command::new("git")
-            .args(["init", "-q"])
-            .arg(at)
-            .status()
-            .unwrap();
-        assert!(git.success());
-        fs::write(at.join(".gitignore"), "build/\n*.log\n").unwrap();
-        fs::write(at.join(".hidden-note"), "x").unwrap();
-        fs::write(at.join("app.log"), "x").unwrap();
-        fs::write(at.join("notes.md"), "x").unwrap();
-        fs::write(at.join("README.md"), "x").unwrap();
-        for dir in ["build", "src", "zz-folder"] {
-            fs::create_dir(at.join(dir)).unwrap();
-        }
-        fs::write(at.join("build/out.bin"), "x").unwrap();
-        fs::write(at.join("src/main.rs"), "x").unwrap();
-        for i in 0..589 {
-            fs::write(at.join(format!("w{i:03}.txt")), "x").unwrap();
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            symlink("src", at.join("link-dir")).unwrap();
-            symlink("notes.md", at.join("link-file")).unwrap();
-            symlink("missing", at.join("broken")).unwrap();
-        }
-    }
-
-    #[cfg(unix)]
-    fn golden() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/herdr-app/e2e/fixtures/app-list.golden.json"
-        );
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_big_folder_lists_sorted_then_capped_with_links_hidden_and_ignore_marks() {
-        let base = std::env::temp_dir().join(format!("hnv-list-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        fixture(&base);
-        let listing = list(&base, LIMIT).unwrap();
-        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
-        let entry = |name: &str| listing.entries.iter().find(|e| e.name == name).unwrap();
-
-        assert!(listing.truncated, "600 entries, 500 shown");
-        assert_eq!(listing.entries.len(), 500);
-        assert!(!names.contains(&".git"));
-        // Folders first even when their names sort after every file's, and
-        // the cap cuts the end of the sorted list.
-        assert_eq!(names[..4], ["build", "link-dir", "src", "zz-folder"]);
-        assert_eq!(
-            names[4..11],
-            [
-                ".gitignore",
-                ".hidden-note",
-                "app.log",
-                "broken",
-                "link-file",
-                "notes.md",
-                "README.md"
-            ]
-        );
-        assert_eq!(names.last(), Some(&"w488.txt"));
-        assert!(!names.contains(&"w489.txt"));
-
-        assert!(entry("link-dir").dir, "a link to a folder is a folder");
-        assert!(!entry("link-file").dir && !entry("broken").dir);
-        assert!(entry(".gitignore").hidden && !entry("notes.md").hidden);
-        assert!(entry("build").ignored && entry("app.log").ignored);
-        assert!(!entry("src").ignored && !entry("notes.md").ignored);
-
-        // Inside an ignored folder, everything is ignored.
-        let inside = list(&base.join("build"), LIMIT).unwrap();
-        assert!(inside.entries[0].ignored && !inside.truncated);
-
-        assert_eq!(serde_json::to_value(&listing).unwrap(), golden());
-        fs::remove_dir_all(&base).unwrap();
-    }
-
+    // Sorting, the cap, links, hidden and ignore marks of a big folder are
+    // the install E2E's (`app-list-fixture.ps1` against one golden on every
+    // OS). Here: what that fixture can't show.
     #[test]
     fn a_tracked_file_is_never_ignored_and_outside_a_repo_nothing_is() {
         let base = std::env::temp_dir().join(format!("hnv-list-tracked-{}", std::process::id()));
