@@ -334,6 +334,13 @@ assert.equal(markOf(winModel.marks, "C:/r/x.md"), "A");
 assert.equal(await winModel.expandTo("c:/R/src/a.JS"), "C:/r/Src/A.js");
 assert.deepEqual(winModel.rows().map((r) => r.abs), ["C:/r/Src", "C:/r/Src/A.js", "C:/r/x.md"]);
 
+// The "Neovim is needed" card names the key that opens nvim on this OS.
+const { installHint } = await import("../mods/herdr-nvim/card.js");
+const hint = installHint({ global: { "ctrl-shift-e": "mod.open:herdr-nvim" } });
+assert.ok(hint.includes("Then press ctrl-shift-e again.") && hint.includes("no admin") && !hint.includes("Homebrew"), hint);
+app.platform = "macos";
+assert.ok(installHint({ global: { "cmd-e": "mod.open:herdr-nvim" } }).includes("Then press cmd-e again."));
+assert.ok(installHint({}).endsWith("Then open nvim again."));
 app.home = "/nonexistent-app-home";
 
 console.log("js checks: ok");
