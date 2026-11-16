@@ -52,11 +52,12 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/herdr-nvim${{ matrix.exe }} herdr-nvim-${{ matrix.target }}${{ matrix.exe }}
         shell: bash
-      # The Herdr app's install (the root install.sh downloads it): the same
-      # binary with its Lua and the app's mods, and its SHA-256. The app has
-      # no Windows install yet, so Windows ships the plugin binary alone.
-      - if: runner.os != 'Windows'
-        run: herdr-app/bundle.sh target/${{ matrix.target }}/release/herdr-nvim ${{ matrix.target }} .
+      # The Herdr app's install (install.sh and install.ps1 download it): the
+      # same binary, the mod's launcher, the Lua and the app's mods, and its
+      # SHA-256. Packed with bash on every runner (Git Bash on Windows; the
+      # person's install needs none).
+      - run: herdr-app/bundle.sh target/${{ matrix.target }}/release/herdr-nvim${{ matrix.exe }} ${{ matrix.target }} .
+        shell: bash
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
@@ -70,3 +71,23 @@ jobs:
       - if: runner.os == 'Windows'
         name: plugin install tests (published binary)
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install-windows.ps1 -RequirePrebuilt
+      # The published app bundle, downloaded as a person's install.ps1 gets
+      # it, through the install E2E (fresh install, launcher, upgrade,
+      # uninstall) against the stand-in app, under Windows PowerShell 5.1.
+      - if: runner.os == 'Windows'
+        name: app install E2E (published bundle)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "herdr-nvim-app-${{ matrix.target }}.tar.gz"
+          New-Item -ItemType Directory -Force published | Out-Null
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern $name --pattern "$name.sha256" --dir published
+          cargo build --release --example herdr_app_stub
+          pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Bundle "published/$name" -Out e2e-out/published
+      - if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-published-windows
+          path: e2e-out/
+          if-no-files-found: ignore
