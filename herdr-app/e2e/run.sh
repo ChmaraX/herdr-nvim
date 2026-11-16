@@ -565,6 +565,8 @@ sequenceDiagram
 
 [herdr]: https://herdr.dev
 EOF
+# Dark first, whatever the Mac's own appearance (the app follows it by default).
+appearance dark
 open_in_nvim "$demo/plan.md"
 sleep 1
 H do "herdr-nvim.swap:$tab_a:$(enc "$demo/plan.md")" >/dev/null
