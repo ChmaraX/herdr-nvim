@@ -232,9 +232,20 @@ fn runs(nvim: &Path) -> bool {
 }
 
 fn fetch_text(url: &str) -> Result<String> {
-    let output = Command::new(curl())
+    let mut command = Command::new(curl());
+    command
         .args(["--fail", "--silent", "--show-error", "--location"])
-        .args(["--header", "Accept: application/vnd.github+json", url])
+        .args(["--header", "Accept: application/vnd.github+json"]);
+    // GitHub limits unauthenticated API calls per address (60 an hour); a
+    // token the person or CI already has lifts that.
+    if let Some(token) = ["GITHUB_TOKEN", "GH_TOKEN"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|t| !t.is_empty()))
+    {
+        command.args(["--header", &format!("Authorization: Bearer {token}")]);
+    }
+    let output = command
+        .arg(url)
         .stderr(Stdio::inherit())
         .output()
         .context("cannot run curl")?;

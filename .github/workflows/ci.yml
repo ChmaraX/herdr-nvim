@@ -69,11 +69,39 @@ jobs:
       - run: cargo build --release --bins --example herdr_app_stub
       - name: install e2e
         run: pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Out e2e-out/${{ runner.os }} -NvimDownload
+        env:
+          # Neovim's release lookup (api.github.com) is rate-limited without it.
+          GITHUB_TOKEN: ${{ github.token }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: install-e2e-${{ runner.os }}
           path: e2e-out/
+
+  # The Lua suite on macOS too (copy, case-only rename, roots: APFS ignores
+  # case, unlike the Linux runner's ext4).
+  lua-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - run: nvim --headless --noplugin -u NONE -l tests/run.lua
+
+  # The Windows facts probe (doc/windows-facts.md), built for a person to run
+  # with the real app (herdr-app/e2e/WINDOWS-CHECKLIST.md step 1).
+  winprobe-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --example winprobe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winprobe-windows
+          path: target/release/examples/winprobe.exe
 
   # The plugin's Windows build hook, run the way `herdr plugin install` runs
   # it: the prebuilt download, the source-build fallback, and the error when
