@@ -86,8 +86,13 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
-    match liveness_until(&socket, &config.sidebar, deadline)? {
-        Liveness::Answered(pid) => return answered(tab, socket, &pid),
+    match liveness_until(
+        &crate::state::tab_key(tab),
+        &socket,
+        &config.sidebar,
+        deadline,
+    )? {
+        Liveness::Answered(_) => return Ok(socket),
         // Never a second nvim on its socket: it may hold unsaved work.
         Liveness::Unresponsive => return Err(hung(tab)),
         Liveness::Gone => {}
@@ -97,13 +102,13 @@ pub fn ensure_daemon(
     // start one, and the second, taking the socket path, would leave the
     // first running unreachable. The one that waited finds it up.
     let _starting = StartLock::take(tab)?;
-    if let Reply::Answered(pid) = remote_expr(
+    if let Reply::Answered(_) = remote_expr(
         &socket,
         PID_EXPR,
         &config.sidebar,
         RPC_TIMEOUT.min(deadline.saturating_duration_since(Instant::now())),
     )? {
-        return answered(tab, socket, &pid);
+        return Ok(socket);
     }
     check_nvim(&config.sidebar)?;
 
@@ -135,23 +140,12 @@ pub fn ensure_daemon(
             );
         }
         match remote_expr(&socket, PID_EXPR, &config.sidebar, remaining)? {
-            Reply::Answered(pid) => return answered(tab, socket, &pid),
+            Reply::Answered(_) => return Ok(socket),
             Reply::Refused | Reply::TimedOut => {}
             Reply::Failed(error) => bail!("{error}"),
         }
         sleep(HEALTH_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
-}
-
-/// `socket`, now that the daemon of `tab` on it answered with its `pid`,
-/// which the registry records: a spawn's pid may be a launcher's (an
-/// `nvim_bin` shim), and a daemon an older herdr-nvim started has none yet.
-fn answered(tab: &str, socket: PathBuf, pid: &str) -> Result<PathBuf> {
-    let pid = pid
-        .parse()
-        .with_context(|| format!("the nvim daemon of tab {tab} gave {pid:?} as its pid"))?;
-    registry::register_daemon(tab, pid)?;
-    Ok(socket)
 }
 
 /// An exclusive lock on the tab's `registry::start_lock_path` while its
@@ -346,7 +340,12 @@ pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
 /// close at once, its message unseen.
 pub(crate) fn ready_to_open(tab: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path(tab);
-    match liveness_until(&socket, sidebar, Instant::now() + HEALTH_POLL_TIMEOUT)? {
+    match liveness_until(
+        &crate::state::tab_key(tab),
+        &socket,
+        sidebar,
+        Instant::now() + HEALTH_POLL_TIMEOUT,
+    )? {
         Liveness::Answered(_) => Ok(()),
         Liveness::Unresponsive => Err(hung(tab)),
         // It has to be started: an nvim that can run herdr-nvim is needed.
@@ -379,7 +378,12 @@ const UNSTICK_WITHIN: Duration = Duration::from_secs(2);
 /// first short probe is unstuck once and asked again. One that refuses while
 /// its process listens is asked again until the deadline: it may be one that
 /// another caller has just spawned, not accepting yet.
-fn liveness_until(socket: &Path, sidebar: &Sidebar, deadline: Instant) -> Result<Liveness> {
+fn liveness_until(
+    key: &str,
+    socket: &Path,
+    sidebar: &Sidebar,
+    deadline: Instant,
+) -> Result<Liveness> {
     let mut unstuck_once = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -389,6 +393,7 @@ fn liveness_until(socket: &Path, sidebar: &Sidebar, deadline: Instant) -> Result
             UNSTICK_WITHIN.min(left)
         };
         match liveness(
+            key,
             socket,
             remote_expr(socket, PID_EXPR, sidebar, within)?,
             None,
@@ -492,23 +497,26 @@ impl<T> Liveness<T> {
 /// an error, never `Gone`. A `Failed` request says nothing about liveness
 /// either, so it is an error too. `table` is one already loaded, if any; else one
 /// is loaded when the verdict needs it. Windows reads no command lines: there
-/// a refusal is `Gone` unless the pid the registry marker records still runs.
+/// a refusal is `Gone` unless the process the registry marker of `key`
+/// records still runs.
 pub(crate) fn liveness<T>(
+    key: &str,
     socket: &Path,
     reply: Reply<T>,
     table: Option<&process::ProcessTable>,
 ) -> Result<Liveness<T>> {
+    #[cfg(unix)]
+    let _ = key;
     Ok(match reply {
         Reply::Answered(answer) => Liveness::Answered(answer),
         Reply::TimedOut => Liveness::Unresponsive,
         Reply::Failed(error) => bail!("{error}"),
         #[cfg(windows)]
         Reply::Refused => {
-            let _ = table;
-            if process::pipe_daemon_runs(socket) {
-                Liveness::Unresponsive
-            } else {
-                Liveness::Gone
+            let _ = (socket, table);
+            match registry::registered(key)? {
+                registry::Registered::Running(_) => Liveness::Unresponsive,
+                registry::Registered::Gone | registry::Registered::Unknown => Liveness::Gone,
             }
         }
         #[cfg(unix)]

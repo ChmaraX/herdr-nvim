@@ -235,7 +235,7 @@ impl Daemon {
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let child = command.spawn().expect("spawn nvim");
         #[cfg(windows)]
-        fs::write(&entry, format!("{tab}\n{}\n", child.id())).unwrap();
+        fs::write(&entry, marker(tab, child.id())).unwrap();
         let daemon = Self {
             tab: tab.to_owned(),
             entry,
@@ -409,4 +409,29 @@ impl Artifact {
         }
         self.note(&text);
     }
+}
+
+/// A Windows registry marker as `registry::register_daemon` writes it: the
+/// tab, the pid, and that process's creation time (FILETIME ticks).
+#[cfg(windows)]
+fn marker(tab: &str, pid: u32) -> String {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, FILETIME},
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: plain Win32 calls on a handle closed below.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        assert!(!process.is_null(), "open the daemon process {pid}");
+        let ok = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(process);
+        assert!(ok != 0, "the daemon's creation time");
+    }
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    format!("{tab}\n{pid}\n{ticks}\n")
 }

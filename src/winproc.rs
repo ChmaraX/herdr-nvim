@@ -1,5 +1,5 @@
 //! Windows processes through the Win32 API: which run and from what
-//! executable, when one started, and ending one together with the
+//! executable, when one was created, and ending one together with the
 //! processes it started.
 
 #![cfg(windows)]
@@ -10,11 +10,12 @@ use std::{
     os::windows::{ffi::OsStringExt, process::CommandExt},
     path::PathBuf,
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -55,8 +56,9 @@ pub fn processes() -> io::Result<Vec<Proc>> {
     }
     loop {
         let pid = entry.th32ProcessID;
-        if let Some(image) =
-            open(pid, PROCESS_QUERY_LIMITED_INFORMATION).and_then(|p| p.image(&mut image))
+        if let Some(image) = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+            .ok()
+            .and_then(|p| p.image(&mut image))
         {
             procs.push(Proc { pid, image });
         }
@@ -67,14 +69,24 @@ pub fn processes() -> io::Result<Vec<Proc>> {
     }
 }
 
-/// When the running process `pid` started. `None` once it has exited (a
-/// handle someone still holds keeps an exited process's pid taken), and when
-/// no process this user can open has that pid.
-pub fn started(pid: u32) -> Option<SystemTime> {
-    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)?;
+/// When the running process `pid` was created, in FILETIME ticks (100 ns
+/// since 1601): with the pid, what tells this process from a later one that
+/// reuses its pid. `Ok(None)` when no process has that pid or it has exited
+/// (a handle someone still holds keeps an exited process's pid taken). An
+/// error when the process exists but can't be asked (access denied): that
+/// says nothing about whether it runs.
+pub fn created(pid: u32) -> io::Result<Option<u64>> {
+    let process = match open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE) {
+        Ok(process) => process,
+        // OpenProcess's answer for a pid no process has.
+        Err(error) if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
     // SAFETY: a valid process handle opened with SYNCHRONIZE.
     if unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0 {
-        return None;
+        return Ok(None);
     }
     let zero = FILETIME {
         dwLowDateTime: 0,
@@ -85,19 +97,11 @@ pub fn started(pid: u32) -> Option<SystemTime> {
     let ok =
         unsafe { GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) };
     if ok == 0 {
-        return None;
+        return Err(io::Error::last_os_error());
     }
-    // FILETIME: 100 ns ticks since 1601-01-01 UTC.
-    const TICKS_TO_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
-    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
-    let since_epoch = ticks.checked_sub(TICKS_TO_UNIX_EPOCH)?;
-    Some(
-        UNIX_EPOCH
-            + Duration::new(
-                since_epoch / 10_000_000,
-                (since_epoch % 10_000_000) as u32 * 100,
-            ),
-    )
+    Ok(Some(
+        (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+    ))
 }
 
 /// End `pid` and every process it started, theirs included:
@@ -148,10 +152,13 @@ impl Handle {
     }
 }
 
-fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> Option<Handle> {
+fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> io::Result<Handle> {
     // SAFETY: OpenProcess returns null on failure, else a handle we own.
     let handle = unsafe { OpenProcess(access, 0, pid) };
-    (!handle.is_null()).then(|| Handle(handle))
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Handle(handle))
 }
 
 #[cfg(test)]
@@ -165,7 +172,11 @@ mod tests {
         let listed = processes().unwrap();
         let mine = listed.iter().find(|p| p.pid == me).expect("own pid listed");
         assert_eq!(mine.image.canonicalize().unwrap(), exe);
-        let started = started(me).expect("running");
-        assert!(started <= SystemTime::now());
+        let first = created(me).unwrap().expect("running");
+        assert_eq!(
+            created(me).unwrap(),
+            Some(first),
+            "the same every time it is asked"
+        );
     }
 }

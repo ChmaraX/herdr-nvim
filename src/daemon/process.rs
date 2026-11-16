@@ -125,14 +125,14 @@ impl ProcessTable {
         }
     }
 
-    /// Windows: the daemon of `key`, by the pid its registry entry records
-    /// (`is_registered_daemon`). `None` when it records none or that daemon is
-    /// gone.
+    /// Windows: the daemon of `key`, by its registry marker (`registry::
+    /// registered`). `None` when that process is gone, or an older marker
+    /// doesn't say which it is.
     #[cfg(windows)]
     pub(crate) fn daemon(&self, key: &str) -> Result<Option<u32>> {
-        Ok(match registry::registered_pid(key)? {
-            Some((pid, registered)) => is_registered_daemon(pid, registered).then_some(pid),
-            None => None,
+        Ok(match registry::registered(key)? {
+            registry::Registered::Running(pid) => Some(pid),
+            registry::Registered::Gone | registry::Registered::Unknown => None,
         })
     }
 }
@@ -190,32 +190,6 @@ fn is_daemon(pid: u32, socket: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(ps_field(pid, "comm=")?.is_some_and(|name| is_nvim(&name)))
-}
-
-/// Windows: whether the daemon of the named pipe `socket`
-/// (`\\.\pipe\herdr-nvim-<key>`) still runs, by the pid its registry
-/// marker records. A pipe can refuse a client while its nvim lives (every
-/// instance busy), so a refusal alone doesn't make it gone.
-#[cfg(windows)]
-pub(crate) fn pipe_daemon_runs(socket: &Path) -> bool {
-    let key = socket
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("herdr-nvim-"));
-    key.and_then(|key| registry::registered_pid(key).ok().flatten())
-        .is_some_and(|(pid, registered)| is_registered_daemon(pid, registered))
-}
-
-/// Windows: whether `pid` is (still) the daemon whose registry entry was
-/// written at `registered` with that pid: a process that runs and started no
-/// later than that. One that started later only reuses the pid. File times
-/// come from a coarser clock than process start times (a timer tick, about
-/// 16 ms), so a marker written right after the spawn can look older than
-/// the process: a second of slack, far shorter than any pid reuse.
-#[cfg(windows)]
-fn is_registered_daemon(pid: u32, registered: std::time::SystemTime) -> bool {
-    crate::winproc::started(pid)
-        .is_some_and(|started| started <= registered + Duration::from_secs(1))
 }
 
 /// Wait up to `timeout` for `pid`, the nvim listening on `socket`, to exit
@@ -289,27 +263,27 @@ pub(crate) fn kill_daemon(key: &str) -> Result<Option<u32>> {
 }
 
 /// Windows: kill the nvim daemon of `key` and every process it started
-/// (its LSP servers and jobs), by the pid its registry entry records
-/// (`is_registered_daemon`), and return that pid once it is gone. `None` when
-/// the daemon had already exited. A daemon an older herdr-nvim started has
-/// no recorded pid until it answers once, so it cannot be killed.
+/// (its LSP servers and jobs), once its registry marker proves which process
+/// it is (`registry::registered`: same pid, same creation time), and return
+/// that pid once it is gone. `None` when the daemon had already exited. A
+/// daemon an older herdr-nvim started has no such record, so it is not
+/// killed.
 #[cfg(windows)]
 pub(crate) fn kill_daemon(key: &str) -> Result<Option<u32>> {
-    let Some((pid, registered)) = registry::registered_pid(key)? else {
-        bail!(
-            "its registry entry records no pid (an older herdr-nvim started it); \
-             end the nvim.exe serving {} by hand",
+    let pid = match registry::registered(key)? {
+        registry::Registered::Gone => return Ok(None),
+        registry::Registered::Unknown => bail!(
+            "its registry entry doesn't say which process it is (an older herdr-nvim started \
+             it); end the nvim.exe serving {} by hand",
             registry::socket_path_for_key(key).display()
-        );
+        ),
+        registry::Registered::Running(pid) => pid,
     };
-    if !is_registered_daemon(pid, registered) {
-        return Ok(None);
-    }
     // Whether it took is for the wait below to say: taskkill also fails
     // for a daemon that exits on its own meanwhile.
     let killed = crate::winproc::terminate_tree(pid);
     let deadline = Instant::now() + EXIT_TIMEOUT;
-    while is_registered_daemon(pid, registered) {
+    while registry::registered(key)? == registry::Registered::Running(pid) {
         if Instant::now() >= deadline {
             return Err(match killed {
                 Err(error) => anyhow::Error::new(error),

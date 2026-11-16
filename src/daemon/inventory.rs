@@ -278,7 +278,7 @@ pub(crate) fn describe(
         .map(|(key, probe)| {
             let socket = socket_path_for_key(&key);
             let probe = probe
-                .and_then(|reply| liveness(&socket, reply, procs.as_ref().ok()))
+                .and_then(|reply| liveness(&key, &socket, reply, procs.as_ref().ok()))
                 .map_err(|error| format!("{error:#}"));
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
@@ -369,7 +369,7 @@ pub(crate) fn stop(
         if let Ok(Liveness::Answered(_)) = daemon.probe {
             let socket = socket_path_for_key(&daemon.key);
             daemon.probe = probe(&daemon.key, sidebar)
-                .and_then(|reply| liveness(&socket, reply, None))
+                .and_then(|reply| liveness(&daemon.key, &socket, reply, None))
                 .map_err(|error| format!("{error:#}"));
         }
         if let (false, Some(refusal)) = (force, daemon.refusal()) {

@@ -97,7 +97,7 @@ pub(crate) fn refresh_on_open(tab: &str, cwd: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
     let Ok(Liveness::Answered(look)) = registry::probe(&key, &sidebar)
-        .and_then(|reply| daemon::liveness(&registry::socket_path(tab), reply, None))
+        .and_then(|reply| daemon::liveness(&key, &registry::socket_path(tab), reply, None))
     else {
         return Ok(None);
     };

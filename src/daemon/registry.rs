@@ -96,17 +96,21 @@ pub(super) fn start_lock_path(key: &str) -> PathBuf {
 
 /// Record that the process `pid` is the daemon of `tab`. Only Windows keeps
 /// a record: its marker in `socket_dir` (named pipes themselves cannot be
-/// listed) holds the raw tab id, then the pid, since its process table does
-/// not say which process serves which pipe (`registered_pid`). On Unix the
-/// socket is the entry, and the process table names its pid.
+/// listed) holds the raw tab id, the pid and that process's creation time,
+/// since its process table does not say which process serves which pipe
+/// (`registered`). On Unix the socket is the entry, and the process table
+/// names its pid.
 pub(super) fn register_daemon(tab: &str, pid: u32) -> Result<()> {
     #[cfg(windows)]
     {
+        let created = crate::winproc::created(pid)
+            .with_context(|| format!("cannot read the start of the nvim daemon (pid {pid})"))?
+            .unwrap_or(0);
         let marker = registry_path(&tab_key(tab));
         let dir = socket_dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
-        fs::write(&marker, format!("{tab}\n{pid}\n"))
+        fs::write(&marker, format!("{tab}\n{pid}\n{created}\n"))
             .with_context(|| format!("failed to write daemon marker {}", marker.display()))
     }
     #[cfg(not(windows))]
@@ -116,30 +120,46 @@ pub(super) fn register_daemon(tab: &str, pid: u32) -> Result<()> {
     }
 }
 
-/// Windows: the pid the marker of `key` records (`register_daemon`), and
-/// when the marker was written: the daemon had started by then, so a process
-/// that started later only reuses its pid. `None` when there is no marker,
-/// or it records no pid (an older herdr-nvim wrote it).
+/// Windows: whether the process a marker records is still that daemon.
 #[cfg(windows)]
-pub(super) fn registered_pid(key: &str) -> Result<Option<(u32, std::time::SystemTime)>> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Registered {
+    /// The same pid, created at the same instant: the daemon runs.
+    Running(u32),
+    /// No marker, or its process has exited (its pid may run another one).
+    Gone,
+    /// A marker an older herdr-nvim wrote, with no pid or creation time.
+    Unknown,
+}
+
+/// Windows: the daemon of `key` by its marker (`register_daemon`). An
+/// unreadable marker or a process that can't be asked is an error, never
+/// `Gone`.
+#[cfg(windows)]
+pub(crate) fn registered(key: &str) -> Result<Registered> {
     let marker = registry_path(key);
-    let read = || -> std::io::Result<_> {
-        let text = fs::read_to_string(&marker)?;
-        Ok((text, fs::metadata(&marker)?.modified()?))
-    };
-    let (text, written) = match read() {
-        Ok(read) => read,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+    let text = match fs::read_to_string(&marker) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Registered::Gone),
         Err(err) => {
             return Err(err)
                 .with_context(|| format!("failed to read daemon marker {}", marker.display()))
         }
     };
-    Ok(text
-        .lines()
-        .nth(1)
-        .and_then(|pid| pid.trim().parse().ok())
-        .map(|pid| (pid, written)))
+    let mut lines = text.lines().skip(1).map(str::trim);
+    let (Some(Ok(pid)), Some(Ok(created))) = (
+        lines.next().map(str::parse::<u32>),
+        lines.next().map(str::parse::<u64>),
+    ) else {
+        return Ok(Registered::Unknown);
+    };
+    let now = crate::winproc::created(pid)
+        .with_context(|| format!("cannot ask the nvim daemon of tab {key} (pid {pid})"))?;
+    Ok(if now == Some(created) {
+        Registered::Running(pid)
+    } else {
+        Registered::Gone
+    })
 }
 
 /// Sanitized tab keys of every registered daemon (see `socket_dir`), sorted.
@@ -210,7 +230,7 @@ pub(crate) fn stop_keys(keys: &[String], sidebar: &Sidebar) -> Vec<(String, Resu
         .map(|key| {
             let socket = socket_path_for_key(key);
             let stopped = probe(key, sidebar)
-                .and_then(|reply| liveness(&socket, reply, None))
+                .and_then(|reply| liveness(key, &socket, reply, None))
                 .and_then(|probe| stop_probed(key, probe, sidebar));
             (key.clone(), stopped)
         })
@@ -329,7 +349,7 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
                     "herdr-nvim: stopping nvim daemon of tab {key}; discarding {unsaved} unsaved buffer(s)"
                 );
             }
-            if !quit(&socket, pid, sidebar)? {
+            if !quit(key, &socket, pid, sidebar)? {
                 kill(
                     key,
                     &format!("did not exit within {}s of qa!", QUIT_TIMEOUT.as_secs()),
@@ -347,10 +367,10 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
 }
 
 /// Ask the daemon to force-quit (`qa!`) and, once asked, wait up to
-/// `QUIT_TIMEOUT` for it to exit: watching its `pid` (Unix), else until
-/// nothing answers on its socket (Windows). `false` if it is still there;
+/// `QUIT_TIMEOUT` for it to exit: watching its `pid` (Unix), or the process
+/// its registry marker records (Windows). `false` if it is still there;
 /// an error if it could not be asked at all.
-fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
+fn quit(key: &str, socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
     // `<C-\><C-n>` first: out of whatever waits for input (a half-typed
     // command, a prompt), or `qa!` would be its next keys. Whatever the
     // daemon made of it (one exiting mid-request drops the connection:
@@ -359,6 +379,8 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
         .context("could not ask it to quit")?;
     let deadline = Instant::now() + QUIT_TIMEOUT;
     #[cfg(unix)]
+    let _ = key;
+    #[cfg(unix)]
     return process::wait_gone(
         pid,
         socket,
@@ -366,22 +388,23 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
     );
     #[cfg(windows)]
     {
+        let _ = pid;
         loop {
-            // Its own pid (it answered the probe) has exited: gone, whatever
-            // the pipe says meanwhile.
-            if crate::winproc::started(pid).is_none() {
-                return Ok(true);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(false);
-            }
-            // A failed client here is a daemon dropping the connection on its way
-            // out (`Reply::Failed`, which `liveness` makes an error).
-            if let Ok(reply) = remote_expr(socket, "1", sidebar, remaining) {
-                if let Ok(Liveness::Gone) = liveness(socket, reply, None) {
-                    return Ok(true);
+            match registered(key)? {
+                Registered::Gone => return Ok(true),
+                Registered::Running(_) => {}
+                // An older marker: only the pipe can tell.
+                Registered::Unknown => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if let Ok(reply) = remote_expr(socket, "1", sidebar, left) {
+                        if let Ok(Liveness::Gone) = liveness(key, socket, reply, None) {
+                            return Ok(true);
+                        }
+                    }
                 }
+            }
+            if deadline.saturating_duration_since(Instant::now()).is_zero() {
+                return Ok(false);
             }
             sleep(QUIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
         }
@@ -566,7 +589,7 @@ mod tests {
         let daemon = TestDaemon::spawn("wHnS:t1", &config);
         let key = daemon.tab.key();
         let reply = probe(&key, &config.sidebar).unwrap();
-        let probe = liveness(&daemon.socket, reply, None).unwrap();
+        let probe = liveness(&key, &daemon.socket, reply, None).unwrap();
         let no_nvim = Sidebar {
             nvim_bin: "/nonexistent/nvim".to_owned(),
             ..Default::default()
