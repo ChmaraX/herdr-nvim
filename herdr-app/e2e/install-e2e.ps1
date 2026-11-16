@@ -448,7 +448,6 @@ function Open-FakeDaemon($privateEnv, [string]$stamp, [switch]$Dirty) {
     if ($IsWindows) {
         $address = "\\.\pipe\herdr-nvim-$key"
         $entry = Join-Path $registry "$key.pipe"
-        Write-Utf8 $entry $key
     }
     else {
         $address = Join-Path $registry "$key.sock"
@@ -457,6 +456,8 @@ function Open-FakeDaemon($privateEnv, [string]$stamp, [switch]$Dirty) {
     $arguments = @('--headless', '--clean', '--listen', $address)
     if ($Dirty) { $arguments += @('-c', "call setline(1, 'unsaved work')") }
     $process = Invoke-Holder 'nvim' $arguments @{ HERDR_NVIM_RUNTIME_STAMP = $stamp }
+    # The registry marker as herdr-nvim writes it: the tab, then the pid.
+    if ($IsWindows) { Write-Utf8 $entry "$key`n$($process.Id)`n" }
     $deadline = (Get-Date).AddSeconds(15)
     do {
         Start-Sleep -Milliseconds 200

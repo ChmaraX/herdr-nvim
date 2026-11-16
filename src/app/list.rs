@@ -163,6 +163,7 @@ mod tests {
 
     /// The listing fixture `herdr-app/e2e/app-list-fixture.ps1` builds on
     /// every OS: 600 entries and a `.git`.
+    #[cfg(unix)]
     fn fixture(at: &Path) {
         let git = Command::new("git")
             .args(["init", "-q"])
@@ -192,6 +193,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn golden() -> serde_json::Value {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

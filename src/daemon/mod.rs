@@ -491,8 +491,8 @@ impl<T> Liveness<T> {
 /// was deleted) makes it `Unresponsive`, and a table that cannot be read is
 /// an error, never `Gone`. A `Failed` request says nothing about liveness
 /// either, so it is an error too. `table` is one already loaded, if any; else one
-/// is loaded when the verdict needs it. Windows reads no command lines, so
-/// there a refusal stands and no table is loaded.
+/// is loaded when the verdict needs it. Windows reads no command lines: there
+/// a refusal is `Gone` unless the pid the registry marker records still runs.
 pub(crate) fn liveness<T>(
     socket: &Path,
     reply: Reply<T>,
@@ -504,8 +504,12 @@ pub(crate) fn liveness<T>(
         Reply::Failed(error) => bail!("{error}"),
         #[cfg(windows)]
         Reply::Refused => {
-            let _ = (socket, table);
-            Liveness::Gone
+            let _ = table;
+            if process::pipe_daemon_runs(socket) {
+                Liveness::Unresponsive
+            } else {
+                Liveness::Gone
+            }
         }
         #[cfg(unix)]
         Reply::Refused => {

@@ -195,6 +195,20 @@ fn is_daemon(pid: u32, socket: &Path) -> Result<bool> {
 /// Windows: whether `pid` is (still) the daemon whose registry entry was
 /// written at `registered` with that pid: a process that runs and started no
 /// later than that. One that started later only reuses the pid.
+/// Windows: whether the daemon of the named pipe `socket`
+/// (`\\.\pipe\herdr-nvim-<key>`) still runs, by the pid its registry
+/// marker records. A pipe can refuse a client while its nvim lives (every
+/// instance busy), so a refusal alone doesn't make it gone.
+#[cfg(windows)]
+pub(crate) fn pipe_daemon_runs(socket: &Path) -> bool {
+    let key = socket
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("herdr-nvim-"));
+    key.and_then(|key| registry::registered_pid(key).ok().flatten())
+        .is_some_and(|(pid, registered)| is_registered_daemon(pid, registered))
+}
+
 #[cfg(windows)]
 fn is_registered_daemon(pid: u32, registered: std::time::SystemTime) -> bool {
     crate::winproc::started(pid).is_some_and(|started| started <= registered)
