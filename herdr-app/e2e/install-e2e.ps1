@@ -8,7 +8,7 @@
 #   0. the stand-in's check fails a broken mod and passes a good one
 #   1. a fresh install (-NvimDownload: with no usable Neovim, which it downloads)
 #   2. arguments and exit codes pass through the mod's launcher unchanged
-#   3. (app-list golden listing: not built yet)
+#   3. app-list of a fixture folder equals one golden JSON on every OS
 #   4. an upgrade while the old runtime is held by a running watcher and nvim
 #   5. migration from main's bash install (Windows: #72's .cmd install), and
 #      a foreign mods/herdr-nvim refused with nothing changed
@@ -31,10 +31,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Out,
     [string]$Bundle,
-    [switch]$NvimDownload,
-    # TODO(unit 7): Windows daemon force-stop. Until it lands, step 6's
-    # dirty-nvim case runs on macOS and Linux only, unless this is given.
-    [switch]$WindowsDaemonStop
+    [switch]$NvimDownload
 )
 
 Set-StrictMode -Version 3.0
@@ -592,8 +589,17 @@ function Step-ArgumentFidelity {
 
 function Step-AppList {
     Write-Transcript "`n## 3. app-list golden listing"
-    # TODO(unit 5): `app-list` on a fixture folder against one golden JSON for all OSes.
-    Write-Transcript '- SKIP: app-list is not built yet (unit 5)'
+    $fixture = Join-Path $Root 'app-list fixture'
+    & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'app-list-fixture.ps1') $fixture
+    Assert-That ($LASTEXITCODE -eq 0) 'the app-list fixture is built' "exit $LASTEXITCODE"
+    $result = Invoke-Launcher (Get-Launcher $Main) @('app-list', $fixture)
+    Assert-That ($result.Code -eq 0) 'app-list of the fixture exits 0 (through the launcher)' "exit $($result.Code): $($result.Err)"
+    $got = $result.Out | ConvertFrom-Json | ConvertTo-Json -Depth 10
+    $want = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/app-list.golden.json') | ConvertFrom-Json | ConvertTo-Json -Depth 10
+    [IO.File]::WriteAllText((Join-Path $Out 'app-list.json'), $got, $Utf8)
+    $diff = Compare-Object ($want -split "`n") ($got -split "`n") | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
+    [IO.File]::WriteAllText((Join-Path $Out 'app-list.diff'), ($diff -join "`n"), $Utf8)
+    Assert-That (-not $diff) 'app-list matches fixtures/app-list.golden.json (sorted, then capped at 500; links as folders; ignore marks)' "$(@($diff).Count) lines differ, see app-list.diff"
 }
 
 function Step-Upgrade {
@@ -827,28 +833,19 @@ function Step-UninstallHeld {
 function Step-Uninstall {
     Write-Transcript "`n## 6. Uninstall through the bootstrap"
     Step-UninstallHeld
-    $dirty = -not $IsWindows -or $WindowsDaemonStop
-    if ($dirty) {
-        $daemon = Open-FakeDaemon $Main $StampB -Dirty
-        $result = Invoke-Bootstrap $BundleB -Uninstall
-        Assert-That ($result.Code -eq 0) 'the uninstall exits 0' "exit $($result.Code)"
-        Assert-That ($result.Out + $result.Err -match 'kept the nvims above') 'it says it kept the nvim with unsaved work'
-        Assert-That (-not $daemon.Process.HasExited) 'the nvim with unsaved work still runs'
-        Assert-That (Test-Path -LiteralPath (Join-Path (Get-Store $Main) $StampB)) 'its runtime B is kept'
-        Assert-Uninstalled 'the uninstall without --force'
-        Save-Snapshot '06a-uninstalled-dirty-kept' $Main
-        $result = Invoke-Bootstrap $BundleB -Uninstall -Force
-        Assert-That ($result.Code -eq 0) 'the uninstall with --force exits 0' "exit $($result.Code)"
-        Assert-That ($daemon.Process.WaitForExit(10000)) 'the nvim with unsaved work is stopped with --force'
-        $null = $Holders.Remove($daemon.Process)
-        Assert-That (-not (Test-Path -LiteralPath $daemon.Entry)) 'its registry entry is gone'
-    }
-    else {
-        # TODO(unit 7): drop this branch once Windows force-stop is in.
-        Write-Transcript '- SKIP: a dirty nvim kept, then stopped with -Force (Windows: unit 7; -WindowsDaemonStop runs it)'
-        $result = Invoke-Bootstrap $BundleB -Uninstall
-        Assert-That ($result.Code -eq 0) 'the uninstall exits 0' "exit $($result.Code)"
-    }
+    $daemon = Open-FakeDaemon $Main $StampB -Dirty
+    $result = Invoke-Bootstrap $BundleB -Uninstall
+    Assert-That ($result.Code -eq 0) 'the uninstall exits 0' "exit $($result.Code)"
+    Assert-That ($result.Out + $result.Err -match 'kept the nvims above') 'it says it kept the nvim with unsaved work'
+    Assert-That (-not $daemon.Process.HasExited) 'the nvim with unsaved work still runs'
+    Assert-That (Test-Path -LiteralPath (Join-Path (Get-Store $Main) $StampB)) 'its runtime B is kept'
+    Assert-Uninstalled 'the uninstall without --force'
+    Save-Snapshot '06a-uninstalled-dirty-kept' $Main
+    $result = Invoke-Bootstrap $BundleB -Uninstall -Force
+    Assert-That ($result.Code -eq 0) 'the uninstall with --force exits 0' "exit $($result.Code)"
+    Assert-That ($daemon.Process.WaitForExit(10000)) 'the nvim with unsaved work is stopped with --force'
+    $null = $Holders.Remove($daemon.Process)
+    Assert-That (-not (Test-Path -LiteralPath $daemon.Entry)) 'its registry entry is gone'
     Assert-Uninstalled 'the uninstall'
     Assert-That (-not (Test-Path -LiteralPath (Get-Store $Main))) 'no runtime is left (the store is gone)'
     if ($NvimDownload) {
