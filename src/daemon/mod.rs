@@ -10,14 +10,14 @@ pub(crate) mod process;
 pub(crate) mod registry;
 
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread::sleep,
     time::{Duration, Instant},
 };
 #[cfg(not(unix))]
-use std::{io::Read, process::Child, sync::mpsc, thread};
+use std::{io::Read, sync::mpsc, thread};
 
 use anyhow::{bail, Context, Result};
 
@@ -217,16 +217,9 @@ fn spawn_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     crate::host::ops().daemon_env(&mut command, tab, plugin_root);
-    detach_command(&mut command);
-    let child = command
-        .spawn()
-        .context("failed to spawn nvim daemon (is nvim installed?)")?;
-
-    // Read the pid (useful for diagnostics) and drop the handle without waiting:
-    // the daemon is now a session leader in its own session and keeps running,
-    // tracked from here on only by its socket.
-    let _pid = child.id();
-    drop(child);
+    // The handle is dropped without waiting: the daemon runs on, tracked
+    // from here on by its socket.
+    spawn_detached(&mut command).context("failed to spawn nvim daemon (is nvim installed?)")?;
     Ok(())
 }
 
@@ -275,8 +268,8 @@ pub(crate) fn runtime_stamp(plugin_root: &Path) -> Option<String> {
         .filter(|stamp| !stamp.is_empty())
 }
 
-/// Detach a child that must survive the pane process which launched it.
-pub(crate) fn detach_command(command: &mut Command) {
+/// Spawn a child that must survive the pane process which launched it.
+pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -292,18 +285,35 @@ pub(crate) fn detach_command(command: &mut Command) {
                 Ok(())
             });
         }
+        command.spawn()
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::{
+            Foundation::ERROR_ACCESS_DENIED,
+            System::Threading::{
+                CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+            },
+        };
 
         // CREATE_NO_WINDOW keeps the headless daemon out of the user's console,
         // while CREATE_NEW_PROCESS_GROUP keeps it independent from the pane's
         // console process group. Unlike DETACHED_PROCESS, it still permits the
         // redirected standard handles used above.
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        let detached = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+        // Out of the launcher's Job Object, if it is in one, so closing
+        // the job does not end the child. A job that forbids breakaway
+        // refuses the flag with ACCESS_DENIED: then the child stays in it.
+        match command
+            .creation_flags(detached | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+        {
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                command.creation_flags(detached).spawn()
+            }
+            spawned => spawned,
+        }
     }
 }
 

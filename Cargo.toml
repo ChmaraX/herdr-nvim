@@ -28,6 +28,10 @@ merman = { version = "0.10.0", default-features = false, features = ["experiment
 # tcflush: keys typed into an nvim pane before nvim attaches are dropped.
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Daemon control: spawning out of a Job Object (daemon), process list and tree kill (winproc).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+
 [[example]]
 name = "fff_cold"
 
