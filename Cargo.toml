@@ -16,6 +16,8 @@ crossterm = "0.28"
 # prebuilt release binaries, so the extra dependency weight is a CI/build
 # cost, not a user-facing one.
 fff-search = "0.10.6"
+# The file tree's ignore marks (`app-list`); fff-search already builds it.
+git2 = "0.21"
 # The app's markdown preview draws Mermaid diagrams (`app-mermaid`) with
 # Mermaid's own layouts and themes, measured and painted with the system fonts.
 merman = { version = "0.10.0", default-features = false, features = ["all-diagrams", "layout-cytoscape", "png", "system-fonts"] }

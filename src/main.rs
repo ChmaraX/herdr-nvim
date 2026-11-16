@@ -44,6 +44,7 @@ const SHORT: &[&str] = &[
     "open-link",
     "app-config",
     "app-mermaid",
+    "app-list",
 ];
 
 fn deadline(after: std::time::Duration) {
@@ -115,6 +116,7 @@ fn main() {
         ("app-nvim-check", _) => run(nvim_check::check_cmd),
         // The markdown preview's diagrams.
         ("app-mermaid", _) => run(app::mermaid::mermaid_cmd),
+        ("app-list", _) => run(app::list::list_cmd),
         // The "Neovim is needed" card's Install button (a terminal tab).
         ("app-install-nvim", true) => run(nvim_get::install_nvim_cmd),
         (

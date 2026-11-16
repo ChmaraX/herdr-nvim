@@ -15,6 +15,7 @@ mod host;
 #[allow(dead_code)]
 pub(crate) mod launch_record;
 mod layout_patch;
+pub(crate) mod list;
 pub(crate) mod mermaid;
 mod node;
 pub(crate) mod rpc;
