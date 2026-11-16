@@ -88,6 +88,12 @@ pub(crate) fn registry_path(key: &str) -> PathBuf {
     socket_dir().join(format!("{key}.{REGISTRY_EXT}"))
 }
 
+/// The file whose lock lets one caller at a time start the daemon for `key`
+/// (`ensure_daemon`).
+pub(super) fn start_lock_path(key: &str) -> PathBuf {
+    socket_dir().join(format!("{key}.lock"))
+}
+
 /// Windows only: record the daemon in `socket_dir` (named pipes themselves
 /// cannot be listed). The marker holds the raw tab id for diagnostics.
 #[cfg(windows)]

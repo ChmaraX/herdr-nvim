@@ -23,7 +23,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
-    state::TabId,
+    state::{tab_key, TabId},
 };
 
 use registry::socket_path;
@@ -98,9 +98,7 @@ pub fn ensure_daemon(
     // (the tree's request and nvim's pane, opening together) would each
     // start one, and the second, taking the socket path, would leave the
     // first running unreachable. The one that waited finds it up.
-    #[cfg(unix)]
-    let _starting = StartLock::take(&socket)?;
-    #[cfg(unix)]
+    let _starting = StartLock::take(tab)?;
     if let Reply::Answered(_) = remote_expr(
         &socket,
         "1+1",
@@ -145,20 +143,17 @@ pub fn ensure_daemon(
     }
 }
 
-/// An exclusive lock on `<socket>.lock` while a tab's daemon starts; let go
-/// when dropped (and by the system if the process dies). The file stays:
-/// removing it while another process waits on it would let a third take a
-/// new one.
-#[cfg(unix)]
+/// An exclusive lock on the tab's `registry::start_lock_path` while its
+/// daemon starts; let go when dropped (and by the system if the process
+/// dies). The file stays: removing it while another process waits on it
+/// would let a third take a new one.
 struct StartLock {
     _held: fs::File,
 }
 
-#[cfg(unix)]
 impl StartLock {
-    fn take(socket: &Path) -> Result<Self> {
-        use std::os::fd::AsRawFd;
-        let path = socket.with_extension("lock");
+    fn take(tab: &str) -> Result<Self> {
+        let path = registry::start_lock_path(&tab_key(tab));
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)
                 .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
@@ -169,10 +164,8 @@ impl StartLock {
             .write(true)
             .open(&path)
             .with_context(|| format!("cannot open {}", path.display()))?;
-        // SAFETY: flock on a descriptor this File owns.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("cannot lock {}", path.display());
-        }
+        file.lock()
+            .with_context(|| format!("cannot lock {}", path.display()))?;
         Ok(Self { _held: file })
     }
 }
@@ -924,16 +917,23 @@ mod tests {
     /// Several processes opening a tab's nvim at once (the tree's request
     /// and nvim's pane): one daemon, which they all get. Two would leave one
     /// running with its socket taken by the other, out of reach.
-    #[cfg(unix)]
     #[test]
     fn starting_a_tabs_daemon_at_once_from_several_places_starts_one() {
+        use crate::test_support::{kill, process_alive, wait_dead};
+
         if !nvim_available() {
             eprintln!("skipping: nvim not found on PATH");
             return;
         }
-        let _env = TestEnv::new();
+        let env = TestEnv::new();
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let config = Config::default();
+        // Every nvim started for the tab writes its pid down as it starts.
+        let started = env.dir.join("started");
+        let mut config = Config::default();
+        config.sidebar.nvim_env = vec![format!(
+            "VIMINIT=lua vim.fn.writefile({{tostring(vim.fn.getpid())}}, {:?}, 'a')",
+            started.to_string_lossy()
+        )];
         let sockets: Vec<PathBuf> = std::thread::scope(|scope| {
             // A few ms apart, as they come: the later one finds no daemon
             // yet, and the earlier one's nvim has its socket by the time it
@@ -954,23 +954,26 @@ mod tests {
         });
         let socket = sockets[0].clone();
         assert!(sockets.iter().all(|s| *s == socket));
-        let listening: Vec<u32> = String::from_utf8_lossy(
-            &Command::new("pgrep")
-                .args(["-f", "--", &format!("--listen {}", socket.display())])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
-        for pid in &listening {
-            crate::test_support::kill(*pid);
+        let daemon: u32 = ask_expr(&socket, "getpid()", &config.sidebar)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pids: Vec<u32> = fs::read_to_string(&started)
+            .unwrap()
+            .lines()
+            .map(|line| line.trim().parse().unwrap())
+            .collect();
+        for &pid in pids.iter().filter(|&&pid| pid != daemon) {
+            wait_dead(pid);
+        }
+        let running: Vec<u32> = pids.iter().copied().filter(|&p| process_alive(p)).collect();
+        for &pid in &pids {
+            kill(pid);
         }
         assert_eq!(
-            listening.len(),
-            1,
-            "nvim daemons started for one tab: {listening:?}"
+            running,
+            [daemon],
+            "nvim daemons running for one tab (of {pids:?} started)"
         );
     }
 
