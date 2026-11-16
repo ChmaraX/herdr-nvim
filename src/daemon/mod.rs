@@ -28,6 +28,10 @@ use crate::{
 
 use registry::socket_path;
 
+/// What `ensure_daemon` asks a daemon to learn that it is up: its pid, which
+/// the registry records (`registry::register_daemon`).
+const PID_EXPR: &str = "getpid()";
+
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long `ensure_daemon` may take in all: probing an existing daemon
 /// (one that does not answer in time is declared unresponsive) and, if there
@@ -83,13 +87,7 @@ pub fn ensure_daemon(
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
     match liveness_until(&socket, &config.sidebar, deadline)? {
-        Liveness::Answered(_) => {
-            // Also (re)register an already-running daemon, so one spawned
-            // before the Windows marker existed still becomes discoverable.
-            #[cfg(windows)]
-            registry::register_daemon(tab)?;
-            return Ok(socket);
-        }
+        Liveness::Answered(pid) => return answered(tab, socket, &pid),
         // Never a second nvim on its socket: it may hold unsaved work.
         Liveness::Unresponsive => return Err(hung(tab)),
         Liveness::Gone => {}
@@ -99,13 +97,13 @@ pub fn ensure_daemon(
     // start one, and the second, taking the socket path, would leave the
     // first running unreachable. The one that waited finds it up.
     let _starting = StartLock::take(tab)?;
-    if let Reply::Answered(_) = remote_expr(
+    if let Reply::Answered(pid) = remote_expr(
         &socket,
-        "1+1",
+        PID_EXPR,
         &config.sidebar,
         RPC_TIMEOUT.min(deadline.saturating_duration_since(Instant::now())),
     )? {
-        return Ok(socket);
+        return answered(tab, socket, &pid);
     }
     check_nvim(&config.sidebar)?;
 
@@ -122,9 +120,11 @@ pub fn ensure_daemon(
         crate::state::remove_file_if_exists(&socket)?;
     }
 
-    spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
-    #[cfg(windows)]
-    registry::register_daemon(tab)?;
+    // Registered before it answers, so one that never does is still found.
+    registry::register_daemon(
+        tab,
+        spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?,
+    )?;
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -134,13 +134,24 @@ pub fn ensure_daemon(
                 HEALTH_POLL_TIMEOUT.as_secs()
             );
         }
-        match remote_expr(&socket, "1+1", &config.sidebar, remaining)? {
-            Reply::Answered(_) => return Ok(socket),
+        match remote_expr(&socket, PID_EXPR, &config.sidebar, remaining)? {
+            Reply::Answered(pid) => return answered(tab, socket, &pid),
             Reply::Refused | Reply::TimedOut => {}
             Reply::Failed(error) => bail!("{error}"),
         }
         sleep(HEALTH_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
+}
+
+/// `socket`, now that the daemon of `tab` on it answered with its `pid`,
+/// which the registry records: a spawn's pid may be a launcher's (an
+/// `nvim_bin` shim), and a daemon an older herdr-nvim started has none yet.
+fn answered(tab: &str, socket: PathBuf, pid: &str) -> Result<PathBuf> {
+    let pid = pid
+        .parse()
+        .with_context(|| format!("the nvim daemon of tab {tab} gave {pid:?} as its pid"))?;
+    registry::register_daemon(tab, pid)?;
+    Ok(socket)
 }
 
 /// An exclusive lock on the tab's `registry::start_lock_path` while its
@@ -170,13 +181,14 @@ impl StartLock {
     }
 }
 
+/// Start the daemon of `tab`, detached; its pid.
 fn spawn_daemon(
     tab: &str,
     socket: &Path,
     plugin_root: &Path,
     sidebar: &Sidebar,
     cwd: &Path,
-) -> Result<()> {
+) -> Result<u32> {
     // The pre-init `set rtp+=` below is not enough on its own: configs that
     // rebuild runtimepath from scratch during startup (any plugin manager with
     // an rtp reset, e.g. lazy.nvim's default `performance.rtp.reset = true`)
@@ -218,9 +230,10 @@ fn spawn_daemon(
         .stderr(Stdio::null());
     crate::host::ops().daemon_env(&mut command, tab, plugin_root);
     // The handle is dropped without waiting: the daemon runs on, tracked
-    // from here on by its socket.
-    spawn_detached(&mut command).context("failed to spawn nvim daemon (is nvim installed?)")?;
-    Ok(())
+    // from here on by its socket and registry entry.
+    Ok(spawn_detached(&mut command)
+        .context("failed to spawn nvim daemon (is nvim installed?)")?
+        .id())
 }
 
 /// The app host's daemon outlives the terminal that started it, so it must
@@ -348,8 +361,8 @@ fn hung(tab: &str) -> anyhow::Error {
 /// both are answered at once by a daemon that is really there.
 const UNSTICK_WITHIN: Duration = Duration::from_secs(2);
 
-/// What the daemon on `socket` is, within `deadline`: answering, hung (its
-/// process holds the socket but does not answer) or gone.
+/// What the daemon on `socket` is, within `deadline`: answering (with its
+/// pid), hung (its process holds the socket but does not answer) or gone.
 ///
 /// A daemon that only waits for input -- a normal-mode command waiting for
 /// its next key (a stray `g`, `z`, `"` typed into it), a prompt waiting for
@@ -366,7 +379,11 @@ fn liveness_until(socket: &Path, sidebar: &Sidebar, deadline: Instant) -> Result
         } else {
             UNSTICK_WITHIN.min(left)
         };
-        match liveness(socket, remote_expr(socket, "1+1", sidebar, within)?, None)? {
+        match liveness(
+            socket,
+            remote_expr(socket, PID_EXPR, sidebar, within)?,
+            None,
+        )? {
             Liveness::Answered(answer) => return Ok(Liveness::Answered(answer)),
             Liveness::Gone => return Ok(Liveness::Gone),
             Liveness::Unresponsive if !unstuck_once => {

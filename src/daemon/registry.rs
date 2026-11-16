@@ -94,16 +94,52 @@ pub(super) fn start_lock_path(key: &str) -> PathBuf {
     socket_dir().join(format!("{key}.lock"))
 }
 
-/// Windows only: record the daemon in `socket_dir` (named pipes themselves
-/// cannot be listed). The marker holds the raw tab id for diagnostics.
+/// Record that the process `pid` is the daemon of `tab`. Only Windows keeps
+/// a record: its marker in `socket_dir` (named pipes themselves cannot be
+/// listed) holds the raw tab id, then the pid, since its process table does
+/// not say which process serves which pipe (`registered_pid`). On Unix the
+/// socket is the entry, and the process table names its pid.
+pub(super) fn register_daemon(tab: &str, pid: u32) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let marker = registry_path(&tab_key(tab));
+        let dir = socket_dir();
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
+        fs::write(&marker, format!("{tab}\n{pid}\n"))
+            .with_context(|| format!("failed to write daemon marker {}", marker.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (tab, pid);
+        Ok(())
+    }
+}
+
+/// Windows: the pid the marker of `key` records (`register_daemon`), and
+/// when the marker was written: the daemon had started by then, so a process
+/// that started later only reuses its pid. `None` when there is no marker,
+/// or it records no pid (an older herdr-nvim wrote it).
 #[cfg(windows)]
-pub(super) fn register_daemon(tab: &str) -> Result<()> {
-    let marker = registry_path(&tab_key(tab));
-    let dir = socket_dir();
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
-    fs::write(&marker, tab)
-        .with_context(|| format!("failed to write daemon marker {}", marker.display()))
+pub(super) fn registered_pid(key: &str) -> Result<Option<(u32, std::time::SystemTime)>> {
+    let marker = registry_path(key);
+    let read = || -> std::io::Result<_> {
+        let text = fs::read_to_string(&marker)?;
+        Ok((text, fs::metadata(&marker)?.modified()?))
+    };
+    let (text, written) = match read() {
+        Ok(read) => read,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read daemon marker {}", marker.display()))
+        }
+    };
+    Ok(text
+        .lines()
+        .nth(1)
+        .and_then(|pid| pid.trim().parse().ok())
+        .map(|pid| (pid, written)))
 }
 
 /// Sanitized tab keys of every registered daemon (see `socket_dir`), sorted.
@@ -296,13 +332,12 @@ pub(crate) fn stop_probed(key: &str, probe: Liveness<Probe>, sidebar: &Sidebar) 
             if !quit(&socket, pid, sidebar)? {
                 kill(
                     key,
-                    &socket,
                     &format!("did not exit within {}s of qa!", QUIT_TIMEOUT.as_secs()),
                 )?;
             }
         }
         Liveness::Gone => {}
-        Liveness::Unresponsive => kill(key, &socket, "was not answering")?,
+        Liveness::Unresponsive => kill(key, "was not answering")?,
     }
     // `key` is a filename component, already sanitized, so it goes through
     // `state::remove_key` rather than `state::remove` -- that avoids
@@ -351,8 +386,8 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
 
 /// Kill the daemon of `key` because it `why` (say, "was not answering"),
 /// and say so on stderr. One that has exited by then is stopped already.
-fn kill(key: &str, socket: &Path, why: &str) -> Result<()> {
-    let killed = process::kill_daemon(socket)
+fn kill(key: &str, why: &str) -> Result<()> {
+    let killed = process::kill_daemon(key)
         .with_context(|| format!("the nvim daemon of tab {key} {why} and could not be killed"))?;
     match killed {
         Some(pid) => eprintln!(

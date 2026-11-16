@@ -286,7 +286,7 @@ pub(crate) fn describe(
             let answered = probe.as_ref().ok().and_then(Liveness::answered);
             let pid = match (answered, &procs) {
                 (Some(answer), _) => Some(answer.pid),
-                (None, Ok(procs)) => procs.daemon(&socket).ok().flatten(),
+                (None, Ok(procs)) => procs.daemon(&key).ok().flatten(),
                 (None, Err(_)) => None,
             };
             let (rss_bytes, uptime_secs) = match (pid, &procs) {

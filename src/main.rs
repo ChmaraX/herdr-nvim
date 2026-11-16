@@ -24,6 +24,7 @@ mod sessions;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod winproc;
 
 /// The app's commands its mods wait on (`exec`, no timeout of its own): each
 /// ends within `deadline`, whatever it waits for, so a mod is never left
