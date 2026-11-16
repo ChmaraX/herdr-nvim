@@ -621,8 +621,8 @@ function Step-OneLiner {
         Assert-That (-not (Test-Path -LiteralPath (Get-ModDir $one 'herdr-nvim'))) 'and installs nothing'
         $result = Invoke-WindowsPowerShell "& ([scriptblock]::Create((irm $url))) -App -Bundle $(Format-PsLiteral $BundleA) -AppBin $(Format-PsLiteral $StubApp)" $one
     }
-    Assert-Installed $result "the $form install"
-    $record = Assert-Record $one "the $form install"
+    Assert-Installed $result "the install by $form"
+    $record = Assert-Record $one "the install by $form"
     Assert-That ((Split-Path -Leaf $record.runtime) -eq $StampA) "it installs the same runtime as bundle A's install (stamp $StampA)" (Split-Path -Leaf $record.runtime)
     Assert-Launcher $one
     Assert-GenLayout $one
