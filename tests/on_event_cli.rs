@@ -98,20 +98,11 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
     log.step("workspace_closed wHnA", &event, &output);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("wHnA_t3"), "{stderr}");
-    #[cfg(unix)]
-    {
-        assert!(output.status.success(), "{stderr}");
-        assert!(stderr.contains("did not exit"), "{stderr}");
-        stubborn.assert_gone(&sandbox);
-    }
-    #[cfg(windows)]
-    {
-        assert!(
-            !output.status.success(),
-            "a daemon that won't quit fails the hook"
-        );
-        stubborn.assert_alive(&sandbox);
-    }
+    // Killed by its pid on every OS (Windows: the registry marker's pid and
+    // taskkill).
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("did not exit"), "{stderr}");
+    stubborn.assert_gone(&sandbox);
     a2.assert_gone(&sandbox);
     assert!(!stale.exists(), "stale entry cleaned up");
     ab1.assert_alive(&sandbox);
