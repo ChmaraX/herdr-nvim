@@ -409,10 +409,17 @@ fn dirty_and_busy_daemons_are_killed_by_force_with_what_they_started() {
     let forced = sandbox.run(&["daemons", "stop", "--all", "--force"], None);
     log.step("daemons stop --all --force", "", &forced);
     assert!(forced.status.success(), "{}", stderr(&forced));
-    for daemon in [&dirty, &busy] {
-        let killed = format!("killed it (pid {})", daemon.pid());
-        assert!(stderr(&forced).contains(&killed), "{}", stderr(&forced));
-    }
+    // The busy one can only be killed. The dirty one is asked to quit
+    // first; on Windows CI its `qa!` got through after the wait (seen twice:
+    // "did not exit within 10s of qa!; it has already exited"), so what is
+    // asserted for it is the outcome: stopped, gone, its child too.
+    let killed = format!("killed it (pid {})", busy.pid());
+    assert!(stderr(&forced).contains(&killed), "{}", stderr(&forced));
+    let stopped = String::from_utf8_lossy(&forced.stdout);
+    assert!(
+        stopped.matches("stopped ").count() == 2,
+        "both reported stopped: {stopped}"
+    );
     dirty.assert_gone(&sandbox);
     busy.assert_gone(&sandbox);
     for child in children {
