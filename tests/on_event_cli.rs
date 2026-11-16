@@ -118,10 +118,7 @@ fn close_hooks_stop_exactly_the_closed_tabs_daemons() {
         .iter()
         .map(|d| d["key"].as_str().unwrap())
         .collect();
-    #[cfg(unix)]
     assert_eq!(keys, ["wHnAB_t1", "wHnB_t1"]);
-    #[cfg(windows)]
-    assert_eq!(keys, ["wHnAB_t1", "wHnA_t3", "wHnB_t1"]);
     log.note("result: pass");
 }
 
