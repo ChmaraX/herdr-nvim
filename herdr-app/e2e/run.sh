@@ -102,6 +102,7 @@ cleanup() {
   say "cleanup (root $root)"
   # The app's own log goes with the proof, failed run or not.
   [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
+  [ -n "${pump_pid:-}" ] && kill "$pump_pid" 2>/dev/null
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
   [ -n "${rec_pid:-}" ] && kill "$rec_pid" 2>/dev/null
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
@@ -190,7 +191,14 @@ place_window() {
   osascript -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set position of window 1 to {40, 60}" \
     -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set size of window 1 to {1280, 820}"
 }
-poll 15 place_window || say "note: could not move the window (Accessibility); screenshots may be stale"
+if ! poll 15 place_window; then
+  # macOS draws a window it can't see only when asked to: without Accessibility
+  # (the window stays where it opened, maybe behind others) a frame is asked
+  # for a few times a second, or the mods, which act when they draw, lag.
+  say "note: could not move the window (Accessibility); asking the app for frames instead"
+  (while :; do H shot "$root/.frame.png" >/dev/null 2>&1; sleep 0.25; done) &
+  pump_pid=$!
+fi
 
 # --- a repo and two agent tabs ----------------------------------------------
 demo=$root/work/demo
