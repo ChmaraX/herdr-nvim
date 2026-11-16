@@ -15,7 +15,10 @@ pub fn ask(question: &str, default: bool) -> Option<bool> {
     .ok()?;
     output.flush().ok()?;
     let mut line = String::new();
-    input.read_line(&mut line).ok()?;
+    // End of input is no answer, not a yes (as the bash installer had it).
+    if input.read_line(&mut line).ok()? == 0 {
+        return None;
+    }
     Some(match line.trim().to_ascii_lowercase().as_str() {
         "" => default,
         answer => answer == "y" || answer == "yes",

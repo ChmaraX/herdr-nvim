@@ -57,7 +57,7 @@ On Windows, run `herdr plugin install` yourself (`install.sh` is for macOS
 and Linux), and `herdr plugin update chmarax.herdr-nvim` to upgrade; open
 sidebars can stay open. It downloads the prebuilt x64 binary, so it needs no Rust. On
 Windows on ARM, or for a release without a Windows binary, it builds from
-source instead, which needs Rust ([rustup](https://rustup.rs)) and the MSVC
+source instead, which needs Rust 1.89 or newer ([rustup](https://rustup.rs)) and the MSVC
 build tools: any Visual Studio or Build Tools for Visual Studio with
 "Desktop development with C++".
 
