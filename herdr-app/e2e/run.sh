@@ -191,12 +191,17 @@ place_window() {
   osascript -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set position of window 1 to {40, 60}" \
     -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set size of window 1 to {1280, 820}"
 }
+# One frame drawn now. The mods act when they draw (the controller pairs
+# the panel and nvim from what changed since its last frame), so two layout
+# changes with no frame between them reach it as one.
+frame() { H shot "$root/.frame.png" >/dev/null 2>&1 || true; }
 if ! poll 15 place_window; then
   # macOS draws a window it can't see only when asked to: without Accessibility
   # (the window stays where it opened, maybe behind others) a frame is asked
-  # for a few times a second, or the mods, which act when they draw, lag.
+  # for every FRAMES_EVERY seconds (default 0.25; a loaded Mac draws fewer:
+  # FRAMES_EVERY=1.5 reproduces that), or the mods lag.
   say "note: could not move the window (Accessibility); asking the app for frames instead"
-  (while :; do H shot "$root/.frame.png" >/dev/null 2>&1; sleep 0.25; done) &
+  (while :; do frame; sleep "${FRAMES_EVERY:-0.25}"; done) &
   pump_pid=$!
 fi
 
@@ -337,8 +342,11 @@ baseline() {
     fi
     poll 15 no_sidebar_of "$t" || fail "baseline: tab $t's nvim pane stayed"
   done
+  # The controller sees the pair close before anything else changes.
+  frame; frame
   H do layout.hide '{"id":"panel"}' >/dev/null
   poll 10 panel_is hidden || fail "baseline: the panel stayed"
+  frame; frame
   sock_a=$(sock_of "$space" "$tab_a") || fail "baseline: no daemon for tab A"; pid_a=$(daemon_pid "$sock_a")
   sock_b=$(sock_of "$space" "$tab_b") || fail "baseline: no daemon for tab B"; pid_b=$(daemon_pid "$sock_b")
   H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
