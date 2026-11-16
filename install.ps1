@@ -18,27 +18,33 @@
 # nvims with unsaved work) and keeps the Neovim it downloaded.
 #
 # TUI: `herdr plugin install ChmaraX/herdr-nvim` (or `herdr plugin update`).
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSReviewUnusedParameter", "", Justification = "Install-HerdrNvim reads them from this scope")]
-param(
-    [switch]$App,
-    [switch]$Tui,
-    [switch]$Uninstall,
-    [switch]$Force,
-    [switch]$InstallNvim,
-    [string]$Version,
-    [string]$Bundle,
-    [string]$AppHome,
-    [string]$AppBin,
-    [string]$PanelWidth,
-    [string]$Tree,
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Rest
-)
 
-# Everything runs in this function's scope: under `irm | iex` the script runs
-# in the caller's session, whose settings it must not change, and which it
-# must not end (no `exit`; a failure throws).
-function Install-HerdrNvim {
+# Everything runs in this one script block's scope: under `irm | iex` the
+# script runs in the caller's session, whose variables and settings it must
+# not change, and which it must not end (no `exit`; a failure throws).
+& {
+    param(
+        [switch]$App,
+        [switch]$Tui,
+        [switch]$Uninstall,
+        [switch]$Force,
+        [switch]$InstallNvim,
+        [string]$Version,
+        [string]$Bundle,
+        [string]$AppHome,
+        [string]$AppBin,
+        [string]$PanelWidth,
+        [string]$Tree,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Rest
+    )
+
+    # What was asked, in one place the functions below read.
+    $o = [pscustomobject]@{
+        App = [bool]$App; Tui = [bool]$Tui; Uninstall = [bool]$Uninstall; Force = [bool]$Force
+        InstallNvim = [bool]$InstallNvim; Version = $Version; Bundle = $Bundle; AppHome = $AppHome
+        AppBin = $AppBin; PanelWidth = $PanelWidth; Tree = $Tree; Rest = @($Rest | Where-Object { $_ })
+    }
     Set-StrictMode -Version 2.0
     $ErrorActionPreference = "Stop"
     $ProgressPreference = "SilentlyContinue"
@@ -84,7 +90,7 @@ function Install-HerdrNvim {
     }
 
     function Get-AppHome {
-        if ($AppHome) { return $AppHome }
+        if ($o.AppHome) { return $o.AppHome }
         if ($env:HERDR_APP_HOME) { return $env:HERDR_APP_HOME }
         Join-Path $HOME ".config\herdr-app"
     }
@@ -117,15 +123,15 @@ function Install-HerdrNvim {
         New-Item -ItemType Directory -Path $work | Out-Null
         try {
             $archive = Join-Path $work "app.tar.gz"
-            if ($Bundle) {
-                if (-not (Test-Path -LiteralPath $Bundle)) { throw "herdr-nvim: no bundle at $Bundle" }
-                Copy-Item -LiteralPath $Bundle -Destination $archive
-                if (Test-Path -LiteralPath "$Bundle.sha256") { Copy-Item -LiteralPath "$Bundle.sha256" -Destination "$archive.sha256" }
+            if ($o.Bundle) {
+                if (-not (Test-Path -LiteralPath $o.Bundle)) { throw "herdr-nvim: no bundle at $($o.Bundle)" }
+                Copy-Item -LiteralPath $o.Bundle -Destination $archive
+                if (Test-Path -LiteralPath "$($o.Bundle).sha256") { Copy-Item -LiteralPath "$($o.Bundle).sha256" -Destination "$archive.sha256" }
             }
             else {
                 $name = "herdr-nvim-app-$(Get-Target).tar.gz"
-                $base = if ($Version) { "https://github.com/$repo/releases/download/$Version" } else { "https://github.com/$repo/releases/latest/download" }
-                Say "downloading $name ($(if ($Version) { $Version } else { 'latest' }))"
+                $base = if ($o.Version) { "https://github.com/$repo/releases/download/$($o.Version)" } else { "https://github.com/$repo/releases/latest/download" }
+                Say "downloading $name ($(if ($o.Version) { $o.Version } else { 'latest' }))"
                 Save-Url "$base/$name" $archive
                 Save-Url "$base/$name.sha256" "$archive.sha256"
             }
@@ -152,14 +158,14 @@ function Install-HerdrNvim {
             if ($probe.ExitCode -ne 2) { throw "herdr-nvim: the prebuilt herdr-nvim does not run on this machine (exit $($probe.ExitCode)); build from source (README: From source)" }
 
             $arguments = @("app-install")
-            if ($Uninstall) { $arguments += "--uninstall" }
-            if ($Force) { $arguments += "--force" }
-            if ($InstallNvim) { $arguments += "--install-nvim" }
-            if ($AppHome) { $arguments += @("--home", $AppHome) }
-            if ($AppBin) { $arguments += @("--app-bin", $AppBin) }
-            if ($PanelWidth) { $arguments += @("--panel-width", $PanelWidth) }
-            if ($Tree) { $arguments += @("--tree", $Tree) }
-            if ($Rest) { $arguments += @($Rest | Where-Object { $_ -ne "--" }) }
+            if ($o.Uninstall) { $arguments += "--uninstall" }
+            if ($o.Force) { $arguments += "--force" }
+            if ($o.InstallNvim) { $arguments += "--install-nvim" }
+            if ($o.AppHome) { $arguments += @("--home", $o.AppHome) }
+            if ($o.AppBin) { $arguments += @("--app-bin", $o.AppBin) }
+            if ($o.PanelWidth) { $arguments += @("--panel-width", $o.PanelWidth) }
+            if ($o.Tree) { $arguments += @("--tree", $o.Tree) }
+            if ($o.Rest) { $arguments += @($o.Rest | Where-Object { $_ -ne "--" }) }
             $code = Invoke-Program $exe $arguments
             if ($code -ne 0) { throw "herdr-nvim: the install stopped (exit $code)" }
         }
@@ -172,7 +178,7 @@ function Install-HerdrNvim {
         $herdr = Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $herdr) { throw "herdr-nvim: the herdr TUI is not installed (https://herdr.dev)" }
         $listed = (& $herdr.Path plugin list 2>$null) | Where-Object { $_ -like "*- $plugin *" } | Select-Object -First 1
-        if ($Uninstall) {
+        if ($o.Uninstall) {
             if (-not $listed) { Say "the TUI plugin is not installed"; return }
             & $herdr.Path plugin uninstall $plugin
             Say "removed the TUI plugin"
@@ -190,16 +196,14 @@ function Install-HerdrNvim {
         }
     }
 
-    $wantApp = [bool]$App
-    $wantTui = [bool]$Tui
+    $wantApp = [bool]$o.App
+    $wantTui = [bool]$o.Tui
     if (-not $wantApp -and -not $wantTui) {
         $wantApp = [bool](Test-App)
         $wantTui = Test-Tui
         if (-not $wantApp -and -not $wantTui) { throw "herdr-nvim: found neither the Herdr app nor the herdr TUI; install one first (https://herdr.dev)" }
     }
-    if ($Tree -and $Tree -ne "native" -and $Tree -ne "nvim") { throw "herdr-nvim: -Tree is native or nvim, not $Tree" }
+    if ($o.Tree -and $o.Tree -ne "native" -and $o.Tree -ne "nvim") { throw "herdr-nvim: -Tree is native or nvim, not $($o.Tree)" }
     if ($wantApp) { Install-App }
     if ($wantTui) { Install-Tui }
-}
-
-Install-HerdrNvim
+} @args
