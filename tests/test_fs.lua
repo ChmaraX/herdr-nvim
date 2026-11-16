@@ -1,16 +1,30 @@
 -- The native tree's file operations, done by nvim (lua/herdr-nvim/fs.lua).
--- Headless nvim without Snacks: herdr-nvim's own rename/delete path.
--- Only where the Herdr app version installs (macOS, Linux: its installer is
--- a shell script, its release bundles are for those); fs.lua loads only in
--- an nvim started for the app, and its paths are POSIX ones.
-if vim.fn.has("win32") == 1 then return end
+-- Headless nvim without Snacks: herdr-nvim's own rename/copy/delete path.
+-- Paths are compared the way fs.lua answers them: real, with "/" on Windows.
 local fs = require("herdr-nvim.fs")
+local WIN = vim.fn.has("win32") == 1
 
 local function tmpdir()
-  local dir = vim.fn.resolve(vim.fn.tempname())
+  local dir = vim.fn.tempname()
   vim.fn.mkdir(dir .. "/src", "p")
   vim.fn.writefile({ "hello" }, dir .. "/src/a.txt")
-  return dir
+  return vim.fs.normalize(vim.uv.fs_realpath(dir))
+end
+
+-- A folder link; a junction on Windows, which needs no privilege.
+local function link_dir(target, at)
+  assert(vim.uv.fs_symlink(target, at, { dir = true, junction = true }))
+end
+
+-- The name of `buf` (default: the current one), with "/" on Windows.
+local function name(buf)
+  return vim.fs.normalize(vim.api.nvim_buf_get_name(buf or 0))
+end
+
+-- Whether the file system under `dir` tells `x` and `X` apart.
+local function case_sensitive(dir)
+  vim.fn.writefile({}, dir .. "/probe")
+  return vim.uv.fs_stat(dir .. "/PROBE") == nil
 end
 
 local function run(req)
@@ -23,7 +37,7 @@ T.test("fs: create makes a folder, or a file opened in nvim", function()
   T.eq(vim.fn.isdirectory(root .. "/src/new"), 1)
   T.eq(run({ op = "create", root = root, path = root .. "/src/new/b.lua" }).ok, true)
   T.eq(vim.fn.filereadable(root .. "/src/new/b.lua"), 1)
-  T.eq(vim.fn.expand("%:t"), "b.lua")
+  T.eq(vim.fs.basename(name()), "b.lua")
   T.ok(run({ op = "create", root = root, path = root .. "/src/a.txt" }).error:find("already exists"))
 end)
 
@@ -34,7 +48,7 @@ T.test("fs: rename moves the open buffer with the file", function()
   T.eq(r.ok, true)
   T.eq(vim.fn.filereadable(root .. "/src/deep/b.txt"), 1)
   T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 0)
-  T.eq(vim.fn.expand("%:p"), root .. "/src/deep/b.txt")
+  T.eq(name(), root .. "/src/deep/b.txt")
   T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
 end)
 
@@ -42,7 +56,7 @@ T.test("fs: renaming a folder moves the buffers inside it", function()
   local root = tmpdir()
   vim.cmd.edit(root .. "/src/a.txt")
   T.eq(run({ op = "rename", root = root, path = root .. "/src", to = root .. "/lib" }).ok, true)
-  T.eq(vim.fn.expand("%:p"), root .. "/lib/a.txt")
+  T.eq(name(), root .. "/lib/a.txt")
 end)
 
 T.test("fs: a rename keeps unsaved edits, undo, and a plain :w", function()
@@ -52,7 +66,7 @@ T.test("fs: a rename keeps unsaved edits, undo, and a plain :w", function()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "unsaved" })
   T.eq(run({ op = "rename", root = root, path = root .. "/src/a.txt", to = root .. "/src/b.txt" }).ok, true)
   T.eq(vim.api.nvim_get_current_buf(), buf)
-  T.eq(vim.api.nvim_buf_get_name(buf), root .. "/src/b.txt")
+  T.eq(name(buf), root .. "/src/b.txt")
   T.eq(vim.bo[buf].modified, true)
   T.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "unsaved" })
   T.eq(vim.fn.readfile(root .. "/src/b.txt"), { "hello" })
@@ -70,7 +84,7 @@ T.test("fs: a folder rename keeps the unsaved edits of a hidden buffer", functio
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "unsaved" })
   vim.cmd("hide enew")
   T.eq(run({ op = "rename", root = root, path = root .. "/src", to = root .. "/lib" }).ok, true)
-  T.eq(vim.api.nvim_buf_get_name(buf), root .. "/lib/a.txt")
+  T.eq(name(buf), root .. "/lib/a.txt")
   T.eq(vim.bo[buf].modified, true)
   T.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "unsaved" })
 end)
@@ -119,7 +133,7 @@ T.test("fs: a symlink in the root is itself: renaming or deleting it touches onl
   local root = tmpdir()
   local other = tmpdir()
   vim.fn.writefile({ "keep" }, other .. "/kept.txt")
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "rename", root = root, path = root .. "/link", to = root .. "/link2" })
   T.eq(r.ok, true, vim.inspect(r))
   T.eq(vim.uv.fs_lstat(root .. "/link2").type, "link")
@@ -132,7 +146,7 @@ end)
 T.test("fs: going through a symlink to elsewhere asks first (outside)", function()
   local root = tmpdir()
   local other = tmpdir()
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "create", root = root, path = root .. "/link/x.txt" })
   T.eq(r.outside, root .. "/link/x.txt", vim.inspect(r))
 end)
@@ -140,7 +154,7 @@ end)
 T.test("fs: a symlink in the root to elsewhere is outside", function()
   local root = tmpdir()
   local other = tmpdir()
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "create", root = root, path = root .. "/link/new.txt" })
   T.ok(r.error and r.error:find("outside"), vim.inspect(r))
   T.eq(vim.fn.filereadable(other .. "/new.txt"), 0)
@@ -148,4 +162,12 @@ T.test("fs: a symlink in the root to elsewhere is outside", function()
   T.ok(r.error and r.error:find("outside"), vim.inspect(r))
   T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 1)
   T.eq(run({ op = "create", root = root, path = root .. "/src/new/x.txt" }).ok, true)
+end)
+
+T.test("fs: the file system's root as the tab's folder holds everything on it", function()
+  local root = tmpdir()
+  local top = root:match("^%a:/") or "/"
+  local r = run({ op = "create", root = top, path = root .. "/src/new.txt" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.filereadable(root .. "/src/new.txt"), 1)
 end)

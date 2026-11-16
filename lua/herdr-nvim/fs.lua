@@ -15,8 +15,15 @@ local function snacks()
   return ok and type(s) == "table" and s.rename and s or nil
 end
 
+-- Absolute, with "/" between names on Windows too; a root keeps its "/"
+-- (`C:` alone is the current folder on drive C).
 local function norm(path)
-  return vim.fs.normalize(vim.fn.fnamemodify(path, ":p")):gsub("/$", "")
+  return vim.fs.normalize(vim.fn.fnamemodify(path, ":p"), { expand_env = false })
+end
+
+-- `dir` with a "/" after it to put a name on: a root has one already.
+local function slash(dir)
+  return dir:sub(-1) == "/" and dir or dir .. "/"
 end
 
 local function exists(path)
@@ -24,7 +31,13 @@ local function exists(path)
 end
 
 local function under(path, dir)
-  return path == dir or path:sub(1, #dir + 1) == dir .. "/"
+  return path == dir or vim.startswith(path, slash(dir))
+end
+
+-- libuv answers C:\x on Windows; compared with paths from norm().
+local function realpath(path)
+  local resolved = uv.fs_realpath(path)
+  return resolved and vim.fs.normalize(resolved, { expand_env = false })
 end
 
 -- Where `path` really is, symlinks resolved: a folder all the way, else its
@@ -35,16 +48,15 @@ local function real(path)
   -- touches only the link, wherever it points.
   local stat = uv.fs_lstat(path)
   if stat and stat.type == "link" then
-    local dir = uv.fs_realpath(vim.fs.dirname(path)) or vim.fs.dirname(path)
-    return (dir .. "/" .. vim.fs.basename(path)):gsub("//+", "/")
+    return slash(realpath(vim.fs.dirname(path)) or vim.fs.dirname(path)) .. vim.fs.basename(path)
   end
-  if vim.fn.isdirectory(path) == 1 then return uv.fs_realpath(path) or path end
+  if vim.fn.isdirectory(path) == 1 then return realpath(path) or path end
   local dir, rest = vim.fs.dirname(path), { vim.fs.basename(path) }
-  while not uv.fs_realpath(dir) and dir ~= vim.fs.dirname(dir) do
+  while not realpath(dir) and dir ~= vim.fs.dirname(dir) do
     table.insert(rest, 1, vim.fs.basename(dir))
     dir = vim.fs.dirname(dir)
   end
-  return ((uv.fs_realpath(dir) or dir) .. "/" .. table.concat(rest, "/")):gsub("//+", "/")
+  return slash(realpath(dir) or dir) .. table.concat(rest, "/")
 end
 
 -- Every path inside the root, as the file system resolves them (a symlink in
@@ -197,7 +209,7 @@ end
 local function each_into(req, op)
   local done = {}
   for _, path in ipairs(req.paths or {}) do
-    local to = norm(req.dir) .. "/" .. vim.fn.fnamemodify(norm(path), ":t")
+    local to = slash(norm(req.dir)) .. vim.fn.fnamemodify(norm(path), ":t")
     table.insert(done, op({ root = req.root, outside = req.outside, path = path, to = to }).path)
   end
   return { ok = true, paths = done }
@@ -249,7 +261,7 @@ function ops.paste(req)
   if #files == 0 then error(("the %s register holds no files"):format(register)) end
   local pasted = {}
   for _, from in ipairs(files) do
-    local to = dir .. "/" .. vim.fn.fnamemodify(from, ":t")
+    local to = slash(dir) .. vim.fn.fnamemodify(from, ":t")
     if exists(to) then error("already exists: " .. to) end
     copy_path(norm(from), to)
     table.insert(pasted, to)
