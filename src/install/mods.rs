@@ -100,8 +100,29 @@ pub fn recover(owned: &Owned) -> Result<()> {
         // Our own folders: also the names this branch used before (never
         // released) for its temp and trash files.
         osfs::sweep(&live, &[".tmp-", ".trash-"]);
+        restore_launcher(&live)?;
         osfs::sweep(&live.join("bin"), &[NEXT]);
         osfs::sweep(&live.join(CACHE), &[crate::app::sidebar::STAGE]);
+    }
+    Ok(())
+}
+
+/// A crash between the launcher's two renames (the old one moved to
+/// `.prev-*`, the new one not yet in place) left no launcher: the old one
+/// goes back.
+fn restore_launcher(live: &Path) -> Result<()> {
+    let bin = live.join("bin");
+    let launcher = bin.join(exe_name());
+    if launcher.exists() || !bin.is_dir() {
+        return Ok(());
+    }
+    let prev = fs::read_dir(&bin)?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(PREV))
+        .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
+    if let Some(prev) = prev {
+        osfs::rename_retrying(&prev.path(), &launcher)
+            .with_context(|| format!("cannot restore {}", launcher.display()))?;
     }
     Ok(())
 }
