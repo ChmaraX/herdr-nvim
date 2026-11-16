@@ -174,8 +174,12 @@ function M.write_state(changes)
   if not path then return end
   vim.fn.mkdir(vim.fs.dirname(path), "p")
   local tmp = path .. ".tmp"
-  if pcall(vim.fn.writefile, { vim.json.encode(M.state) }, tmp) then
-    pcall(vim.uv.fs_rename, tmp, path)
+  if not pcall(vim.fn.writefile, { vim.json.encode(M.state) }, tmp) then return end
+  -- On Windows a process holding the file open (a reader, a virus scanner)
+  -- fails the rename for a moment.
+  for attempt = 1, 4 do
+    if vim.uv.fs_rename(tmp, path) then return end
+    if attempt < 4 then vim.uv.sleep(20) end
   end
 end
 
