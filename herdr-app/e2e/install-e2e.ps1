@@ -846,11 +846,15 @@ function Step-UninstallHeld {
         return
     }
     $mod = Get-ModDir $Main 'herdr-nvim'
+    $before = @(Get-ChildItem -LiteralPath $mod -Force | ForEach-Object Name | Sort-Object)
     $held = [IO.File]::Open((Join-Path $mod 'mod.json'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try { $result = Invoke-Bootstrap $BundleB -Uninstall }
     finally { $held.Dispose() }
     Assert-That (($result.Out + $result.Err) -match [regex]::Escape($mod)) 'the uninstall names the held mods\herdr-nvim'
     Assert-That ($result.Out + $result.Err -notmatch 'panicked') 'no panic'
+    Assert-That ($result.Code -eq 1) 'the uninstall exits 1: not all of it could go' "exit $($result.Code)"
+    $after = @(Get-ChildItem -LiteralPath $mod -Force -ErrorAction SilentlyContinue | ForEach-Object Name | Sort-Object)
+    Assert-That (($after -join ',') -eq ($before -join ',')) 'mods\herdr-nvim is left whole, as it was (its rename was refused, nothing in it deleted)' ($after -join ',')
     Assert-That (-not (Test-Path -LiteralPath (Get-ModDir $Main 'herdr-nvim-header'))) 'the header mod is removed all the same'
     Assert-That (Test-SameContent (Get-ByteContent (Get-KeysFile $Main)) $PreKeys) 'keys.json is back to before the install all the same'
     Assert-That (Test-SameContent (Get-ByteContent (Get-LayoutFile $Main)) $PreLayout) 'the layout is back to before the install all the same'
