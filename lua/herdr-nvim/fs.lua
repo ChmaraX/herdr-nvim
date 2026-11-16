@@ -161,12 +161,6 @@ end
 -- link to the same place. Not Snacks' copy, which follows links and reports
 -- a failure only as a notification.
 local function copy_path(from, to)
-  -- Into its own direct child, a folder's listing (read before the child
-  -- exists) holds no copy; any deeper, the copy's own folders are on the way
-  -- down and it would never end. `cp -R` refuses both.
-  if under(to, from) and key(vim.fs.dirname(to)) ~= key(from) then
-    error("cannot copy a folder into a folder inside it: " .. to)
-  end
   local stat = assert(uv.fs_lstat(from))
   if stat.type == "link" then
     local dir = vim.fn.isdirectory(from) == 1
@@ -178,11 +172,36 @@ local function copy_path(from, to)
     -- The whole listing is read here, before the copy exists: a folder
     -- copied into itself gets itself as it was.
     local listing = assert(uv.fs_scandir(from))
-    assert(uv.fs_mkdir(to, stat.mode % 512))
+    -- Writable while it fills; the source's mode once full (a read-only
+    -- folder would refuse its own contents).
+    assert(uv.fs_mkdir(to, 448))
     for name in uv.fs_scandir_next, listing do copy_path(from .. "/" .. name, to .. "/" .. name) end
+    assert(uv.fs_chmod(to, stat.mode % 512))
   else
     assert(uv.fs_copyfile(from, to, { excl = true, ficlone = true }))
   end
+end
+
+-- Whether the folder `from` is a folder above `to` other than its parent:
+-- then the copy's own folders are on its way down and it would never end
+-- (into its direct child it ends: the listing is read before the child
+-- exists). By identity, so a volume that ignores case can't hide it.
+local function into_itself(from, to)
+  local f = uv.fs_stat(from)
+  if not f or f.type ~= "directory" then return false end
+  local dir, parent = vim.fs.dirname(to), true
+  while true do
+    local s = uv.fs_stat(dir)
+    if s and s.dev == f.dev and s.ino == f.ino then return not parent end
+    local up = vim.fs.dirname(dir)
+    if up == dir then return false end
+    dir, parent = up, false
+  end
+end
+
+local function copy(from, to)
+  if into_itself(from, to) then error("cannot copy a folder into a folder inside it: " .. to) end
+  copy_path(from, to)
 end
 
 local ops = {}
@@ -233,7 +252,7 @@ function ops.copy(req)
   local from, to = norm(req.path), norm(req.to)
   check_inside(req, from, to)
   if exists(to) then error("already exists: " .. to) end
-  copy_path(from, to)
+  copy(from, to)
   return { ok = true, path = to }
 end
 
@@ -296,7 +315,7 @@ function ops.paste(req)
   for _, from in ipairs(files) do
     local to = slash(dir) .. vim.fn.fnamemodify(from, ":t")
     if exists(to) then error("already exists: " .. to) end
-    copy_path(norm(from), to)
+    copy(norm(from), to)
     table.insert(pasted, to)
   end
   return { ok = true, paths = pasted }

@@ -198,6 +198,30 @@ T.test("fs: a folder copied into a folder deeper inside itself is refused", func
   T.eq(vim.fn.readdir(root .. "/src/deep"), {})
 end)
 
+T.test("fs: a copy into a folder deeper inside itself, named in other case, is refused", function()
+  local root = tmpdir()
+  if case_sensitive(root) then return end
+  vim.fn.mkdir(root .. "/src/deep", "p")
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/SRC/deep/again" })
+  T.eq(r.ok, nil, vim.inspect(r))
+  T.ok(r.error:find("inside it", 1, true), r.error)
+  T.eq(vim.fn.readdir(root .. "/src/deep"), {})
+end)
+
+T.test("fs: a read-only folder is copied whole, and the copy is read-only too", function()
+  if WIN then return end
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/src/ro", "p")
+  vim.fn.writefile({ "x" }, root .. "/src/ro/f.txt")
+  assert(vim.uv.fs_chmod(root .. "/src/ro", tonumber("555", 8)))
+  local r = run({ op = "copy", root = root, path = root .. "/src/ro", to = root .. "/ro2" })
+  vim.uv.fs_chmod(root .. "/src/ro", tonumber("755", 8))
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readfile(root .. "/ro2/f.txt"), { "x" })
+  T.eq(vim.uv.fs_stat(root .. "/ro2").mode % 512, tonumber("555", 8))
+  vim.uv.fs_chmod(root .. "/ro2", tonumber("755", 8))
+end)
+
 T.test("fs: the file system's root as the tab's folder holds everything on it", function()
   local root = tmpdir()
   local top = root:match("^%a:/") or "/"
