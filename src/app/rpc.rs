@@ -17,10 +17,20 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-/// The `hc` binary (`HERDR_NVIM_HC` overrides; PATH already includes
+/// The `hc` binary: `HERDR_NVIM_HC`, else the one beside the app's
+/// `herdr-app` (`HERDR_APP_BIN`; where the app puts `hc` on Windows is
+/// unverified, doc/windows-facts.md), else `hc` on PATH (which includes
 /// `~/.local/bin`, see `path::augment_path`).
-pub(crate) fn hc_bin() -> String {
-    env::var("HERDR_NVIM_HC").unwrap_or_else(|_| "hc".to_owned())
+pub(crate) fn hc_bin() -> std::ffi::OsString {
+    if let Some(hc) = env::var_os("HERDR_NVIM_HC").filter(|hc| !hc.is_empty()) {
+        return hc;
+    }
+    env::var_os("HERDR_APP_BIN")
+        .map(|app| {
+            std::path::PathBuf::from(app).with_file_name(format!("hc{}", env::consts::EXE_SUFFIX))
+        })
+        .filter(|hc| hc.is_file())
+        .map_or_else(|| "hc".into(), Into::into)
 }
 
 /// A `hc` command for the CLI paths (`hc read`, `hc send`, `hc events`).
