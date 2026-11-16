@@ -219,3 +219,26 @@ T.test("fs: a rename onto another file that differs only in case is refused", fu
   T.ok(r.error and r.error:find("already exists"), vim.inspect(r))
   T.eq(vim.fn.readfile(root .. "/src/A.txt"), { "other" })
 end)
+
+T.test("fs: a folder named in other case is inside only where the file system says it is the same", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/Proj", "p")
+  local r = run({ op = "create", root = root .. "/Proj", path = root .. "/PROJ/new.txt" })
+  if case_sensitive(root) then
+    T.ok(r.error and r.error:find("outside"), vim.inspect(r))
+  else
+    T.eq(r.ok, true, vim.inspect(r))
+    T.eq(vim.fn.filereadable(root .. "/Proj/new.txt"), 1)
+  end
+end)
+
+if WIN then
+  T.test("fs: on Windows a path in other case still finds its buffers", function()
+    local root = tmpdir()
+    vim.cmd.edit(root .. "/src/a.txt")
+    vim.cmd.enew()
+    T.eq(run({ op = "delete", root = root, paths = { root .. "/SRC/A.TXT" } }).ok, true)
+    T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 0)
+    T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
+  end)
+end

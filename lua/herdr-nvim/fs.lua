@@ -39,7 +39,14 @@ local function case_only(from, to)
     and a ~= nil and b ~= nil and a.dev == b.dev and a.ino == b.ino
 end
 
+-- A path as compared: Windows names ignore case. A macOS or Linux volume
+-- may not, so there a name is only ever its own.
+local function key(path)
+  return WIN and vim.fn.tolower(path) or path
+end
+
 local function under(path, dir)
+  path, dir = key(path), key(dir)
   return path == dir or vim.startswith(path, slash(dir))
 end
 
@@ -94,7 +101,7 @@ end
 -- The buffer named exactly `path`, if any.
 local function buffer_named(path)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if norm(vim.api.nvim_buf_get_name(buf)) == path then return buf end
+    if key(norm(vim.api.nvim_buf_get_name(buf))) == key(path) then return buf end
   end
 end
 
