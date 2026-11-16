@@ -211,6 +211,8 @@ impl Serialize for DaemonInfo {
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
             stale: bool,
+            /// The runtime it runs (`""`: one from before stamps).
+            stamp: Option<&'a str>,
             error: Option<&'a str>,
         }
         let tab = self.tab.as_ref();
@@ -227,6 +229,7 @@ impl Serialize for DaemonInfo {
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
             stale: self.stale,
+            stamp: self.answered().map(|probe| probe.stamp.as_str()),
             error: self.error(),
         }
         .serialize(serializer)

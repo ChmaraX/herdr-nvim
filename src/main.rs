@@ -11,6 +11,7 @@ mod gitscan;
 mod herdr;
 mod home;
 mod host;
+mod install;
 mod layout;
 mod maneuver;
 mod nvim_check;
@@ -100,7 +101,9 @@ fn main() {
         ("app-current", true) => run(app::tree::current_cmd),
         ("app-reveal", true) => run(app::tree::reveal_cmd),
         ("app-preview", true) => run(app::sidebar::preview_cmd),
-        // The install script runs these before the wrapper exists.
+        // The installer: the bootstraps and a checkout's build run it.
+        ("app-install", _) => run(install::app_install_cmd),
+        // The installer runs these before the mods are in place.
         ("app-setup", _) => run(app::setup::setup_cmd),
         ("app-config", _) => run(app::settings::app_config_cmd),
         ("app-nvim-check", _) => run(nvim_check::check_cmd),
@@ -118,7 +121,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-mermaid>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-install|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-mermaid>"
             );
             2
         }

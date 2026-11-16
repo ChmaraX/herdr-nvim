@@ -11,6 +11,7 @@ pub(crate) mod commands;
 mod doc;
 pub(crate) mod env;
 mod host;
+pub(crate) mod launch_record;
 mod layout_patch;
 pub(crate) mod mermaid;
 mod node;

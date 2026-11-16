@@ -259,10 +259,16 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// herdr-nvim's keys, built in, so an uninstall needs no source tree.
+const KEYS: &str = include_str!("../../herdr-app/keys.json");
+
+/// `--keys <keys.json>` (a checkout's, for tests), else the built-in ones.
 fn keys_file(args: &[String]) -> Result<Value> {
-    let path = cli::flag(args, "--keys")?.context("--keys <keys.json> is required")?;
-    serde_json::from_str(&fs::read_to_string(path)?)
-        .with_context(|| format!("{path}: invalid JSON"))
+    match cli::flag(args, "--keys")? {
+        Some(path) => serde_json::from_str(&fs::read_to_string(path)?)
+            .with_context(|| format!("{path}: invalid JSON")),
+        None => Ok(serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON")),
+    }
 }
 
 /// `--panel-width N` (logical px), else herdr-nvim's default.

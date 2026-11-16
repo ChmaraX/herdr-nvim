@@ -11,8 +11,8 @@
 #
 # App: downloads the release's app bundle for this machine (the herdr-nvim
 # binary, its Lua, the two mods; no clone, no Rust toolchain), checks it
-# against the release's SHA-256, and runs the bundle's herdr-app/install.sh
-# with the app open. Options after `--` go to that script (--panel-width PX,
+# against the release's SHA-256, and runs its `herdr-nvim app-install` with
+# the app open. Options after `--` go to that installer (--panel-width PX,
 # --tree native|nvim, --home DIR, --app-bin PATH, --force). --version picks a
 # release (default: the latest), --bundle a bundle file instead of a download.
 # Without Neovim 0.10+ it asks to install it (Homebrew's, else Neovim's own
@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# What is left ("$@") goes to herdr-app/install.sh.
+# What is left ("$@") goes to `herdr-nvim app-install`.
 
 # The Herdr app: herdr-app on PATH, a Herdr bundle (macOS, by its bundle id),
 # or an app home (Linux, or a launch that never put it on PATH).
@@ -105,7 +105,12 @@ install_app() {
   rc=0
   "$dir/bin/herdr-nvim" >/dev/null 2>&1 || rc=$?
   [ "$rc" -eq 2 ] || die "the prebuilt herdr-nvim does not run on this machine (exit $rc); build from source (README: From source)"
-  bash "$dir/herdr-app/install.sh" --binary "$dir/bin/herdr-nvim" ${uninstall:+--uninstall} ${install_nvim:+--install-nvim} "$@"
+  if [ -x "$dir/bin/herdr-nvim-launch" ]; then
+    "$dir/bin/herdr-nvim" app-install ${uninstall:+--uninstall} ${install_nvim:+--install-nvim} "$@"
+  else
+    # A release from before `app-install` (--version): its own installer.
+    bash "$dir/herdr-app/install.sh" --binary "$dir/bin/herdr-nvim" ${uninstall:+--uninstall} ${install_nvim:+--install-nvim} "$@"
+  fi
 }
 
 install_tui() {

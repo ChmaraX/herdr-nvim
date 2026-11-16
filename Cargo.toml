@@ -9,6 +9,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 toml_edit = "0.22"
 anyhow = "1"
+# The installer's runtime stamp (`install::runtime`).
+sha2 = "0.11"
 crossterm = "0.28"
 # fff-search backend for the picker's fuzzy fallback tier. Users install
 # prebuilt release binaries, so the extra dependency weight is a CI/build
