@@ -1,0 +1,9 @@
+{
+  "global": {
+    "cmd-o": "palette.open",
+    "cmd-k": "terminal.clear"
+  },
+  "terminal": {
+    "ctrl-l": "terminal.clear"
+  }
+}
