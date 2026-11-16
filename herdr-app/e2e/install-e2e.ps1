@@ -638,14 +638,25 @@ function Step-Upgrade {
 
     Close-Holder $watcher
     Close-FakeDaemon $daemon
+    # The person binds a key after ours: an install that took ours out and
+    # put them back would move them after it.
+    $keysFile = Get-KeysFile $Main
+    $installedKeys = Get-ByteContent $keysFile
+    $person = Get-Content -Raw -LiteralPath $keysFile | ConvertFrom-Json
+    $person.global | Add-Member -NotePropertyName 'cmd-j' -NotePropertyValue 'terminal.clear'
+    Write-Utf8 $keysFile (($person | ConvertTo-Json -Depth 8) + "`n")
+    $keys = Get-ByteContent $keysFile
     $result = Invoke-Bootstrap $BundleB
     Assert-Installed $result 'B again, A released'
+    Assert-That ($result.Out -notmatch 'keys: (added|removed)') 'the same install again adds and removes no key' $result.Out
     Assert-That (-not (Test-Path -LiteralPath $RecordA.runtime)) "A's runtime is pruned once nothing holds it"
     $store = @(Get-EntryName (Get-Store $Main))
     Assert-That (($store -join ',') -eq $StampB) 'the runtime store holds B alone' ($store -join ',')
-    Assert-That (Test-SameContent (Get-ByteContent (Get-KeysFile $Main)) $keys) 'keys.json is byte-identical to after the first B install'
+    Assert-That (Test-SameContent (Get-ByteContent (Get-KeysFile $Main)) $keys) 'keys.json is byte-identical (the person''s key after ours stays after ours)'
     Assert-That (Test-SameContent (Get-ByteContent (Get-LayoutFile $Main)) $layout) 'the layout is byte-identical to after the first B install'
     Save-Snapshot '04b-upgrade-released' $Main
+    # The person's extra key goes again, so step 6 can compare with before.
+    [IO.File]::WriteAllBytes($keysFile, $installedKeys)
 }
 
 # What main's bash installer left (1bc902b herdr-app/install.sh), or on

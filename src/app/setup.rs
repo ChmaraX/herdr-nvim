@@ -288,15 +288,17 @@ impl OurKeys {
         &self.0[std::env::consts::OS]
     }
 
-    /// The other OSes' sets: an install takes them out where they still have
-    /// our action (a Windows install that once got the `cmd-*` keys).
-    fn elsewhere(&self) -> impl Iterator<Item = &Value> {
-        self.0
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter(|(os, _)| *os != std::env::consts::OS)
-            .map(|(_, set)| set)
+    /// What an older install on this OS bound that this one doesn't: on
+    /// Windows the `cmd-*` set (the Git Bash era merged the macOS keys
+    /// there). Taken out where it still has our action. Elsewhere nothing:
+    /// no install there ever wrote another set, so a binding of our action
+    /// to another key is the person's own.
+    fn left_by_older_installs(&self) -> Vec<&Value> {
+        if cfg!(windows) {
+            vec![&self.0["macos"]]
+        } else {
+            Vec::new()
+        }
     }
 
     fn every(&self) -> impl Iterator<Item = &Value> {
@@ -374,7 +376,7 @@ pub fn setup_cmd() -> Result<()> {
             let (mut report, mut dropped) = ((Vec::new(), Vec::new()), Vec::new());
             edit_json(&keys, &mut |value| {
                 dropped = drop_retired(value);
-                for other in ours.elsewhere() {
+                for other in ours.left_by_older_installs() {
                     dropped.extend(unmerge_keys(value, other));
                 }
                 report = merge_keys(value, ours.here());
