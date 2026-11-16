@@ -150,7 +150,7 @@ The next toggle in that tab starts a fresh nvim.
 The repo-wide tier is served by [fff-search](https://crates.io/crates/fff-search)
 (fff.nvim's core matcher): multi-term queries (`cargo toml`), typo
 tolerance, and frecency ranking. If a fff.nvim frecency database exists at
-`~/.cache/nvim/fff_nvim`, the picker reuses it read-only (it copies the DB
+`stdpath("cache")/fff_nvim` (`~/.cache/nvim/fff_nvim`; `%TEMP%\nvim\fff_nvim` on Windows), the picker reuses it read-only (it copies the DB
 to a temp dir and opens the copy; your database is never opened, locked, or
 written) so files you actually open often rank higher. Set `frecency =
 false` to skip the DB reuse. The agent-touched session tier always ranks
@@ -244,7 +244,7 @@ position = "right"    # right (default), left, top, or bottom
 scan_lines = 300    # pane lines scanned by the fallback text-scrape
 max_files = 20      # session entries shown before you type a query
                     # (a typed query fuzzy-searches the whole repo, uncapped)
-frecency = true     # let fff reuse ~/.cache/nvim/fff_nvim (read-only copy)
+frecency = true     # let fff reuse stdpath("cache")/fff_nvim (read-only copy)
 ```
 
 If your normal nvim config lives under a custom `NVIM_APPNAME` (any name you

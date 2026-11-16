@@ -40,12 +40,13 @@ https://github.com/user-attachments/assets/328ab066-29f3-4c39-84c4-30b98449e55e
 
 ## Requirements
 
-The Herdr app 0.1.11+ on macOS or Linux, and nvim ≥ 0.10. Without nvim the
-installer offers to install it (Homebrew's, else Neovim's own release into
-`~/.local/share/herdr-nvim/nvim`, no sudo).
+The Herdr app 0.1.11+ on macOS, Linux or Windows (x64, Windows 10 1803 or
+later), and nvim ≥ 0.10. Without nvim the installer offers to install it
+(Homebrew's, else Neovim's own release into `~/.local/share/herdr-nvim/nvim`,
+no sudo or admin). Windows is checked in CI against a stand-in app; a run
+with the real app is still to come (`herdr-app/e2e/WINDOWS-CHECKLIST.md`).
 
-On Windows, the herdr TUI plugin works; see
-[TUI.md › Install](TUI.md#install).
+The herdr TUI plugin works on all three; see [TUI.md › Install](TUI.md#install).
 
 ## Install
 
@@ -56,9 +57,18 @@ at github.com/ChmaraX/herdr-nvim*, or run:
 curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
 ```
 
+On Windows, in PowerShell (5.1 or 7; no Git Bash, no admin):
+
+```powershell
+irm https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.ps1 | iex
+```
+
 It downloads the prebuilt binary (no clone, no Rust), adds the mods and the
 keys (never one you already use), and points **Files** at the tree. Run it
-again to upgrade; `--install-nvim` says yes to installing Neovim up front.
+again to upgrade; `--install-nvim` (`-InstallNvim`) says yes to installing
+Neovim up front. With options on Windows:
+`& ([scriptblock]::Create((irm …/install.ps1))) -App -InstallNvim`
+(`-Uninstall`, `-PanelWidth 340`, `-Tree nvim`).
 
 Options go after `--`:
 
@@ -71,9 +81,9 @@ curl -fsSL …/install.sh | sh -s -- --app --uninstall           # back to the s
 
 | Key | Does |
 | --- | --- |
-| `cmd-e` / Files | open or close the tree with the tab's nvim |
-| `cmd-shift-e` | the keyboard to the tree, on nvim's file |
-| `cmd-o` | a file the agent worked on, opened in nvim |
+| `cmd-e` / Files (Windows: `ctrl-shift-e`) | open or close the tree with the tab's nvim |
+| `cmd-shift-e` (Windows: `ctrl-alt-shift-e`) | the keyboard to the tree, on nvim's file |
+| `cmd-o` (Windows: `ctrl-shift-y`) | a file the agent worked on, opened in nvim |
 | `<leader>e` (in nvim or the tree) | show or hide the tree, nvim staying open |
 
 The first nvim pane shows a welcome with these keys, once
@@ -193,7 +203,7 @@ LazyVim's `<leader>E`, `<leader>fe` and `<leader>fE` show the tree too.
 From a clone (building herdr-nvim with cargo), with the app open:
 
 ```sh
-herdr-app/install.sh              # install, or upgrade in place
+herdr-app/install.sh              # cargo build --release, then its app-install (any OS: target/release/herdr-nvim app-install)
 herdr-app/install.sh --uninstall  # take it out
 just ci                           # cargo fmt + cargo test + headless Lua suite
 node herdr-app/e2e/js-checks.mjs  # the mods' logic
@@ -201,7 +211,11 @@ herdr-app/e2e/run.sh              # the main flows in a private app (--bundle: t
 ```
 
 A release ships an app bundle per platform (`herdr-app/bundle.sh`: the
-binary, its Lua and the mods), which the root `install.sh` downloads.
+binary, the mod's launcher, its Lua and the mods), which the root
+`install.sh` (`install.ps1` on Windows) downloads and runs
+`bin/herdr-nvim app-install` from. `pwsh herdr-app/e2e/install-e2e.ps1`
+checks install, upgrade, migration and uninstall against a stand-in app on
+every OS (CI runs it on all three).
 
 How it's built and how it behaves in detail: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 Other mods open a file in a tab's nvim with

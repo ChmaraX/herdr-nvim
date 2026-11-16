@@ -21,7 +21,7 @@ $out = "$env:USERPROFILE\winprobe-proof"; New-Item -ItemType Directory -Force $o
 ## 1. The probe
 
 1. Get `winprobe.exe`: the `winprobe` artifact of the windows-latest CI run for
-   `<ref>` (TODO(lead): artifact name), or build it with
+   `<ref>` (named `winprobe-windows`), or build it with
    `cargo build --release --example winprobe` (`target\release\examples\winprobe.exe`).
 2. Install the probe mod. Keep its exe outside Downloads first, so step 2's
    Mark-of-the-Web check isn't confused:
@@ -113,9 +113,11 @@ screenshots of both.
 ## 6. Upgrade while nvim runs
 
 With nvim open on an edited buffer, install a newer bundle the same way as
-step 2.3 (TODO(lead): the `-Version` or `-Bundle` value to use). Check: the
+step 2.3, with `-Bundle <the herdr-nvim-app-x86_64-pc-windows-msvc.tar.gz of a
+newer build>` (the `install-e2e` artifact of a later CI run has one), or
+`-Version <a newer tag>` once one is published. Check: the
 open nvim still edits and saves; the runtime store
-(TODO(lead): path, e.g. `$env:USERPROFILE\.local\share\herdr-nvim\app`) keeps
+(`$env:USERPROFILE\.local\share\herdr-nvim\app`, one folder per stamp) keeps
 the old runtime while that nvim runs, and the next install after closing it
 prunes it. Keep `Get-ChildItem` of the store before, during and after, and
 the install output.

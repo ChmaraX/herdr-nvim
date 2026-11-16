@@ -1,27 +1,39 @@
 # herdr-nvim
 
-Neovim beside your agents. The Files button (or `cmd-e`) opens a file tree of
-the tab's repo with the tab's own nvim next to it, and a file you pick opens
-there. `cmd-o` lists the files the agent just read and edited, and comments
-you write in nvim go to the agent with their `file:line`.
+Neovim beside your agents. The Files button (or `cmd-e`; `ctrl-shift-e` on
+Windows) opens a file tree of the tab's repo with the tab's own nvim next to
+it, and a file you pick opens there. `cmd-o` (`ctrl-shift-y` on Windows)
+lists the files the agent just read and edited, and comments you write in
+nvim go to the agent with their `file:line`.
 
 ![herdr-nvim](preview.png)
 
 ## Adding it (for the app's agent)
 
 Don't copy the folders: herdr-nvim needs its binary, and it edits the
-person's layout, which copying doesn't do. With the app open, run its
-installer:
+person's layout, which copying doesn't do. With the app open, run the
+installer for this OS:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
-```
+- macOS, Linux:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.sh | sh -s -- --app
+  ```
+
+- Windows (x64; one line that works from cmd, PowerShell or bash, no Git Bash
+  or admin needed; add `-InstallNvim`, `-Uninstall` after `-App`):
+
+  ```sh
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ChmaraX/herdr-nvim/main/install.ps1))) -App"
+  ```
+
+  Windows support is checked in CI only so far (a stand-in app); say so.
 
 Tell the person first what it does:
 
 - downloads the prebuilt `herdr-nvim` for this machine from the GitHub
   release, checked against its SHA-256, into `~/.local/share/herdr-nvim/app`
-  (macOS and Linux);
+  (on Windows too, under the user's profile);
 - runs programs (an nvim per tab, `hc`, `git`) and reads the tab's repo and
   the agent's session logs; the mod itself uses no network;
 - adds two mods (`herdr-nvim`, `herdr-nvim-header`), adds its keys where they
@@ -30,8 +42,10 @@ Tell the person first what it does:
 
 It needs Neovim 0.10+. Without it the installer asks to install it
 (Homebrew's, else Neovim's own release into `~/.local/share/herdr-nvim/nvim`,
-no sudo); add `--install-nvim` once the person has said yes. Running the
-installer again upgrades; `--uninstall` takes all of it out.
+no sudo or admin); with no one to ask (your shell) it stops and says so: add
+`--install-nvim` (`-InstallNvim`) once the person has said yes. Running the
+installer again upgrades; `--uninstall` (`-Uninstall`) takes all of it out
+and keeps the Neovim it downloaded (it says where).
 
 ## What you see
 
@@ -160,9 +174,20 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
 
 ## Built from
 
+- **The install** is the binary itself: `herdr-nvim app-install
+  [--uninstall]` (`src/install/`), which the bootstraps `install.sh` and
+  `install.ps1` run from the release bundle they downloaded. It puts the
+  runtime (binary, Lua) in `~/.local/share/herdr-nvim/app/<stamp>/`, one
+  folder per version so running nvims keep theirs, and the mods in
+  generations: `mods/<mod>/main.js` points at `gen/<id>/main.js`, and an
+  upgrade adds a generation and replaces `main.js`, so the live folder is
+  never renamed.
 - **The `herdr-nvim` binary** (Rust and Lua, in this repo; the same one the
-  herdr TUI plugin uses), run through the wrapper `mods/herdr-nvim/bin/herdr-nvim`,
-  which sets `HERDR_NVIM_HOST=app`. It makes every nvim and every pane: one
+  herdr TUI plugin uses), run through the mod's launcher
+  `mods/herdr-nvim/bin/herdr-nvim` (`.exe` on Windows), a small compiled
+  program that reads `mods/herdr-nvim/install.json` and runs that runtime
+  with `--app-home <home> --app-bin <herdr-app>` in front of its arguments
+  (no shell in between). It makes every nvim and every pane: one
   headless nvim per tab, shown in the pane with `nvim --remote-ui`. A rebuild
   reuses it; its commands are the mods' whole interface:
   - `toggle --state open|close [--preview F]`: opens or closes the tab's nvim
@@ -179,13 +204,13 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   - each takes `--ctx` (the focused space, tab, terminal), exits 3 with
     `{"nvim_missing": …}` when there's no usable Neovim, and ends within 30 s.
 - **Mod `herdr-nvim`** (`place: none`, focusable), by where it is shown:
-  - the layout's `files` slot: the tree (`tree-view.js`; listing by `sh`,
+  - the layout's `files` slot: the tree (`tree-view.js`; listing by `herdr-nvim app-list`,
     marks from `git status --porcelain -z`, `watchFolder`);
   - a floating 0×0 block (`role: "sync"`), always rendered: the controller
     (`sync.js`) that keeps the panel and each tab's nvim pane together, and
     takes the commands `herdr-nvim.pick`, `.reveal`, `.toggle`,
     `.swap:<tab>:<file>`, `.files`, `.welcome` and `.uninstall`;
-  - an overlay (`mod.open:herdr-nvim`, `cmd-e`): presses the Files button,
+  - an overlay (`mod.open:herdr-nvim`, `cmd-e` / `ctrl-shift-e`): presses the Files button,
     then closes;
   - props `{preview}`: the preview pane; `{bar}`: the picker's title bar;
     `{card}` and `{dialog}`: the cards and the tree's prompts.
@@ -209,10 +234,12 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   screen first.
 - **Mod `herdr-nvim-header`**: the app's shipped pane header (`pane-base.js`,
   copied from `mods/pane/main.js` at install) plus the Preview/Source button.
-- **Keys** (`keys.json`, merged into `global` only where free): `cmd-e` →
-  `mod.open:herdr-nvim`, `cmd-o` → `herdr-nvim.pick`, `cmd-shift-e` →
-  `herdr-nvim.reveal`. An install or uninstall also removes keys bound to
-  actions herdr-nvim no longer has (`setup.rs` `RETIRED`).
+- **Keys** (`keys.json`, one set per OS, merged into `global` only where
+  free): `mod.open:herdr-nvim` on `cmd-e` (Windows `ctrl-shift-e`),
+  `herdr-nvim.pick` on `cmd-o` (`ctrl-shift-y`), `herdr-nvim.reveal` on
+  `cmd-shift-e` (`ctrl-alt-shift-e`). An install takes out another OS's set
+  where it still has our action, and keys bound to actions herdr-nvim no
+  longer has (`setup.rs` `RETIRED`); uninstall takes out every set.
 
 ### Layout footprint
 
