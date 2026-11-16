@@ -46,7 +46,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Entry point for the `pick-file` subcommand. Dispatches to the finisher when
 /// invoked as `pick-file --finish <handoff>`, otherwise runs the action phase.
 pub fn pick_file_cmd() -> Result<()> {
-    match finish_handoff_path(env::args()) {
+    match finish_handoff_path(crate::argv::args()) {
         Some(handoff) => finish_pick(&handoff),
         None => start_pick(),
     }
@@ -128,7 +128,7 @@ fn start_pick() -> Result<()> {
         path.is_file()
     });
 
-    if env::args().any(|arg| arg == "--list") {
+    if crate::argv::args().any(|arg| arg == "--list") {
         let session = snapshot.agent_session.map(|s| s.value);
         println!(
             "{}",

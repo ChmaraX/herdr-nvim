@@ -136,12 +136,12 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Opened> {
             .with_context(|| format!("tab {} is not in the app's layout", raw_tab(&ctx.tab)))?,
     };
     // `tree = "nvim"` opens nvim's own explorer with it (`sidebar_ready`).
-    let argv = vec![
-        cli::self_command()?.to_string_lossy().into_owned(),
+    let mut argv = super::env::self_argv()?;
+    argv.extend([
         "sidebar".to_owned(),
         "--cwd".to_owned(),
         folder.to_string_lossy().into_owned(),
-    ];
+    ]);
     // In a preview's place: across, so nvim takes the preview's exact slot
     // (`swap_direction`); else beside the whole tab.
     let split = match preview {
@@ -374,7 +374,7 @@ pub(crate) fn want_from_args(args: &[String]) -> Result<Want> {
 /// tab is gone are stopped by the watcher (`app-watch`), not here: a click
 /// never waits on them.
 pub fn toggle_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let want = want_from_args(&args)?;
     let ctx = ctx(&cli::read_ctx(&args)?)?;
     let remembered = cli::flag(&args, "--preview")?
@@ -424,7 +424,7 @@ pub fn toggle_cmd() -> Result<()> {
 /// `herdr-nvim app-preview --file <path> --ctx JSON` (the controller's
 /// Preview): the file rendered where the tab's nvim shows (`open_preview`).
 pub fn preview_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let file = cli::flag(&args, "--file")?
         .context("usage: herdr-nvim app-preview --file <path> --ctx JSON")?;
     let ctx = ctx(&cli::read_ctx(&args)?)?;
@@ -444,7 +444,7 @@ pub(crate) fn identity() -> Result<(TabId, String, PathBuf)> {
     let facts = host::terminal(&me)?;
     let tab = host::tab_of(&facts).context("this terminal is in no Herdr app tab")?;
     label(&me, raw_tab(&tab))?;
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = crate::argv::args().collect();
     let cwd = cli::flag(&args, "--cwd")?
         .map(PathBuf::from)
         .or_else(|| host::cwd_of(&facts))

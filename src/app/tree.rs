@@ -25,7 +25,7 @@ const NVIM_WAIT: Duration = Duration::from_secs(10);
 
 /// `herdr-nvim fs '<request>' --ctx <tab>`.
 pub fn fs_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let request = args
         .first()
         .context("usage: herdr-nvim fs '<request JSON>' --ctx <tab>")?;
@@ -60,7 +60,7 @@ pub fn fs_cmd() -> Result<()> {
 /// `herdr-nvim app-find --root <dir> --query <text>`: up to 100 paths relative
 /// to `root`, best first.
 pub fn find_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let root = cli::flag(&args, "--root")?.context("--root is required")?;
     let query = cli::flag(&args, "--query")?.unwrap_or_default();
     let index = crate::fff::FffIndex::open(root, config::load().picker.frecency)
@@ -82,7 +82,7 @@ pub fn find_cmd() -> Result<()> {
 
 /// `herdr-nvim app-current --ctx <tab>`.
 pub fn current_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let ctx = sidebar::ctx(&cli::read_ctx(&args)?)?;
     let mut watch = state::current_file_path(&ctx.tab);
     if let Some(dir) = watch.parent() {
@@ -148,7 +148,7 @@ pub fn current_cmd() -> Result<()> {
 /// needed and gives the tree the keyboard on the current file. With
 /// `--toggle`, a tree already showing is hidden instead and nvim stays.
 pub fn reveal_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let tab = env::var("HERDR_TAB_ID").context("app-reveal runs inside a herdr-nvim nvim")?;
     cli::app_do(&reveal_command(&args, raw_tab(&tab)), &json!({}))?;
     Ok(())

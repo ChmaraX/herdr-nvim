@@ -33,7 +33,7 @@ impl HostOps for App {
 
     /// The mod passes the focused tab as `--ctx JSON`.
     fn ctx(&self) -> Result<Ctx> {
-        let args: Vec<String> = std::env::args().skip(2).collect();
+        let args: Vec<String> = crate::argv::args().skip(2).collect();
         super::sidebar::ctx(&super::cli::read_ctx(&args)?)
     }
 

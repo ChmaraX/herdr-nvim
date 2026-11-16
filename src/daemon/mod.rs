@@ -239,8 +239,8 @@ fn spawn_daemon(
 
 /// The app host's daemon outlives the terminal that started it, so it must
 /// not keep that terminal's identity (`hc` would treat the daemon's sends as
-/// the terminal's), and its Lua calls this binary back through the wrapper
-/// (`HERDR_NVIM_SELF`, see `herdr-nvim.agents`/`dispatch`).
+/// the terminal's), and its Lua calls this binary back (`HERDR_NVIM_SELF`,
+/// see `herdr-nvim.agents`/`dispatch`) with the app context it inherits.
 ///
 /// It also names its window: the app's pane header shows the terminal title,
 /// which nvim sets from `titlestring` (a user config may still change it).

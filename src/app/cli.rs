@@ -1,9 +1,8 @@
-//! Talking to the Herdr app window (`herdr-app do`/`status`), finding our own
-//! wrapper, and reading the invocation context a mod passes.
+//! Talking to the Herdr app window (`herdr-app do`/`status`), and reading the
+//! invocation context a mod passes.
 
 use std::{
     env,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -51,16 +50,6 @@ pub(crate) fn app_status() -> Result<Value> {
         bail!("herdr-app status failed: is the Herdr app open?");
     }
     serde_json::from_slice(&output.stdout).context("herdr-app status: bad JSON")
-}
-
-/// The command that runs this binary with the app host's environment: the
-/// `herdr-app/bin/herdr-nvim` wrapper exports `HERDR_NVIM_SELF`. Terminals the
-/// app starts get the core's environment, not ours, so they must go through it.
-pub(crate) fn self_command() -> Result<PathBuf> {
-    match env::var_os("HERDR_NVIM_SELF") {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => env::current_exe().context("cannot resolve the herdr-nvim binary"),
-    }
 }
 
 /// Where a command was invoked: the focused space, tab and terminal, as the

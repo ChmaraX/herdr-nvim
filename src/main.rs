@@ -1,4 +1,5 @@
 mod app;
+mod argv;
 mod bridge;
 mod candidates;
 mod config;
@@ -54,8 +55,21 @@ fn main() {
     // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
     // Must happen before anything spawns a child or a thread.
     path::augment_path();
+    // The app's launcher and terminals pass the app context in argv; from
+    // here on it is env, for this process and its children. Before any
+    // thread too.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    match app::env::AppEnv::take_prefix(&mut args) {
+        Ok(Some(app)) => app.export(),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("herdr-nvim: {e:#}");
+            std::process::exit(2);
+        }
+    }
+    argv::init(args);
 
-    let mode = std::env::args().nth(1).unwrap_or_default();
+    let mode = argv::args().nth(1).unwrap_or_default();
     // The one place that asks which Herdr this is (`host`).
     let host = host::choose();
     let app = host == host::Host::App;

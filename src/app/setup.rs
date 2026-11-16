@@ -16,7 +16,7 @@
 //!   reported (AGENTS.md: ask before replacing one).
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -27,13 +27,6 @@ use super::{
     cli,
     layout_patch::{self, DEFAULT_PANEL_PX},
 };
-
-fn home() -> PathBuf {
-    env::var_os("HERDR_APP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| crate::home::home_dir().map(|home| home.join(".config/herdr-app")))
-        .unwrap_or_else(|| PathBuf::from(".config/herdr-app"))
-}
 
 /// Herdr's own layouts (`installed.json` lists them as `layout:<name>`).
 fn shipped(home: &Path, name: &str) -> bool {
@@ -284,8 +277,8 @@ fn panel_width(args: &[String]) -> Result<u32> {
 }
 
 pub fn setup_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
-    let home = home();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
+    let home = super::env::home_from_env();
     let ours = keys_file(&args)?;
     let keys = home.join("keys.json");
     if !keys.exists() {

@@ -23,7 +23,7 @@ use crate::config::{self, TreeMode};
 /// `herdr-nvim app-config nvim-bin <path>` sets `[sidebar] nvim_bin` (the
 /// Neovim install, `install-nvim.sh`).
 pub fn app_config_cmd() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let value = || args.get(1).map(String::as_str).unwrap_or_default();
     match args.first().map(String::as_str) {
         None => {}

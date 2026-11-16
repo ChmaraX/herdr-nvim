@@ -9,7 +9,7 @@
 //! through `herdr api snapshot`, and measured with one OS process-table
 //! snapshot. Stopping goes through the shared `registry::stop_probed`.
 
-use std::{env, thread};
+use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde::{Serialize, Serializer};
@@ -398,7 +398,7 @@ pub(crate) fn stop(
 }
 
 pub fn daemons_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let command = parse_args(&args)?;
     let sidebar = crate::config::load().sidebar;
     let mut herdr = crate::host::ops().herdr();

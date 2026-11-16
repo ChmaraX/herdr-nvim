@@ -36,7 +36,7 @@ use crate::{
 const WORKSPACE_LABEL: &str = "herdr-nvim-doctor";
 
 pub fn doctor_cmd() -> Result<()> {
-    let with_agent = parse_with_agent(env::args());
+    let with_agent = parse_with_agent(crate::argv::args());
     let config = crate::config::load();
 
     // The user's real daemons, listed before the runtime dir is redirected
