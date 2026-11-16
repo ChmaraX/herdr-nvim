@@ -76,8 +76,9 @@ pub(crate) fn dirty_notice(look: &Probe) -> String {
     format!(
         "This tab's nvim still runs the herdr-nvim from before the last install, and it has {}, \
          so it was kept. Save (:wa) and send or clear the comments, then close and reopen nvim \
-         (cmd-e twice) to update it.",
-        work.join(" and ")
+         ({} twice) to update it.",
+        work.join(" and "),
+        super::setup::files_key()
     )
 }
 
@@ -162,7 +163,8 @@ pub(crate) fn report_after_install() {
             .join(", ")
     );
     println!(
-        "nvim: each restarts on the new one the next time its pair opens (cmd-e or Files, twice){}",
+        "nvim: each restarts on the new one the next time its pair opens ({} or Files, twice){}",
+        super::setup::files_key(),
         if dirty > 0 {
             format!("; {dirty} with unsaved work stay(s) until saved")
         } else {

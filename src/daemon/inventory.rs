@@ -552,10 +552,11 @@ fn hints(daemons: &[DaemonInfo]) -> String {
          stop all: herdr-nvim daemons stop --all\n"
     );
     if daemons.iter().any(|daemon| daemon.stale) {
-        out.push_str(
-            "stale:    runs an older herdr-nvim; reopening its pane (Files or cmd-e, twice) \
+        out.push_str(&format!(
+            "stale:    runs an older herdr-nvim; reopening its pane (Files or {}, twice) \
              restarts it unless it has unsaved work\n",
-        );
+            crate::app::setup::files_key()
+        ));
     }
     if daemons.iter().any(DaemonInfo::tab_gone) {
         out.push_str("orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)\n");

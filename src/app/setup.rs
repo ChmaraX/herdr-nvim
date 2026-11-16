@@ -262,13 +262,63 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
 /// herdr-nvim's keys, built in, so an uninstall needs no source tree.
 const KEYS: &str = include_str!("../../herdr-app/keys.json");
 
-/// `--keys <keys.json>` (a checkout's, for tests), else the built-in ones.
-fn keys_file(args: &[String]) -> Result<Value> {
-    match cli::flag(args, "--keys")? {
-        Some(path) => serde_json::from_str(&fs::read_to_string(path)?)
-            .with_context(|| format!("{path}: invalid JSON")),
-        None => Ok(serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON")),
+/// herdr-nvim's keys for each OS (`herdr-app/keys.json`: `{"macos": …,
+/// "linux": …, "windows": …}`), each in the shape of the person's keys.json.
+/// Windows has its own: `cmd-` there is the Windows key, and Win+E is
+/// Explorer's.
+struct OurKeys(Value);
+
+impl OurKeys {
+    /// `--keys <keys.json>` (a checkout's, for tests), else the built-in ones.
+    fn load(args: &[String]) -> Result<Self> {
+        let value = match cli::flag(args, "--keys")? {
+            Some(path) => serde_json::from_str(&fs::read_to_string(path)?)
+                .with_context(|| format!("{path}: invalid JSON"))?,
+            None => serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON"),
+        };
+        Ok(Self(value))
     }
+
+    fn built_in() -> Self {
+        Self(serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON"))
+    }
+
+    /// This OS's set.
+    fn here(&self) -> &Value {
+        &self.0[std::env::consts::OS]
+    }
+
+    /// The other OSes' sets: an install takes them out where they still have
+    /// our action (a Windows install that once got the `cmd-*` keys).
+    fn elsewhere(&self) -> impl Iterator<Item = &Value> {
+        self.0
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(os, _)| *os != std::env::consts::OS)
+            .map(|(_, set)| set)
+    }
+
+    fn every(&self) -> impl Iterator<Item = &Value> {
+        self.0.as_object().into_iter().flatten().map(|(_, set)| set)
+    }
+}
+
+/// The key this OS's set binds to `action`, for messages ("press …").
+pub(crate) fn key_for(action: &str) -> String {
+    OurKeys::built_in()
+        .here()
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, bindings)| bindings.as_object().into_iter().flatten())
+        .find(|(_, bound)| bound.as_str() == Some(action))
+        .map_or_else(|| action.to_owned(), |(key, _)| key.clone())
+}
+
+/// The key that opens Files with nvim (`cmd-e`, `ctrl-shift-e` on Windows).
+pub(crate) fn files_key() -> String {
+    key_for("mod.open:herdr-nvim")
 }
 
 /// `--panel-width N` (logical px), else herdr-nvim's default.
@@ -285,7 +335,7 @@ fn panel_width(args: &[String]) -> Result<u32> {
 pub fn setup_cmd() -> Result<()> {
     let args: Vec<String> = crate::argv::args().skip(2).collect();
     let home = super::env::home_from_env();
-    let ours = keys_file(&args)?;
+    let ours = OurKeys::load(&args)?;
     let keys = home.join("keys.json");
     if !keys.exists() {
         fs::write(&keys, "{}\n")?;
@@ -300,7 +350,10 @@ pub fn setup_cmd() -> Result<()> {
             let (mut report, mut dropped) = ((Vec::new(), Vec::new()), Vec::new());
             edit_json(&keys, &mut |value| {
                 dropped = drop_retired(value);
-                report = merge_keys(value, &ours);
+                for other in ours.elsewhere() {
+                    dropped.extend(unmerge_keys(value, other));
+                }
+                report = merge_keys(value, ours.here());
                 Ok(!report.0.is_empty() || !dropped.is_empty())
             })?;
             dropped
@@ -327,7 +380,9 @@ pub fn setup_cmd() -> Result<()> {
             let mut removed = Vec::new();
             edit_json(&keys, &mut |value| {
                 removed = drop_retired(value);
-                removed.extend(unmerge_keys(value, &ours));
+                for set in ours.every() {
+                    removed.extend(unmerge_keys(value, set));
+                }
                 Ok(!removed.is_empty())
             })?;
             removed
@@ -336,7 +391,7 @@ pub fn setup_cmd() -> Result<()> {
             uninstall_layouts(&home)
         }
         _ => bail!(
-            "usage: herdr-nvim app-setup check|install|uninstall --keys <keys.json> [--panel-width N]"
+            "usage: herdr-nvim app-setup check|install|uninstall [--keys <keys.json>] [--panel-width N]"
         ),
     }
 }

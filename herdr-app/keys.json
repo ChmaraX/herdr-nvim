@@ -1,7 +1,23 @@
 {
-  "global": {
-    "cmd-e": "mod.open:herdr-nvim",
-    "cmd-o": "herdr-nvim.pick",
-    "cmd-shift-e": "herdr-nvim.reveal"
+  "macos": {
+    "global": {
+      "cmd-e": "mod.open:herdr-nvim",
+      "cmd-o": "herdr-nvim.pick",
+      "cmd-shift-e": "herdr-nvim.reveal"
+    }
+  },
+  "linux": {
+    "global": {
+      "cmd-e": "mod.open:herdr-nvim",
+      "cmd-o": "herdr-nvim.pick",
+      "cmd-shift-e": "herdr-nvim.reveal"
+    }
+  },
+  "windows": {
+    "global": {
+      "ctrl-shift-e": "mod.open:herdr-nvim",
+      "ctrl-shift-y": "herdr-nvim.pick",
+      "ctrl-alt-shift-e": "herdr-nvim.reveal"
+    }
   }
 }
