@@ -70,6 +70,31 @@ assert.deepEqual(await listFolder("/r"), {
 app.exec = async () => ({ code: 1, stdout: "", stderr: "" });
 await assert.rejects(listFolder("/gone"), /Cannot list \/gone/);
 
+// The listing script itself, on a real folder: a link to a folder is a
+// folder (it opens like one), a link to a file or a broken link is a file.
+{
+  const { execFile } = await import("node:child_process");
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const root = mkdtempSync(joinPath(tmpdir(), "herdr-nvim-list-"));
+  try {
+    mkdirSync(joinPath(root, "other/src"), { recursive: true });
+    writeFileSync(joinPath(root, "other/a.txt"), "");
+    mkdirSync(joinPath(root, "app"));
+    symlinkSync("../other/src", joinPath(root, "app/src"));
+    symlinkSync("../other/a.txt", joinPath(root, "app/a.txt"));
+    symlinkSync("../other/gone", joinPath(root, "app/broken"));
+    app.exec = (cmd, args) => new Promise((done) =>
+      execFile(cmd, args, (err, stdout, stderr) => done({ code: err ? err.code ?? 1 : 0, stdout, stderr })));
+    assert.deepEqual((await listFolder(joinPath(root, "app"))).entries, [
+      { name: "src", dir: true }, { name: "a.txt", dir: false }, { name: "broken", dir: false },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // The tree model: a watch batch lists again only the folders on screen it
 // touches; a build in an ignored folder lists nothing; the same listing
 // again changes no rows.
