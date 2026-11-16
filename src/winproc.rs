@@ -28,7 +28,6 @@ use windows_sys::Win32::{
     },
 };
 
-#[allow(dead_code)] // read by the installer (design unit 3)
 pub struct Proc {
     pub pid: u32,
     pub image: PathBuf,
@@ -38,7 +37,6 @@ pub struct Proc {
 /// Toolhelp32 snapshot, then `QueryFullProcessImageNameW` on each. One that
 /// cannot be opened (another user's, a protected one) or exits during the
 /// scan is left out.
-#[allow(dead_code)] // the installer's "what holds this folder" (design unit 3)
 pub fn processes() -> io::Result<Vec<Proc>> {
     // SAFETY: plain Win32 calls; the snapshot handle is owned by `Handle`.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
