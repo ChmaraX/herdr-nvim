@@ -124,16 +124,20 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# One frame drawn now. The mods act when they draw (the controller pairs
+# the panel and nvim from what changed since its last frame), so two layout
+# changes with no frame between them reach it as one; every wait draws.
+frame() { [ -z "$app_pid" ] || H shot "$root/.frame.png" >/dev/null 2>&1 || true; }
 poll() { # poll <seconds> <command...>: until it succeeds
   local until=$((SECONDS + $1)); shift
-  until "$@" >/dev/null 2>&1; do [ $SECONDS -lt $until ] || return 1; sleep 0.2; done
+  until "$@" >/dev/null 2>&1; do [ $SECONDS -lt $until ] || return 1; frame; sleep 0.2; done
 }
 keys() { "$py" "$here/keys.py" "$app_pid" "$@"; }
 shot() { H shot "$proof/$1.png" >/dev/null && say "screenshot $1.png"; }
 # cmd_e: what cmd-e runs (keys.json), after a moment for the last action to
 # settle. Not a key press: those are lost now and then when the window isn't
 # frontmost, and a person never presses within milliseconds of the last change.
-cmd_e() { sleep 0.5; H do mod.open:herdr-nvim >/dev/null; }
+cmd_e() { sleep 0.5; frame; H do mod.open:herdr-nvim >/dev/null; }
 files_button() { # exactly what the tab bar's Files button runs (mods/tabs/main.js)
   H do layout.select '{"stack":"panel-body","child":"files"}' >/dev/null
   H do layout.show '{"id":"panel"}' >/dev/null
@@ -191,15 +195,11 @@ place_window() {
   osascript -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set position of window 1 to {40, 60}" \
     -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set size of window 1 to {1280, 820}"
 }
-# One frame drawn now. The mods act when they draw (the controller pairs
-# the panel and nvim from what changed since its last frame), so two layout
-# changes with no frame between them reach it as one.
-frame() { H shot "$root/.frame.png" >/dev/null 2>&1 || true; }
 if ! poll 15 place_window; then
   # macOS draws a window it can't see only when asked to: without Accessibility
   # (the window stays where it opened, maybe behind others) a frame is asked
   # for every FRAMES_EVERY seconds (default 0.25; a loaded Mac draws fewer:
-  # FRAMES_EVERY=1.5 reproduces that), or the mods lag.
+  # FRAMES_EVERY=0.75 stands in for that), or the mods lag.
   say "note: could not move the window (Accessibility); asking the app for frames instead"
   (while :; do frame; sleep "${FRAMES_EVERY:-0.25}"; done) &
   pump_pid=$!
