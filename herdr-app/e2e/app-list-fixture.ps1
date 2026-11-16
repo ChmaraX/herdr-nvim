@@ -47,9 +47,9 @@ try {
       }
     }
   }
-  Link 'link-dir' 'src' 'junction'
-  Link 'link-file' 'notes.md' 'hardlink'
-  Link 'broken' 'missing' 'broken'
+  Link -Name 'link-dir' -Target 'src' -Fallback 'junction'
+  Link -Name 'link-file' -Target 'notes.md' -Fallback 'hardlink'
+  Link -Name 'broken' -Target 'missing' -Fallback 'broken'
 } finally {
   Pop-Location
 }
