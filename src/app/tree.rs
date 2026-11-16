@@ -17,7 +17,7 @@ use std::{env, time::Duration};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::{config, daemon, state};
+use crate::{config, daemon, pathkey, state};
 
 use super::{cli, raw_tab, sidebar};
 
@@ -90,17 +90,14 @@ pub fn current_cmd() -> Result<()> {
         // by its real path: the paths a folder watch reports are real
         // (/private/tmp on macOS), and the mods compare them with this one.
         std::fs::create_dir_all(dir)?;
-        if let (Ok(real), Some(name)) = (std::fs::canonicalize(dir), watch.file_name()) {
-            watch = real.join(name);
+        if let Some(name) = watch.file_name() {
+            watch = pathkey::canonical(dir).join(name);
         }
     }
     // The tree works with real paths (/private/tmp on macOS, not /tmp), so
     // one tab's folder is one tree whichever of its panes had the focus.
     // Before the tab's nvim runs: where it will start.
-    let real_root = || {
-        let folder = sidebar::nvim_folder(&ctx);
-        std::fs::canonicalize(&folder).unwrap_or(folder)
-    };
+    let real_root = || pathkey::canonical(&sidebar::nvim_folder(&ctx));
     // What the tab's nvim last wrote (`app.lua` `write_state`); an nvim that
     // hasn't written yet is asked, once. A stopped nvim's file is not the
     // tab's: its folder may be one the tab no longer works in.
@@ -130,7 +127,8 @@ pub fn current_cmd() -> Result<()> {
             .get(key)
             .and_then(Value::as_str)
             .filter(|path| !path.is_empty())
-            .and_then(|path| std::fs::canonicalize(path).ok())
+            .map(|path| pathkey::canonical(std::path::Path::new(path)))
+            .filter(|path| path.exists())
     };
     let file = real("file").filter(|path| path.is_file());
     // The tab's folder for the tree: where the tab's nvim works (`:pwd`), which
