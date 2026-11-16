@@ -31,6 +31,20 @@ pub fn exe_name() -> String {
 /// Where generations live inside a mod folder.
 pub const GEN: &str = "gen";
 
+/// The preview's cache in the main mod folder, beside the generations (it
+/// outlives them).
+pub const CACHE: &str = ".cache";
+
+/// `<home>/mods/herdr-nvim`: the main mod.
+pub fn mod_dir(home: &Path) -> PathBuf {
+    home.join("mods").join("herdr-nvim")
+}
+
+/// The launcher the mods, other mods and the tab nvims' callbacks run.
+pub fn launcher_path(home: &Path) -> PathBuf {
+    mod_dir(home).join("bin").join(exe_name())
+}
+
 /// `main.js` pointing at generation `id`.
 pub fn pointer(id: &str) -> String {
     format!(

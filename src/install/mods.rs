@@ -34,7 +34,7 @@ use super::{
 use crate::{
     app::{
         env::AppEnv,
-        launch_record::{exe_name, pointer, InstallRecord, GEN},
+        launch_record::{exe_name, launcher_path, pointer, InstallRecord, CACHE, GEN},
     },
     osfs,
 };
@@ -96,6 +96,7 @@ pub fn recover(home: &Path, _: &Owned) -> Result<()> {
         remove_or_say(&name.stage(home));
         osfs::sweep(&live, &[]);
         osfs::sweep(&live.join("bin"), &[NEXT]);
+        osfs::sweep(&live.join(CACHE), &[crate::app::sidebar::STAGE]);
     }
     Ok(())
 }
@@ -248,7 +249,7 @@ impl Staged {
             tidy(&staged.name.live(&self.home), &staged.generation);
         }
         Ok(Swapped {
-            launcher: ModName::Main.live(&self.home).join("bin").join(exe_name()),
+            launcher: launcher_path(&self.home),
         })
     }
 }
@@ -362,7 +363,7 @@ fn tidy(live: &Path, generation: &Stamp) {
         }
     };
     remove_except(live, &|name| {
-        matches!(name, "main.js" | "mod.json" | "bin" | GEN | ".cache")
+        matches!(name, "main.js" | "mod.json" | "bin" | GEN | CACHE)
             || name == state::MARK_FILE
             // What the app writes into a mod folder (`herdr-app check`).
             || name == "jsconfig.json"

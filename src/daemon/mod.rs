@@ -260,11 +260,7 @@ pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>
         .env_remove("HC_TERMINAL_ID")
         .env_remove("HC_SCOPE");
     let launcher = crate::app::env::AppEnv::from_env()
-        .map(|app| {
-            app.home
-                .join("mods/herdr-nvim/bin")
-                .join(crate::app::launch_record::exe_name())
-        })
+        .map(|app| crate::app::launch_record::launcher_path(&app.home))
         .filter(|launcher| launcher.is_file());
     if let Some(me) = launcher.or_else(|| env::current_exe().ok()) {
         command.env("HERDR_NVIM_SELF", me);

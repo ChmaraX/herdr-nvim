@@ -421,6 +421,9 @@ pub fn toggle_cmd() -> Result<()> {
     Ok(())
 }
 
+/// What `--stage` names its copies; an install sweeps what a preview left.
+pub(crate) const STAGE: &str = ".stage-";
+
 /// `herdr-nvim app-preview --file <path> --ctx JSON` (the controller's
 /// Preview): the file rendered where the tab's nvim shows (`open_preview`).
 /// `app-preview --stage <path>` (the preview itself): a copy of a file the mod
@@ -431,15 +434,10 @@ pub fn toggle_cmd() -> Result<()> {
 pub fn preview_cmd() -> Result<()> {
     let args: Vec<String> = crate::argv::args().skip(2).collect();
     if let Some(file) = cli::flag(&args, "--stage")? {
-        let cache = super::env::home_from_env()
-            .join("mods")
-            .join("herdr-nvim")
-            .join(".cache");
+        let cache = super::launch_record::mod_dir(&super::env::home_from_env())
+            .join(super::launch_record::CACHE);
         std::fs::create_dir_all(&cache)?;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let copy = cache.join(format!(".stage-{}-{nanos}", std::process::id()));
+        let copy = cache.join(crate::osfs::unique(STAGE));
         std::fs::copy(file, &copy).with_context(|| format!("cannot read {file}"))?;
         println!("{}", copy.display());
         return Ok(());
