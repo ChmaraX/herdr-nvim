@@ -273,16 +273,18 @@ echo "$installed" | grep -q '^herdr-nvim: installed in' || fail "the install did
 say "installed from ${bundle:-the checkout build}"
 if [ -n "$upgrade_from" ]; then
   echo "$installed" | grep -q 'already uses herdr-nvim' || fail "the upgrade changed the layout again: $installed"
-  [ -f "$HERDR_APP_HOME/mods/herdr-nvim/install.json" ] && [ -d "$HERDR_APP_HOME/mods/herdr-nvim/gen" ] ||
-    fail "the upgrade did not put the launcher's record and the mod's generation in place"
+  gen=$(sed -n 's|.*"\./gen/\([0-9a-f]*\)/main\.js".*|\1|p' "$HERDR_APP_HOME/mods/herdr-nvim/main.js" | head -1)
+  [ -n "$gen" ] && [ -f "$HERDR_APP_HOME/mods/herdr-nvim/gen/$gen/install.json" ] &&
+    [ -f "$HERDR_APP_HOME/mods/herdr-nvim/.herdr-nvim" ] ||
+    fail "the upgrade did not point main.js at a generation with the launcher's record, marked"
   [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim/lib.js" ] || fail "the upgrade left $upgrade_from's mod files at the top"
   find "$HERDR_APP_HOME/mods" "$XDG_DATA_HOME/herdr-nvim/app" -maxdepth 2 | sort > "$proof/after-upgrade.txt"
-  say "upgraded $upgrade_from: launcher, install.json, gen/; old mod files gone"
+  say "upgraded $upgrade_from: main.js points at gen/$gen (with install.json), the launcher replaced the sh wrapper, old mod files gone"
 else
   echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
 fi
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
-wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
+launcher=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim  # what the mods run
 H check "$HERDR_APP_HOME/mods/herdr-nvim" | tee -a "$log"
 node "$here/js-checks.mjs" | tee -a "$log" || fail "the mod's pure checks failed (node herdr-app/e2e/js-checks.mjs)"
 # RECIPE.md's key table is the tree's key table (tree-keys.js).
@@ -323,7 +325,7 @@ baseline() {
   local t
   for t in "$tab_a" "$tab_b"; do
     if sidebar_of "$t" >/dev/null; then
-      "$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$t\"}" >/dev/null
+      "$launcher" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$t\"}" >/dev/null
     fi
     poll 15 no_sidebar_of "$t" || fail "baseline: tab $t's nvim pane stayed"
   done
@@ -361,7 +363,7 @@ say "Files: the tree (300 px) and tab A's nvim pane $sidebar_a (daemon $pid_a) i
 sleep 1
 shot 01-files-tree-and-nvim
 # What a click on a file in the tree runs (tree-view.js).
-"$wrapper" open --no-focus "$demo/src/greet.js" --ctx "$ctx" >/dev/null
+"$launcher" open --no-focus "$demo/src/greet.js" --ctx "$ctx" >/dev/null
 poll 10 nvim_at "$sock_a" greet.js:1 || fail "tab A's nvim is not on greet.js"
 say "a click in the tree: src/greet.js opens in tab A's nvim"
 files_button_off
@@ -508,7 +510,7 @@ files_button
 poll 10 panel_is files || fail "Files did not show the panel again"
 poll 10 has_preview || fail "Files on did not bring the preview back"
 # A code file clicked in the tree with the preview shown: nvim takes its place.
-"$wrapper" open --no-focus "$demo/package.json" --ctx "$ctx" >/dev/null
+"$launcher" open --no-focus "$demo/package.json" --ctx "$ctx" >/dev/null
 poll 10 sidebar_of "$tab_a" || fail "the code file did not bring nvim back in the preview's place"
 poll 5 no_preview || fail "the preview stayed beside nvim"
 poll 10 nvim_on package.json || fail "nvim is not on package.json"
@@ -578,7 +580,7 @@ fi
 if begin nvim-tree; then
 # --- tree = "nvim": no Files button; cmd-e opens and closes nvim alone --------
 panel_stays_hidden() { local i; for i in 1 2 3 4 5 6 7 8; do panel_is hidden || return 1; done; }
-"$wrapper" app-config tree nvim >/dev/null
+"$launcher" app-config tree nvim >/dev/null
 poll 10 no_files_button || fail "nvim tree: the Files button stayed"
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e showed the panel"
@@ -588,7 +590,7 @@ shot nvim-tree-no-files-button
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e (close) showed the panel"
 poll 10 no_sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not close tab A's nvim"
-"$wrapper" app-config tree native >/dev/null
+"$launcher" app-config tree native >/dev/null
 poll 10 files_button_shown || fail "nvim tree: back to native, the Files button did not come back"
 say "tree = nvim: no Files button; cmd-e opens and closes the tab's nvim, no panel; native brings the button back"
 fi
@@ -597,7 +599,7 @@ if begin nvim-install; then
 # --- no Neovim: the card's Install downloads it, then cmd-e opens nvim -------
 # HERDR_NVIM_INSTALL_METHOD=download: Neovim's release into this run's data
 # folder, checked against GitHub's SHA-256; nvim_bin then points at it.
-"$wrapper" daemons stop "$space:$tab_a" >/dev/null || fail "could not stop tab A's nvim"
+"$launcher" daemons stop "$space:$tab_a" >/dev/null || fail "could not stop tab A's nvim"
 no_nvim
 record nvim-install
 cmd_e
@@ -637,7 +639,7 @@ poll 15 sh -c "! kill -0 $pid_a" || fail "tab A's daemon survived its space"
 poll 15 sh -c "! hc ls --json | grep -q herdr-nvim-watch" || fail "the watcher kept running with no daemons"
 say "closing tab B stopped its daemon, closing the space the rest and the watcher"
 # Uninstalled in nvim mode: the Files button it took out comes back.
-"$wrapper" app-config tree nvim >/dev/null
+"$launcher" app-config tree nvim >/dev/null
 poll 10 no_files_button || fail "teardown: nvim mode kept the Files button"
 app_install --uninstall 2>&1 | tee -a "$log" >/dev/null
 poll 10 files_button_shown || fail "uninstall (nvim mode) did not bring the Files button back"
