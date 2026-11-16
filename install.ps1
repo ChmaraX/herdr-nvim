@@ -21,7 +21,10 @@
 
 # Everything runs in this one script block's scope: under `irm | iex` the
 # script runs in the caller's session, whose variables and settings it must
-# not change, and which it must not end (no `exit`; a failure throws).
+# not change, and which it must not end (a failure throws). Run as a file
+# (-File), a failure is exit 1, which Windows PowerShell 5.1 doesn't make of
+# every error on its own.
+try {
 & {
     param(
         [switch]$App,
@@ -137,7 +140,10 @@
             }
             if (Test-Path -LiteralPath "$archive.sha256") {
                 $want = ((Get-Content -LiteralPath "$archive.sha256" -TotalCount 1) -split '\s+')[0].ToLowerInvariant()
-                $got = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                $sha = [Security.Cryptography.SHA256]::Create()
+                $stream = [IO.File]::OpenRead($archive)
+                try { $got = (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) -join "") }
+                finally { $stream.Dispose(); $sha.Dispose() }
                 if ($got -ne $want) { throw "herdr-nvim: the bundle does not match its SHA-256; nothing installed" }
             }
             if ((Invoke-Program (System32 "tar.exe") @("-xzf", $archive, "-C", $work)) -ne 0) {
@@ -207,3 +213,9 @@
     if ($wantApp) { Install-App }
     if ($wantTui) { Install-Tui }
 } @args
+}
+catch {
+    if (-not $MyInvocation.MyCommand.Path) { throw }
+    [Console]::Error.WriteLine($_)
+    exit 1
+}

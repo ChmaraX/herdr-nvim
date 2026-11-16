@@ -93,7 +93,10 @@ function Open-Native([string]$File, [string[]]$Arguments = @(), [hashtable]$Envi
     $info.RedirectStandardError = $true
     $info.StandardOutputEncoding = $Utf8
     $info.StandardErrorEncoding = $Utf8
-    foreach ($name in $Environment.Keys) { $info.Environment[$name] = $Environment[$name] }
+    foreach ($name in $Environment.Keys) {
+        if ($null -eq $Environment[$name]) { $null = $info.Environment.Remove($name) }
+        else { $info.Environment[$name] = $Environment[$name] }
+    }
     $process = [Diagnostics.Process]::Start($info)
     $process.StandardInput.Close()
     [pscustomobject]@{
@@ -293,7 +296,9 @@ function Open-Bootstrap([string]$archive, [switch]$Uninstall, [switch]$Force, [s
         if ($Uninstall) { $arguments += '-Uninstall' }
         if ($Force) { $arguments += '-Force' }
         if ($InstallNvim) { $arguments += '-InstallNvim' }
-        return Open-Native 'powershell.exe' $arguments
+        # As a person's own Windows PowerShell starts: without this pwsh's
+        # module path, which hides 5.1's own modules from it.
+        return Open-Native 'powershell.exe' $arguments @{ PSModulePath = $null }
     }
     $arguments = @((Join-Path $Repo 'install.sh'), '--app', '--bundle', $archive)
     if ($Uninstall) { $arguments += '--uninstall' }
