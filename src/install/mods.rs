@@ -82,19 +82,24 @@ const PREV: &str = ".prev-";
 /// Repairs what a crashed run left: the bash installer's half-done swap
 /// (live gone, its own `.old` there), stages, and half-written or
 /// half-removed files.
-pub fn recover(home: &Path, _: &Owned) -> Result<()> {
+pub fn recover(owned: &Owned) -> Result<()> {
+    let home = owned.home();
     osfs::sweep(&mods_dir(home), &[]);
     for name in ModName::ALL {
         let (live, old) = (name.live(home), name.old(home));
-        if !live.exists() && matches!(state::read_mod(&old), Ownership::Ours) {
+        let old_ours = matches!(state::read_mod(&old), Ownership::Ours);
+        if !live.exists() && old_ours {
             osfs::rename_retrying(&old, &live)
                 .with_context(|| format!("cannot restore {}", live.display()))?;
-        }
-        if matches!(state::read_mod(&old), Ownership::Ours) {
+        } else if old_ours {
             remove_or_say(&old);
         }
-        remove_or_say(&name.stage(home));
-        osfs::sweep(&live, &[]);
+        if stage_is_ours(home, name) {
+            remove_or_say(&name.stage(home));
+        }
+        // Our own folders: also the names this branch used before (never
+        // released) for its temp and trash files.
+        osfs::sweep(&live, &[".tmp-", ".trash-"]);
         osfs::sweep(&live.join("bin"), &[NEXT]);
         osfs::sweep(&live.join(CACHE), &[crate::app::sidebar::STAGE]);
     }
@@ -128,20 +133,46 @@ impl Swapped {
     }
 }
 
-pub fn stage(app: &AppEnv, source: &Source, record: &InstallRecord, _: &Owned) -> Result<Staged> {
+/// Whether `mods/.<name>.new` holds nothing but a stage this installer
+/// made (the mod folder in it carries our mark), or nothing at all.
+fn stage_is_ours(home: &Path, name: ModName) -> bool {
+    let stage = name.stage(home);
+    let Ok(entries) = fs::read_dir(&stage) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        entry.file_name() == name.as_str()
+            && matches!(state::read_mod(&entry.path()), Ownership::Ours)
+    })
+}
+
+pub fn stage(
+    app: &AppEnv,
+    source: &Source,
+    record: &InstallRecord,
+    owned: &Owned,
+) -> Result<Staged> {
     let mut staged = Staged {
-        home: app.home.clone(),
+        home: owned.home().to_path_buf(),
         mods: Vec::new(),
     };
     for name in ModName::ALL {
-        let stage = name.stage(&app.home);
+        let stage = name.stage(owned.home());
+        if stage.exists() && !stage_is_ours(owned.home(), name) {
+            bail!(
+                "{} is not herdr-nvim's: move it away first; nothing changed",
+                stage.display()
+            );
+        }
         osfs::remove_tree(&stage)?;
         let dir = stage.join(name.as_str());
         let build = dir.join(GEN).join(BUILD);
+        // The mark first: a stage a crash cuts short is still known as ours.
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join(state::MARK_FILE), format!("{}\n", state::MARK))?;
         osfs::copy_tree(&source.mod_dir(name.as_str()), &build)
             .with_context(|| format!("cannot stage {}", dir.display()))?;
         fs::copy(build.join("mod.json"), dir.join("mod.json"))?;
-        fs::write(dir.join(state::MARK_FILE), format!("{}\n", state::MARK))?;
         if name == ModName::Main {
             record.write(&build)?;
             fs::create_dir_all(dir.join("bin"))?;
@@ -408,10 +439,16 @@ fn remove_or_say(dir: &Path) -> bool {
 
 /// Uninstall: both mods, whole, and the bash era's leftovers. Returns the
 /// folders Windows kept (in use), already reported.
-pub fn remove(home: &Path, _: &Owned) -> Vec<PathBuf> {
+pub fn remove(owned: &Owned) -> Vec<PathBuf> {
+    let home = owned.home();
     let mut kept = Vec::new();
     for name in ModName::ALL {
-        for dir in [name.live(home), name.stage(home), name.old(home)] {
+        let ours = [
+            Some(name.live(home)),
+            stage_is_ours(home, name).then(|| name.stage(home)),
+            matches!(state::read_mod(&name.old(home)), Ownership::Ours).then(|| name.old(home)),
+        ];
+        for dir in ours.into_iter().flatten() {
             if !remove_or_say(&dir) {
                 kept.push(dir);
             }
@@ -434,7 +471,9 @@ pub fn retire_pick(home: &Path) {
 
 /// An exclusive lock on this app home's mods for one install or uninstall:
 /// a second run waits, so it never removes the first one's stage.
-pub struct InstallLock(#[allow(dead_code)] fs::File, PathBuf);
+/// The file stays after an uninstall (empty): removing a lock file another
+/// run waits on would let a third take a new one beside it.
+pub struct InstallLock(#[allow(dead_code)] fs::File);
 
 impl InstallLock {
     pub fn take(home: &Path) -> io::Result<Self> {
@@ -451,11 +490,6 @@ impl InstallLock {
             );
             file.lock()?;
         }
-        Ok(Self(file, path))
-    }
-
-    /// After an uninstall: nothing of herdr-nvim stays in the mods folder.
-    pub fn remove(self) {
-        let _ = fs::remove_file(&self.1);
+        Ok(Self(file))
     }
 }

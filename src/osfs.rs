@@ -19,9 +19,10 @@ const RETRY_FOR: Duration = Duration::from_secs(5);
 
 /// The prefixes of every name this module makes beside a real one: a
 /// half-written file (`TEMP`) and a half-removed one (`TRASH`). `sweep` takes
-/// what a crashed run left of them.
-pub const TEMP: &str = ".tmp-";
-pub const TRASH: &str = ".trash-";
+/// what a crashed run left of them. Named for herdr-nvim: they are made in
+/// folders others share too (the app's `mods/`).
+pub const TEMP: &str = ".herdr-nvim-tmp-";
+pub const TRASH: &str = ".herdr-nvim-trash-";
 
 /// A name no other run uses: `<prefix><pid>-<nanos>`.
 pub fn unique(prefix: &str) -> String {

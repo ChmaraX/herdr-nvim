@@ -86,15 +86,18 @@ pub fn app_install_cmd() -> Result<()> {
     // A foreign mod folder stops the run before it writes anything, the
     // lock file included; under the lock the check is made again for keeps.
     state::claim(&app.home)?;
-    let lock = mods::InstallLock::take(&app.home)
+    // The question, if any, before another run can be kept waiting on it.
+    if !request.uninstall {
+        ensure_nvim(request.install_nvim)?;
+    }
+    let _lock = mods::InstallLock::take(&app.home)
         .with_context(|| format!("cannot lock {}", app.home.display()))?;
     let owned = state::claim(&app.home)?;
-    mods::recover(&app.home, &owned)?;
+    mods::recover(&owned)?;
+    let _store_lock = store.lock()?;
     store.sweep_leftovers();
     if request.uninstall {
-        let result = uninstall(&request, &app, &store, &owned);
-        lock.remove();
-        result
+        uninstall(&request, &app, &store, &owned)
     } else {
         install(&request, &app, &store, &owned)
     }
@@ -107,7 +110,6 @@ fn install(
     owned: &state::Owned,
 ) -> Result<()> {
     let source = Source::locate(request.source.as_deref())?;
-    ensure_nvim(request.install_nvim)?;
     let runtime = store.put(&source)?;
     let record = InstallRecord {
         schema: InstallRecord::SCHEMA,
@@ -179,7 +181,7 @@ fn uninstall(
     if let Err(error) = crate::app::watch::stop() {
         eprintln!("herdr-nvim: {error:#}; the watcher ends with the app's next nvim pane");
     }
-    let kept = mods::remove(&app.home, owned);
+    let kept = mods::remove(owned);
     crate::app::setup::uninstall_keys_and_layouts(&app.home)?;
     let report = store.prune(None, &runtime::live_runtimes());
     let locked = !report.kept_locked.is_empty();

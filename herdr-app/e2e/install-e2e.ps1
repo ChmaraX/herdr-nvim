@@ -754,7 +754,10 @@ function Step-CrashRecovery {
     Write-Transcript "`n## 7. Recovery from what a crashed install leaves"
     $mods = Join-Path $Main.HERDR_APP_HOME 'mods'
     Move-Item -LiteralPath (Join-Path $mods 'herdr-nvim') -Destination (Join-Path $mods '.herdr-nvim.old')
+    # Stages cut short: the installer writes a stage's mark before its files.
+    Write-Utf8 (Join-Path $mods '.herdr-nvim.new/herdr-nvim/.herdr-nvim') "$MarkLine`n"
     Write-Utf8 (Join-Path $mods '.herdr-nvim.new/herdr-nvim/half.js') "// half staged`n"
+    Write-Utf8 (Join-Path $mods '.herdr-nvim-header.new/herdr-nvim-header/.herdr-nvim') "$MarkLine`n"
     Write-Utf8 (Join-Path $mods '.herdr-nvim-header.new/herdr-nvim-header/main.js') "export * from `"./missing.js`";`n"
     $store = Get-Store $Main
     Write-Utf8 (Join-Path $store ".new.e2e-1/bin/herdr-nvim$Exe") 'half copied'
@@ -780,6 +783,12 @@ function Assert-Uninstalled([string]$what) {
     foreach ($mod in 'herdr-nvim', 'herdr-nvim-header') {
         Assert-That (-not (Test-Path -LiteralPath (Get-ModDir $Main $mod))) "$what removes mods/$mod"
     }
+    # The one thing an uninstall leaves on purpose: its empty lock file (a
+    # lock file is never deleted, or a run waiting on it and a new one would
+    # both hold "the" lock).
+    $left = @(Get-ChildItem -LiteralPath (Split-Path -Parent (Get-ModDir $Main 'herdr-nvim')) -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like '*herdr-nvim*' } | ForEach-Object Name)
+    Assert-That (($left -join ',') -in @('', '.herdr-nvim.lock')) "$what leaves nothing of herdr-nvim in mods/ but its empty lock file" ($left -join ',')
     Assert-That (Test-SameContent (Get-ByteContent (Get-KeysFile $Main)) $PreKeys) "$what leaves keys.json byte for byte as before the install"
     Assert-That (Test-SameContent (Get-ByteContent (Get-LayoutFile $Main)) $PreLayout) "$what leaves the layout byte for byte as before the install"
 }

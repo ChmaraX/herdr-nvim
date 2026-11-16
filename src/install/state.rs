@@ -44,8 +44,17 @@ pub fn read_mod(dir: &Path) -> Ownership {
 }
 
 /// Proof that the app home's mod folders are herdr-nvim's or absent: what
-/// changes them asks for it, so no path skips the check.
-pub struct Owned(());
+/// changes them asks for it, and takes the home from it, so no path skips
+/// the check.
+pub struct Owned {
+    home: std::path::PathBuf,
+}
+
+impl Owned {
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+}
 
 /// Checks both mod folders of `home`.
 pub fn claim(home: &Path) -> Result<Owned> {
@@ -58,7 +67,9 @@ pub fn claim(home: &Path) -> Result<Owned> {
             );
         }
     }
-    Ok(Owned(()))
+    Ok(Owned {
+        home: home.to_path_buf(),
+    })
 }
 
 #[cfg(test)]

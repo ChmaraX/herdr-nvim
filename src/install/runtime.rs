@@ -77,6 +77,9 @@ const STAMP_FILE: &str = "runtime-stamp";
 const NEW: &str = ".new.";
 const STAMPED: &[&str] = &["bin", "lua", "plugin"];
 
+/// Held while it lives (`RuntimeStore::lock`).
+pub struct StoreLock(#[allow(dead_code)] fs::File);
+
 pub struct RuntimeStore {
     pub dir: PathBuf,
 }
@@ -91,9 +94,32 @@ impl RuntimeStore {
         })
     }
 
+    /// An exclusive lock on the store, held from the sweep through the prune,
+    /// so installs into two app homes don't remove each other's half-built
+    /// or just-made runtime. Beside the store, not in it: the store goes
+    /// when it is empty, a lock file never does.
+    pub fn lock(&self) -> Result<StoreLock> {
+        fs::create_dir_all(self.dir.parent().unwrap_or(&self.dir))?;
+        let path = self.dir.with_extension("lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        if file.try_lock().is_err() {
+            println!("herdr-nvim: another herdr-nvim install uses the runtimes; waiting for it");
+            file.lock()
+                .with_context(|| format!("cannot lock {}", path.display()))?;
+        }
+        Ok(StoreLock(file))
+    }
+
     /// What a crashed run left: half-built runtimes, half-removed ones.
     pub fn sweep_leftovers(&self) {
-        osfs::sweep(&self.dir, &[NEW]);
+        // The store is ours alone: also the names this branch used before
+        // (never released) for temp and trash.
+        osfs::sweep(&self.dir, &[NEW, ".trash-", ".tmp-"]);
     }
 
     /// The runtime of `source`, made once: built in `.new.*`, stamped, and
