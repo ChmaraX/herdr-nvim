@@ -77,10 +77,15 @@ pub fn app_install_cmd() -> Result<()> {
     let store = RuntimeStore::open()?;
     runtime::refuse_running_from(&store)?;
     let app = locate::locate(request.home.as_deref(), request.app_bin.as_deref())?;
-    // From here this process serves the app it found, and so does every
-    // program it runs (`herdr-app`, `hc`, a runtime). `main` dispatched this
-    // command before choosing a host, and no thread runs yet.
+    // From here this process serves the app it found (its daemons' folder,
+    // its herdr-app), and so does every program it runs (`herdr-app`, `hc`,
+    // a runtime). `main` dispatched this command before choosing a host, and
+    // no thread runs yet.
     app.export();
+    crate::host::choose();
+    // A foreign mod folder stops the run before it writes anything, the
+    // lock file included; under the lock the check is made again for keeps.
+    state::claim(&app.home)?;
     let lock = mods::InstallLock::take(&app.home)
         .with_context(|| format!("cannot lock {}", app.home.display()))?;
     let owned = state::claim(&app.home)?;
