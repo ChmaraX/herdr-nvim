@@ -192,9 +192,6 @@ fn is_daemon(pid: u32, socket: &Path) -> Result<bool> {
     Ok(ps_field(pid, "comm=")?.is_some_and(|name| is_nvim(&name)))
 }
 
-/// Windows: whether `pid` is (still) the daemon whose registry entry was
-/// written at `registered` with that pid: a process that runs and started no
-/// later than that. One that started later only reuses the pid.
 /// Windows: whether the daemon of the named pipe `socket`
 /// (`\\.\pipe\herdr-nvim-<key>`) still runs, by the pid its registry
 /// marker records. A pipe can refuse a client while its nvim lives (every
@@ -209,9 +206,16 @@ pub(crate) fn pipe_daemon_runs(socket: &Path) -> bool {
         .is_some_and(|(pid, registered)| is_registered_daemon(pid, registered))
 }
 
+/// Windows: whether `pid` is (still) the daemon whose registry entry was
+/// written at `registered` with that pid: a process that runs and started no
+/// later than that. One that started later only reuses the pid. File times
+/// come from a coarser clock than process start times (a timer tick, about
+/// 16 ms), so a marker written right after the spawn can look older than
+/// the process: a second of slack, far shorter than any pid reuse.
 #[cfg(windows)]
 fn is_registered_daemon(pid: u32, registered: std::time::SystemTime) -> bool {
-    crate::winproc::started(pid).is_some_and(|started| started <= registered)
+    crate::winproc::started(pid)
+        .is_some_and(|started| started <= registered + Duration::from_secs(1))
 }
 
 /// Wait up to `timeout` for `pid`, the nvim listening on `socket`, to exit
