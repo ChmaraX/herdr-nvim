@@ -31,6 +31,14 @@ local function exists(path)
   return uv.fs_stat(path) ~= nil
 end
 
+-- `to` is `from` itself named in other case, on a volume that ignores case
+-- (Windows; macOS by default). vim.fn.rename goes through a temp name then.
+local function case_only(from, to)
+  local a, b = uv.fs_lstat(from), uv.fs_lstat(to)
+  return from ~= to and vim.fn.tolower(from) == vim.fn.tolower(to)
+    and a ~= nil and b ~= nil and a.dev == b.dev and a.ino == b.ino
+end
+
 local function under(path, dir)
   return path == dir or vim.startswith(path, slash(dir))
 end
@@ -192,7 +200,7 @@ function ops.rename(req)
   local from, to = norm(req.path), norm(req.to)
   check_inside(req, from, to)
   if not exists(from) then error("no such file: " .. from) end
-  if exists(to) then error("already exists: " .. to) end
+  if exists(to) and not case_only(from, to) then error("already exists: " .. to) end
   -- Snacks' own rename swaps in a fresh buffer and force-deletes the old one,
   -- losing unsaved edits, so the buffers are always moved here; Snacks, when
   -- it is there, only tells the language servers.
