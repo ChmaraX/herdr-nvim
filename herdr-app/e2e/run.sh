@@ -7,7 +7,7 @@
 # checks the real effects (daemons, buffers, what the agent received), takes
 # screenshots, uninstalls, and removes everything it started.
 #
-#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE]
+#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE] [--upgrade-from TAG]
 #   herdr-app/e2e/run.sh --only nvim-install   # opt-in: downloads Neovim (~10 MB)
 #
 # A smoke test of the flows a person uses: Files and cmd-e (core), cmd-o
@@ -21,6 +21,8 @@
 # with it, recorded as nvim-install.mp4. --bundle installs and uninstalls the way a person
 # does, through the root install.sh with a release's app bundle
 # (herdr-app/bundle.sh makes one), instead of this checkout's build.
+# --upgrade-from TAG first installs that release (downloaded by the root
+# install.sh, with its own installer), so the install under test upgrades it.
 #
 # Needs: the Herdr app (0.1.11+), hc, nvim, cargo, git, and a python3 with
 # pyobjc (Quartz) for the key presses. The window is moved on screen once
@@ -33,6 +35,7 @@ proof=/tmp/nvim-port-proof/run-$(date +%Y%m%d-%H%M%S)
 keep=0
 app_bin=
 bundle=
+upgrade_from=
 only=
 groups=" picker tree preview nvim-tree nvim-install teardown "
 while [ $# -gt 0 ]; do
@@ -41,6 +44,7 @@ while [ $# -gt 0 ]; do
     --keep) keep=1 ;;
     --app-bin) app_bin=$2; shift ;;
     --bundle) bundle=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift ;;
+    --upgrade-from) upgrade_from=$2; shift ;;
     --only)
       only=$2; shift
       for g in ${only//,/ }; do
@@ -256,10 +260,27 @@ echo "$refused" | grep -q -- '--install-nvim' || fail "without Neovim the instal
   fail "without Neovim the install changed something"
 rm "$nvim_conf"
 say "without Neovim: the install stops, says how (--install-nvim), changes nothing"
+if [ -n "$upgrade_from" ]; then
+  old=$(sh "$repo/install.sh" --app --version "$upgrade_from" -- --app-bin "$app_bin" 2>&1 | tee -a "$log")
+  echo "$old" | grep -q '^herdr-nvim: installed in' || fail "the $upgrade_from install did not finish: $old"
+  grep -q "^# Written by herdr-nvim's herdr-app/install.sh" "$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim" ||
+    fail "$upgrade_from did not leave its sh wrapper"
+  find "$HERDR_APP_HOME/mods" "$XDG_DATA_HOME/herdr-nvim/app" -maxdepth 2 | sort > "$proof/before-upgrade.txt"
+  say "installed $upgrade_from (its sh wrapper, its runtime); the install below upgrades it"
+fi
 installed=$(app_install 2>&1 | tee -a "$log")
 echo "$installed" | grep -q '^herdr-nvim: installed in' || fail "the install did not finish: $installed"
 say "installed from ${bundle:-the checkout build}"
-echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
+if [ -n "$upgrade_from" ]; then
+  echo "$installed" | grep -q 'already uses herdr-nvim' || fail "the upgrade changed the layout again: $installed"
+  [ -f "$HERDR_APP_HOME/mods/herdr-nvim/install.json" ] && [ -d "$HERDR_APP_HOME/mods/herdr-nvim/gen" ] ||
+    fail "the upgrade did not put the launcher's record and the mod's generation in place"
+  [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim/lib.js" ] || fail "the upgrade left $upgrade_from's mod files at the top"
+  find "$HERDR_APP_HOME/mods" "$XDG_DATA_HOME/herdr-nvim/app" -maxdepth 2 | sort > "$proof/after-upgrade.txt"
+  say "upgraded $upgrade_from: launcher, install.json, gen/; old mod files gone"
+else
+  echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
+fi
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
 wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
 H check "$HERDR_APP_HOME/mods/herdr-nvim" | tee -a "$log"
