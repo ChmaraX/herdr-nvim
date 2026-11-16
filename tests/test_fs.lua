@@ -189,6 +189,15 @@ T.test("fs: a folder copied into itself gets the folder as it was", function()
   T.eq(vim.fn.readdir(root .. "/src/again"), { "a.txt" })
 end)
 
+T.test("fs: a folder copied into a folder deeper inside itself is refused", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/src/deep", "p")
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/src/deep/again" })
+  T.eq(r.ok, nil, vim.inspect(r))
+  T.ok(r.error:find("inside it", 1, true), r.error)
+  T.eq(vim.fn.readdir(root .. "/src/deep"), {})
+end)
+
 T.test("fs: the file system's root as the tab's folder holds everything on it", function()
   local root = tmpdir()
   local top = root:match("^%a:/") or "/"

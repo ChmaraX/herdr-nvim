@@ -161,6 +161,12 @@ end
 -- link to the same place. Not Snacks' copy, which follows links and reports
 -- a failure only as a notification.
 local function copy_path(from, to)
+  -- Into its own direct child, a folder's listing (read before the child
+  -- exists) holds no copy; any deeper, the copy's own folders are on the way
+  -- down and it would never end. `cp -R` refuses both.
+  if under(to, from) and key(vim.fs.dirname(to)) ~= key(from) then
+    error("cannot copy a folder into a folder inside it: " .. to)
+  end
   local stat = assert(uv.fs_lstat(from))
   if stat.type == "link" then
     local dir = vim.fn.isdirectory(from) == 1
