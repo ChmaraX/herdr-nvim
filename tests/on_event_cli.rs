@@ -16,10 +16,9 @@
 //!   kills it by its pid with SIGKILL, with its process group. Covered
 //!   through the shared stop path in
 //!   `registry::tests::a_busy_daemon_is_killed_with_its_process_group`.
-//! - Quit timeout (a daemon that ignores `qa!`): on Unix it is killed by its
-//!   pid once the quit wait is up, and the kill is reported. On Windows,
-//!   which cannot do that, the hook fails, and the daemon keeps its registry
-//!   entry and state so it stays listable and reachable. Covered: same test
+//! - Quit timeout (a daemon that ignores `qa!`): it is killed by its pid
+//!   once the quit wait is up (Windows: the pid in its registry marker,
+//!   with taskkill), and the kill is reported. Covered: same test
 //!   (`wHnA:t3`, swallows every key).
 //! - Partial failure on workspace close: the other daemons of the workspace
 //!   are still stopped. Covered: same test.
