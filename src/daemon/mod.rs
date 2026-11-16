@@ -281,7 +281,7 @@ pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>
 pub(crate) const STAMP_ENV: &str = "HERDR_NVIM_RUNTIME_STAMP";
 
 /// The installed runtime's stamp: `<plugin root>/runtime-stamp`, a hash of
-/// the binary and Lua that `herdr-app/install.sh` writes. `None` without one
+/// the binary and Lua that the installer writes (`install::runtime`). `None` without one
 /// (a build run from the repo): then no daemon counts as stale.
 pub(crate) fn runtime_stamp(plugin_root: &Path) -> Option<String> {
     fs::read_to_string(plugin_root.join("runtime-stamp"))
