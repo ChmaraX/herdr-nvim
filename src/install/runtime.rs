@@ -81,13 +81,8 @@ pub struct RuntimeStore {
 
 impl RuntimeStore {
     pub fn open() -> Result<Self> {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| crate::home::home_dir().map(|home| home.join(".local/share")))
-            .context("no home folder (HOME or USERPROFILE)")?;
         Ok(Self {
-            dir: data.join("herdr-nvim").join("app"),
+            dir: super::data_dir()?.join("herdr-nvim").join("app"),
         })
     }
 
@@ -106,10 +101,6 @@ impl RuntimeStore {
             fs::create_dir_all(staged.join("bin"))?;
             let exe = format!("herdr-nvim{}", std::env::consts::EXE_SUFFIX);
             fs::copy(&source.exe, staged.join("bin").join(exe))?;
-            fs::copy(
-                source.tree.join("herdr-app/install-nvim.sh"),
-                staged.join("bin/install-nvim.sh"),
-            )?;
             osfs::copy_tree(&source.tree.join("lua"), &staged.join("lua"))?;
             osfs::copy_tree(&source.tree.join("plugin"), &staged.join("plugin"))?;
             let stamp = Stamp::of(&staged, STAMPED)?;

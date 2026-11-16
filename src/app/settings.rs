@@ -21,7 +21,7 @@ use crate::config::{self, TreeMode};
 /// `herdr-nvim app-config`: the settings the mods and the nvim plugin need.
 /// `herdr-nvim app-config tree <native|nvim>` sets `[app] tree`;
 /// `herdr-nvim app-config nvim-bin <path>` sets `[sidebar] nvim_bin` (the
-/// Neovim install, `install-nvim.sh`).
+/// Neovim install, `nvim_get`).
 pub fn app_config_cmd() -> Result<()> {
     let args: Vec<String> = crate::argv::args().skip(2).collect();
     let value = || args.get(1).map(String::as_str).unwrap_or_default();
@@ -76,7 +76,7 @@ pub(crate) fn set_tree(mode: &str) -> Result<()> {
 }
 
 /// Write `[section] key = <value>` into the config file.
-fn write_setting(section: &str, key: &str, value: &str) -> Result<()> {
+pub(crate) fn write_setting(section: &str, key: &str, value: &str) -> Result<()> {
     let path = config::config_path().context("no config folder (HOME is not set)")?;
     // No file yet: start from nothing. Any other read error stops here: the
     // file is the person's, never replaced by one holding only `[app]`.
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn the_written_file_parses_back() {
         let text = with_setting("[picker]\nmax_files = 9\n", "app", "tree", "nvim").unwrap();
-        // Where install-nvim.sh points herdr-nvim at the Neovim it installed.
+        // Where `nvim_get` points herdr-nvim at the Neovim it installed.
         let text = with_setting(&text, "sidebar", "nvim_bin", "/x/nvim/bin/nvim").unwrap();
         let parsed: crate::config::Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.app.tree, TreeMode::Nvim);

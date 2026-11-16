@@ -6,7 +6,7 @@
 //! `<space id>:<tab id>`, so `TabId::workspace()` is the space, exactly as the
 //! TUI's `w26:t2` gives its workspace.
 
-mod cli;
+pub(crate) mod cli;
 pub(crate) mod commands;
 mod doc;
 pub(crate) mod env;

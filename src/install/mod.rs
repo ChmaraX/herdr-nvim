@@ -99,7 +99,7 @@ pub fn app_install_cmd() -> Result<()> {
 
 fn install(request: &Request, app: &AppEnv, store: &RuntimeStore) -> Result<()> {
     let source = Source::locate(request.source.as_deref())?;
-    ensure_nvim(&source, request.install_nvim)?;
+    ensure_nvim(request.install_nvim)?;
     let runtime = store.put(&source)?;
     let record = InstallRecord {
         schema: InstallRecord::SCHEMA,
@@ -237,12 +237,12 @@ fn stop_watcher() {
 }
 
 /// Neovim 0.10+, before anything changes: without it nothing would open.
-fn ensure_nvim(source: &Source, yes: bool) -> Result<()> {
-    let sidebar = crate::config::load().sidebar;
-    let Err(missing) = crate::nvim_check::check(&sidebar) else {
+fn ensure_nvim(yes: bool) -> Result<()> {
+    let Err(missing) = crate::nvim_check::check(&crate::config::load().sidebar) else {
         return Ok(());
     };
-    let how = nvim_how();
+    let method = crate::nvim_get::method()?;
+    let how = crate::nvim_get::describe(&method);
     let yes = yes
         || prompt::ask(
             &format!("herdr-nvim: {missing}.\nInstall it now, {how}?"),
@@ -254,41 +254,15 @@ fn ensure_nvim(source: &Source, yes: bool) -> Result<()> {
             "{missing}. Install it (or run this again with --install-nvim: {how}); nothing changed"
         );
     }
-    install_nvim(source)
+    crate::nvim_get::install(&method).context("Neovim was not installed; nothing changed")
 }
 
-#[cfg(unix)]
-fn nvim_how() -> String {
-    let brew = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .any(|dir| dir.join("brew").is_file());
-    if brew {
-        "Homebrew's (brew install neovim)".to_owned()
-    } else {
-        "Neovim's own release, into ~/.local/share/herdr-nvim/nvim (no sudo)".to_owned()
-    }
-}
-
-#[cfg(unix)]
-fn install_nvim(source: &Source) -> Result<()> {
-    let script = source.tree.join("herdr-app/install-nvim.sh");
-    let ok = Command::new("sh")
-        .arg(&script)
-        .arg("--herdr-nvim")
-        .arg(&source.exe)
-        .status()
-        .is_ok_and(|status| status.success());
-    if !ok {
-        bail!("Neovim was not installed; nothing changed");
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn nvim_how() -> String {
-    "winget install Neovim.Neovim".to_owned()
-}
-
-#[cfg(not(unix))]
-fn install_nvim(_: &Source) -> Result<()> {
-    bail!("install Neovim 0.10+ yourself (winget install Neovim.Neovim), then run this again")
+/// `$XDG_DATA_HOME`, else `~/.local/share` (on Windows too: the runtime
+/// and Neovim live where they do on every OS).
+pub(crate) fn data_dir() -> Result<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::home::home_dir().map(|home| home.join(".local/share")))
+        .context("no home folder (HOME or USERPROFILE)")
 }

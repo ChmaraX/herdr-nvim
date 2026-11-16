@@ -15,6 +15,7 @@ mod install;
 mod layout;
 mod maneuver;
 mod nvim_check;
+mod nvim_get;
 mod openlink;
 mod path;
 mod pathkey;
@@ -110,7 +111,7 @@ fn main() {
         // The markdown preview's diagrams.
         ("app-mermaid", _) => run(app::mermaid::mermaid_cmd),
         // The "Neovim is needed" card's Install button (a terminal tab).
-        ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
+        ("app-install-nvim", true) => run(nvim_get::install_nvim_cmd),
         (
             "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
             | "app-reveal" | "app-preview" | "app-install-nvim",

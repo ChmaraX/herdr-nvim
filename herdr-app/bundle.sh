@@ -7,7 +7,7 @@
 # Writes <out dir>/herdr-nvim-app-<target>.tar.gz and its .sha256. Inside,
 # one folder laid out like this repo: bin/herdr-nvim and the mod's launcher
 # bin/herdr-nvim-launch (built beside it; .exe on Windows), lua/, plugin/,
-# herdr-app/{install.sh,install-nvim.sh,keys.json,mods/}. The root install.sh
+# herdr-app/{install.sh,keys.json,mods/}. The root install.sh
 # (install.ps1 on Windows) downloads it and runs `bin/herdr-nvim app-install`.
 set -euo pipefail
 [ $# -eq 3 ] || { sed -n '5p' "$0" >&2; exit 2; }
@@ -26,7 +26,7 @@ cp "$binary" "$b/bin/herdr-nvim$exe"
 cp "$launcher" "$b/bin/herdr-nvim-launch$exe"
 chmod +x "$b/bin/herdr-nvim$exe" "$b/bin/herdr-nvim-launch$exe"
 cp -R "$repo/lua" "$repo/plugin" "$b/"
-cp "$repo/herdr-app/install.sh" "$repo/herdr-app/install-nvim.sh" "$repo/herdr-app/keys.json" "$b/herdr-app/"
+cp "$repo/herdr-app/install.sh" "$repo/herdr-app/keys.json" "$b/herdr-app/"
 for m in "$repo"/herdr-app/mods/*/; do
   m=$(basename "$m")
   # Not what `herdr-app check` writes into a mod folder in a clone.
