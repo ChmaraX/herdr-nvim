@@ -366,8 +366,12 @@ fn quit(socket: &Path, pid: u32, sidebar: &Sidebar) -> Result<bool> {
     );
     #[cfg(windows)]
     {
-        let _ = pid;
         loop {
+            // Its own pid (it answered the probe) has exited: gone, whatever
+            // the pipe says meanwhile.
+            if crate::winproc::started(pid).is_none() {
+                return Ok(true);
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(false);

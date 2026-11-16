@@ -36,5 +36,7 @@ done
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 (cd "$work" && tar -czf "$out/$name.tar.gz" "$name")
-(cd "$out" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+# shasum (macOS), else sha256sum (Linux, Git for Windows).
+if command -v shasum >/dev/null 2>&1; then sum() { shasum -a 256 "$@"; }; else sum() { sha256sum "$@"; }; fi
+(cd "$out" && sum "$name.tar.gz" > "$name.tar.gz.sha256")
 echo "$out/$name.tar.gz"

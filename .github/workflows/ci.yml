@@ -43,6 +43,12 @@ jobs:
       # nvim named-pipe daemon health check.
       - name: cargo test
         run: cargo test
+      # Each integration test writes what it ran and saw here.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-windows
+          path: target/test-artifacts/
       # Same Lua test surface the Linux job exercises, on Windows nvim.
       - name: lua tests
         run: nvim --headless --noplugin -u NONE -l tests/run.lua
