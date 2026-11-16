@@ -4,17 +4,13 @@
 import { exec } from "herdr";
 import { bin, canonical, child, dirname, key } from "./path.js";
 
-// One folder as the tree shows it (`herdr-nvim app-list`, src/app/list.rs):
-// {entries: [{name, dir, hidden, ignored}], folders first, then by name, at
-// most 500; ignored: the names git ignores}.
+// One folder's entries as the tree shows them (`herdr-nvim app-list`,
+// src/app/list.rs): [{name, dir, hidden, ignored}], folders first, then by
+// name, at most 500.
 export async function listFolder(path) {
   const r = await exec(bin(), ["app-list", path]);
   if (r.code !== 0) throw new Error(r.stderr.trim().replace(/^herdr-nvim: /, "") || `Cannot list ${path}`);
-  const listing = JSON.parse(r.stdout);
-  return {
-    entries: listing.entries,
-    ignored: new Set(listing.entries.filter((e) => e.ignored).map((e) => e.name)),
-  };
+  return JSON.parse(r.stdout).entries;
 }
 
 // A folder's repo top (null outside one).

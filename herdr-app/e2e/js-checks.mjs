@@ -63,15 +63,15 @@ assert.equal(markOf(marks, "/r/src/a.js"), "M");
 assert.equal(markOf(marks, "/r/src/other.js"), null);
 
 // A folder's listing is herdr-nvim's (`app-list`, src/app/list.rs, which
-// sorts it): its entries in its order, and the names git ignores.
+// sorts it): its entries in its order, each saying whether git ignores it.
 const entry = (name, dir = false, ignored = false) => ({ name, dir, hidden: name.startsWith("."), ignored });
 const listing = (...entries) => ok(JSON.stringify({ entries, truncated: false }));
 const bin = "/nonexistent-app-home/mods/herdr-nvim/bin/herdr-nvim";
 app.exec = async (cmd, args) => (cmd === bin && args[0] === "app-list" && args[1] === "/r"
   ? listing(entry("build", true, true), entry("src", true), entry(".env"), entry("a.txt", false, true)) : ok(""));
 const r = await listFolder("/r");
-assert.deepEqual(r.entries.map((e) => e.name), ["build", "src", ".env", "a.txt"]);
-assert.deepEqual(r.ignored, new Set(["build", "a.txt"]));
+assert.deepEqual(r.map((e) => e.name), ["build", "src", ".env", "a.txt"]);
+assert.deepEqual(r.filter((e) => e.ignored).map((e) => e.name), ["build", "a.txt"]);
 app.exec = async () => ({ code: 1, stdout: "", stderr: "herdr-nvim: not a folder: /gone\n" });
 await assert.rejects(listFolder("/gone"), /^Error: not a folder: \/gone$/);
 

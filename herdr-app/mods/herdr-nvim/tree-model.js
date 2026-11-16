@@ -1,6 +1,6 @@
 // What the tree shows: a root folder (the tab's folder, or one the person
 // moved to with `.` / Backspace), the folders that are open, the entries of
-// each, git marks, which entries git ignores, and the hidden/ignored toggles.
+// each (with whether git ignores it), git marks, and the hidden/ignored toggles.
 // Paths are the mod's (path.js); a folder's entries are listed on first open
 // and again when something under the root changes (a folder watch, no
 // polling).
@@ -35,9 +35,8 @@ export class TreeModel {
     this.version = (this.version ?? 0) + 1;
     this.root = root;
     this.marksAt = 0;
-    this.entries = new Map(); // folder -> [{name, dir, hidden}]
+    this.entries = new Map(); // folder -> [{name, dir, hidden, ignored}]
     this.loads = new Map(); // folder -> the latest listing's number
-    this.ignored = new Map(); // folder -> Set of ignored names
     this.open = new Set();
     this.marks = {};
   }
@@ -48,13 +47,12 @@ export class TreeModel {
   async load(folder) {
     const root = this.root, seq = (this.loads.get(folder) ?? 0) + 1;
     this.loads.set(folder, seq);
-    const { entries, ignored } = await listFolder(folder);
+    const entries = await listFolder(folder);
     if (this.root !== root || this.loads.get(folder) !== seq) return false;
-    const unchanged = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir && e.hidden === b[i].hidden);
-    const was = this.ignored.get(folder);
-    if (unchanged(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
+    const same = (e, f) => e.name === f.name && e.dir === f.dir && e.hidden === f.hidden && e.ignored === f.ignored;
+    const was = this.entries.get(folder);
+    if (was && was.length === entries.length && was.every((e, i) => same(e, entries[i]))) return false;
     this.entries.set(folder, entries);
-    this.ignored.set(folder, ignored);
     this.version++;
     return true;
   }
@@ -90,7 +88,7 @@ export class TreeModel {
       if (this.showIgnored || !rel) return false;
       let folder = root;
       for (const part of rel.split("/")) {
-        if (this.ignored.get(folder)?.has(part)) return true;
+        if (this.entries.get(folder)?.some((e) => e.ignored && e.name === part)) return true;
         folder = child(folder, part);
       }
       return false;
@@ -110,7 +108,7 @@ export class TreeModel {
 
   shown(folder, entry) {
     if (!this.showHidden && entry.hidden) return false;
-    if (!this.showIgnored && this.ignored.get(folder)?.has(entry.name)) return false;
+    if (!this.showIgnored && entry.ignored) return false;
     return true;
   }
 
@@ -130,7 +128,7 @@ export class TreeModel {
       if (out.length >= ROWS) break;
       if (!this.shown(folder, entry)) continue;
       const abs = child(folder, entry.name);
-      out.push({ ...entry, abs, depth, ignored: this.ignored.get(folder)?.has(entry.name) ?? false });
+      out.push({ ...entry, abs, depth });
       if (entry.dir && this.open.has(abs)) this.walk(abs, depth + 1, out);
     }
     return out;
@@ -172,7 +170,7 @@ export class TreeModel {
       if (!this.entries.has(folder)) await this.load(folder).catch(() => {});
       entry = this.entries.get(folder)?.find((e) => same(e.name, part)) ?? { name: part, hidden: part.startsWith(".") };
       if (entry.hidden) this.showHidden = true;
-      if (this.ignored.get(folder)?.has(entry.name)) this.showIgnored = true;
+      if (entry.ignored) this.showIgnored = true;
     }
     return child(folder, entry.name);
   }
