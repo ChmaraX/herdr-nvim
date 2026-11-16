@@ -1,7 +1,7 @@
 -- File operations for the Herdr app's native tree, done by the tab's nvim so
 -- its buffers and language servers stay in step, as with LazyVim's explorer:
 -- Snacks' own rename (LSP `workspace/willRenameFiles` / `didRenameFiles`),
--- copy, trash and buffer delete when Snacks is there; the same steps done here
+-- trash and buffer delete when Snacks is there; the same steps done here
 -- otherwise. `herdr-nvim fs '<request>'` calls run() with a JSON request
 -- `{op, root, ...}` and gets a JSON answer, `{ok = true, ...}` or `{error}`.
 --
@@ -9,6 +9,7 @@
 -- `outside = true`, which the app sends only after the person confirmed.
 local M = {}
 local uv = vim.uv or vim.loop
+local WIN = vim.fn.has("win32") == 1
 
 local function snacks()
   local ok, s = pcall(require, "snacks")
@@ -141,15 +142,26 @@ local function lsp_rename(from, to, rename)
   end
 end
 
+-- `from` made again at `to`: a file, a folder with all in it, or a link as a
+-- link to the same place. Not Snacks' copy, which follows links and reports
+-- a failure only as a notification.
 local function copy_path(from, to)
-  local s = snacks()
-  if s then
-    require("snacks.picker.util").copy_path(from, to)
+  local stat = assert(uv.fs_lstat(from))
+  if stat.type == "link" then
+    local dir = vim.fn.isdirectory(from) == 1
+    local ok, err = uv.fs_symlink(assert(uv.fs_readlink(from)), to, { dir = dir })
+    -- A folder link needs a privilege on Windows that a junction doesn't.
+    if not ok and WIN and dir then ok, err = uv.fs_symlink(uv.fs_realpath(from), to, { junction = true }) end
+    assert(ok, err)
+  elseif stat.type == "directory" then
+    -- The whole listing is read here, before the copy exists: a folder
+    -- copied into itself gets itself as it was.
+    local listing = assert(uv.fs_scandir(from))
+    assert(uv.fs_mkdir(to, stat.mode % 512))
+    for name in uv.fs_scandir_next, listing do copy_path(from .. "/" .. name, to .. "/" .. name) end
   else
-    local out = vim.fn.system({ "cp", "-R", from, to })
-    if vim.v.shell_error ~= 0 then error(out) end
+    assert(uv.fs_copyfile(from, to, { excl = true, ficlone = true }))
   end
-  if not exists(to) then error("could not copy to " .. to) end
 end
 
 local ops = {}
