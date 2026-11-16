@@ -1,29 +1,20 @@
 // The folder data behind the file tree: one folder's entries and the repo's
-// git marks. Listing follows the shipped `files` mod (Apache-2.0, Herdr): a
-// POSIX sh glob, `.git` skipped, at most 500 entries per folder.
+// git marks.
 
 import { exec } from "herdr";
+import { bin } from "./lib.js";
 
-const PER_FOLDER = 500;
-
-// One process per folder: its entries ("d"/"f" + name), then an "x" record,
-// then the names git ignores there (`check-ignore -z`, nothing outside a repo).
-const LIST = 'dir=$1; shift; n=0; for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
-  + 'name=${p##*/}; [ "$name" = .git ] && continue; '
-  + 'if [ -d "$p" ] && [ ! -L "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; set -- "$@" "$name"; '
-  + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$dir" || exit 1; printf "x\\0x\\0"; '
-  + '[ "$#" -gt 0 ] && printf "%s\\0" "$@" | git -C "$dir" check-ignore -z --stdin 2>/dev/null; exit 0';
-
-// {entries: folders first, then by name; ignored: the names git ignores}.
+// One folder as the tree shows it (`herdr-nvim app-list`, src/app/list.rs):
+// {entries: [{name, dir, hidden, ignored}], folders first, then by name, at
+// most 500; ignored: the names git ignores}.
 export async function listFolder(path) {
-  const r = await exec("sh", ["-c", LIST, "herdr-nvim", path]);
-  if (r.code !== 0) throw new Error(r.stderr.trim() || `Cannot list ${path}`);
-  const fields = r.stdout.split("\0"), entries = [];
-  let i = 0;
-  for (; i + 1 < fields.length && fields[i] !== "x"; i += 2) entries.push({ name: fields[i + 1], dir: fields[i] === "d" });
-  const ignored = new Set(fields.slice(i + 2).filter(Boolean).map((name) => name.replace(/\/$/, "")));
-  entries.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
-  return { entries, ignored };
+  const r = await exec(bin(), ["app-list", path]);
+  if (r.code !== 0) throw new Error(r.stderr.trim().replace(/^herdr-nvim: /, "") || `Cannot list ${path}`);
+  const listing = JSON.parse(r.stdout);
+  return {
+    entries: listing.entries,
+    ignored: new Set(listing.entries.filter((e) => e.ignored).map((e) => e.name)),
+  };
 }
 
 // A folder's repo top (null outside one).

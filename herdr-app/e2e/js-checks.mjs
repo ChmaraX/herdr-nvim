@@ -60,29 +60,36 @@ assert.equal(markOf(marks, "/r/newdir/deep/x.md"), "A");
 assert.equal(markOf(marks, "/r/src/a.js"), "M");
 assert.equal(markOf(marks, "/r/src/other.js"), null);
 
-// A folder's listing (the script's records): folders first, then by name;
-// the names git ignores, a folder's without its slash.
-app.exec = async () => ok("f\0b.txt\0d\0src\0f\0a.txt\0d\0build\0x\0x\0build/\0a.txt\0");
-assert.deepEqual(await listFolder("/r"), {
-  entries: [{ name: "build", dir: true }, { name: "src", dir: true }, { name: "a.txt", dir: false }, { name: "b.txt", dir: false }],
-  ignored: new Set(["build", "a.txt"]),
-});
-app.exec = async () => ({ code: 1, stdout: "", stderr: "" });
-await assert.rejects(listFolder("/gone"), /Cannot list \/gone/);
+// A folder's listing is herdr-nvim's (`app-list`, src/app/list.rs, which
+// sorts it): its entries in its order, and the names git ignores.
+const entry = (name, dir = false, ignored = false) => ({ name, dir, hidden: name.startsWith("."), ignored });
+const listing = (...entries) => ok(JSON.stringify({ entries, truncated: false }));
+const bin = "/nonexistent-app-home/mods/herdr-nvim/bin/herdr-nvim";
+app.exec = async (cmd, args) => (cmd === bin && args[0] === "app-list" && args[1] === "/r"
+  ? listing(entry("build", true, true), entry("src", true), entry(".env"), entry("a.txt", false, true)) : ok(""));
+const r = await listFolder("/r");
+assert.deepEqual(r.entries.map((e) => e.name), ["build", "src", ".env", "a.txt"]);
+assert.deepEqual(r.ignored, new Set(["build", "a.txt"]));
+app.exec = async () => ({ code: 1, stdout: "", stderr: "herdr-nvim: not a folder: /gone\n" });
+await assert.rejects(listFolder("/gone"), /^Error: not a folder: \/gone$/);
 
 // The tree model: a watch batch lists again only the folders on screen it
 // touches; a build in an ignored folder lists nothing; the same listing
 // again changes no rows.
-const listings = { "/r": "d\0src\0d\0target\0f\0x.md\0x\0x\0target\0", "/r/src": "f\0a.js\0x\0x\0", "/r/target": "f\0out\0x\0x\0" };
+const listings = {
+  "/r": listing(entry("src", true), entry("target", true, true), entry(".env"), entry("x.md")),
+  "/r/src": listing(entry("a.js")),
+  "/r/target": listing(entry("out", false, true)),
+};
 let listed = [];
 app.exec = async (cmd, args) => {
-  if (cmd === "sh") { listed.push(args[3]); return ok(listings[args[3]]); }
+  if (cmd === bin && args[0] === "app-list") { listed.push(args[1]); return listings[args[1]]; }
   return args[0] === "rev-parse" ? ok("/r\n") : ok("");
 };
 const model = new TreeModel();
 model.reset("/r");
 await model.reload();
-assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/x.md"]); // target/ ignored, hidden
+assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/x.md"]); // target/ ignored and .env hidden: not shown
 await model.toggle("/r/src");
 assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/src/a.js", "/r/x.md"]);
 listed = [];
@@ -98,6 +105,13 @@ assert.deepEqual(listed, []);
 listed = [];
 await model.reloadChanged(["/r"]); // the root itself: anything may have changed
 assert.deepEqual(listed.sort(), ["/r", "/r/src"]);
+// Hidden is what the listing says (a dotfile, or Windows' Hidden attribute);
+// revealing a file in a hidden or ignored folder shows those.
+assert.ok(await model.expandTo("/r/target/out"));
+assert.ok(model.showIgnored && model.rows().some((r) => r.abs === "/r/target/out"));
+model.showHidden = true;
+assert.ok(model.rows().some((r) => r.abs === "/r/.env"));
+model.showHidden = model.showIgnored = false;
 
 // The Files panel: shown, hidden, or another child (Changes) on top.
 const files = { id: "files", type: "block", content: { mod: "herdr-nvim" } };
