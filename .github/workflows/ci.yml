@@ -73,11 +73,16 @@ jobs:
           neovim: true
           version: stable
       - run: cargo build --release --bins --example herdr_app_stub
+      # On Windows it also installs with install.ps1 fetched from this commit
+      # by Windows PowerShell 5.1's irm and run from memory (step 1b).
       - name: install e2e
-        run: pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Out e2e-out/${{ runner.os }} -NvimDownload
+        shell: pwsh
+        run: pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Out e2e-out/${{ runner.os }} -NvimDownload -ScriptUrl $env:SCRIPT_URL
         env:
           # Neovim's release lookup (api.github.com) is rate-limited without it.
           GITHUB_TOKEN: ${{ github.token }}
+          # The commit under test, from the repo it lives in (a fork's PR too).
+          SCRIPT_URL: https://raw.githubusercontent.com/${{ github.event.pull_request.head.repo.full_name || github.repository }}/${{ github.event.pull_request.head.sha || github.sha }}/install.ps1
       - if: always()
         uses: actions/upload-artifact@v4
         with:

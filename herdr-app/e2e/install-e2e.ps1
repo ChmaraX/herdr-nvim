@@ -7,6 +7,10 @@
 #
 #   0. the stand-in's check fails a broken mod and passes a good one
 #   1. a fresh install (-NvimDownload: with no usable Neovim, which it downloads)
+#  1b. with -ScriptUrl, on Windows: install.ps1 as a person runs it, fetched
+#      with Windows PowerShell 5.1's `irm` and run from memory, never as a
+#      file: the documented "with options" line (-Bundle, -AppBin), or with
+#      -PlainLine the plain `irm URL | iex` (the release; HERDR_APP_BIN)
 #   2. arguments and exit codes pass through the mod's launcher unchanged
 #   3. app-list of a fixture folder equals one golden JSON on every OS
 #   4. an upgrade while the old runtime is held by a running watcher and nvim
@@ -18,6 +22,7 @@
 #      on Windows first with a mod file held open
 #
 #   pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Out e2e-out [-Bundle FILE] [-NvimDownload]
+#        [-ScriptUrl URL [-PlainLine]]
 #
 # Without -Bundle it builds one (herdr-app/bundle.sh, from `cargo build
 # --release`). -Out gets transcript.md (every command, its exit code and
@@ -31,7 +36,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$Out,
     [string]$Bundle,
-    [switch]$NvimDownload
+    [switch]$NvimDownload,
+    [string]$ScriptUrl,
+    [switch]$PlainLine
 )
 
 Set-StrictMode -Version 3.0
@@ -569,6 +576,70 @@ function Step-FreshInstall {
     Save-Snapshot '01-fresh-install' $Main
 }
 
+# One PowerShell command line for Windows PowerShell 5.1's -Command.
+function Format-PsLiteral([string]$text) { "'" + $text.Replace("'", "''") + "'" }
+
+# Windows PowerShell 5.1 running `$command` (a person's own: no pwsh module
+# path) in `$privateEnv`'s folders.
+function Invoke-WindowsPowerShell([string]$command, $privateEnv, [hashtable]$extra = @{}) {
+    $environment = @{ PSModulePath = $null }
+    foreach ($name in 'HOME', 'HERDR_APP_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'HERDR_NVIM_RUNTIME_DIR', 'HERDR_NVIM_STATE_DIR') {
+        $environment[$name] = $privateEnv.$name
+    }
+    foreach ($name in $extra.Keys) { $environment[$name] = $extra[$name] }
+    Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) $environment
+}
+
+function Step-OneLiner {
+    if (-not $ScriptUrl) { return }
+    $form = if ($PlainLine) { 'the plain line' } else { 'the "with options" line' }
+    Write-Transcript "`n## 1b. install.ps1 from $ScriptUrl, run from memory: $form"
+    if (-not $IsWindows) {
+        Write-Transcript '- SKIP: the irm one-line install (Windows only; install.sh is for macOS and Linux)'
+        return
+    }
+    $served = (Invoke-WebRequest -UseBasicParsing -Uri $ScriptUrl).Content
+    if ($served -is [byte[]]) { $served = $Utf8.GetString($served) }
+    $local = Get-Content -Raw -LiteralPath (Join-Path $Repo 'install.ps1')
+    Assert-That ($served.Replace("`r`n", "`n") -eq $local.Replace("`r`n", "`n")) 'the URL serves this checkout''s install.ps1, byte for byte (line endings aside)'
+    $url = Format-PsLiteral $ScriptUrl
+    $one = Initialize-PrivateEnv 'oneliner'
+    $since = @(Get-StubCall).Count
+    if ($PlainLine) {
+        # Exactly what a person types: no arguments. The app is found by the
+        # environment the installer reads (HERDR_APP_HOME exists, so -App;
+        # HERDR_APP_BIN), the bundle is the latest release's, and Neovim is
+        # the usable one on PATH (no question to answer).
+        $result = Invoke-WindowsPowerShell "irm $url | iex" $one @{ HERDR_APP_BIN = $StubApp }
+    }
+    else {
+        # A failure must come out as an exit code, not just a message: the
+        # in-memory run throws (install.ps1 exits only when run as a file).
+        $missing = Join-Path $Root 'no-such-bundle.tar.gz'
+        $failed = Invoke-WindowsPowerShell "& ([scriptblock]::Create((irm $url))) -App -Bundle $(Format-PsLiteral $missing) -AppBin $(Format-PsLiteral $StubApp)" $one
+        Assert-That ($failed.Code -ne 0 -and $failed.Err.Contains('no bundle at')) 'a failing in-memory install exits non-zero and says why' "exit $($failed.Code)"
+        Assert-That (-not (Test-Path -LiteralPath (Get-ModDir $one 'herdr-nvim'))) 'and installs nothing'
+        $result = Invoke-WindowsPowerShell "& ([scriptblock]::Create((irm $url))) -App -Bundle $(Format-PsLiteral $BundleA) -AppBin $(Format-PsLiteral $StubApp)" $one
+    }
+    Assert-Installed $result "the $form install"
+    $record = Assert-Record $one "the $form install"
+    Assert-That ((Split-Path -Leaf $record.runtime) -eq $StampA) "it installs the same runtime as bundle A's install (stamp $StampA)" (Split-Path -Leaf $record.runtime)
+    Assert-Launcher $one
+    Assert-GenLayout $one
+    Assert-KeysMerged $one ((Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/keys.json')) | ConvertFrom-Json -AsHashtable)
+    Assert-LayoutPatched $one
+    Assert-ModsChecked $since
+    if ($PlainLine) {
+        Use-PrivateEnv $one
+        try { $check = Invoke-Launcher (Get-Launcher $one) @('app-nvim-check') }
+        finally { Use-PrivateEnv $Main }
+        $onPath = (Get-Command nvim -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        $bin = if ($check.Code -eq 0) { ($check.Out | ConvertFrom-Json).bin } else { '' }
+        Assert-That ($onPath -and $bin -and [IO.Path]::GetFullPath($bin) -eq [IO.Path]::GetFullPath($onPath)) "with no -InstallNvim it uses the Neovim on PATH ($onPath)" $bin
+    }
+    Save-Snapshot '01b-oneliner' $one
+}
+
 function Step-ArgumentFidelity {
     Write-Transcript "`n## 2. Arguments and exit codes through the launcher"
     $launcher = Get-Launcher $Main
@@ -902,6 +973,7 @@ try {
     Use-PrivateEnv $Main
     Step-StubSelfCheck
     Step-FreshInstall
+    Step-OneLiner
     Step-ArgumentFidelity
     Step-AppList
     Step-Upgrade
