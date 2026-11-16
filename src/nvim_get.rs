@@ -232,23 +232,32 @@ fn runs(nvim: &Path) -> bool {
 }
 
 fn fetch_text(url: &str) -> Result<String> {
+    // GitHub limits unauthenticated API calls per address (60 an hour); a
+    // token the person or CI already has lifts that. It goes to curl on
+    // stdin (`--config -`), never on its command line, which others can read.
+    let token = ["GITHUB_TOKEN", "GH_TOKEN"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|t| !t.is_empty()));
     let mut command = Command::new(curl());
     command
         .args(["--fail", "--silent", "--show-error", "--location"])
         .args(["--header", "Accept: application/vnd.github+json"]);
-    // GitHub limits unauthenticated API calls per address (60 an hour); a
-    // token the person or CI already has lifts that.
-    if let Some(token) = ["GITHUB_TOKEN", "GH_TOKEN"]
-        .iter()
-        .find_map(|name| std::env::var(name).ok().filter(|t| !t.is_empty()))
-    {
-        command.args(["--header", &format!("Authorization: Bearer {token}")]);
+    if token.is_some() {
+        command.args(["--config", "-"]);
     }
-    let output = command
+    let mut child = command
         .arg(url)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output()
+        .spawn()
         .context("cannot run curl")?;
+    if let (Some(token), Some(mut stdin)) = (token, child.stdin.take()) {
+        use std::io::Write;
+        writeln!(stdin, "header = \"Authorization: Bearer {token}\"")?;
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().context("cannot run curl")?;
     if !output.status.success() {
         bail!("curl {url} failed");
     }
