@@ -52,13 +52,16 @@ pub fn list(dir: &Path, limit: usize) -> Result<Listing> {
         bail!("not a folder: {}", dir.display());
     }
     let mut entries = Vec::new();
-    for entry in fs::read_dir(dir).with_context(|| format!("cannot list {}", dir.display()))? {
-        let entry = entry?;
+    let listed = fs::read_dir(dir).with_context(|| format!("cannot list {}", dir.display()))?;
+    // An entry that can't be read is left out, not the whole folder.
+    for (entry, kind) in listed
+        .flatten()
+        .filter_map(|e| e.file_type().ok().map(|k| (e, k)))
+    {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == ".git" {
             continue;
         }
-        let kind = entry.file_type()?;
         let is_dir = if kind.is_symlink() {
             fs::metadata(entry.path()).is_ok_and(|target| target.is_dir())
         } else {
