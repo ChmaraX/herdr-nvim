@@ -32,8 +32,17 @@ libc = "0.2"
 # Daemon control: spawning out of a Job Object (daemon), process list and tree kill (winproc).
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
+# What only the Windows facts probe (examples/winprobe.rs) asks: its console
+# and Job Object. Dev features stay out of the shipped binary.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects"] }
+
 [[example]]
 name = "fff_cold"
+
+# The Windows facts probe (doc/windows-facts.md).
+[[example]]
+name = "winprobe"
 
 [dev-dependencies]
 regex = "1"
