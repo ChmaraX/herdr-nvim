@@ -834,6 +834,10 @@ function Step-UninstallHeld {
     Assert-That (Test-SameContent (Get-ByteContent (Get-KeysFile $Main)) $PreKeys) 'keys.json is back to before the install all the same'
     Assert-That (Test-SameContent (Get-ByteContent (Get-LayoutFile $Main)) $PreLayout) 'the layout is back to before the install all the same'
     Save-Snapshot '06h-uninstall-held' $Main
+    # The rest of step 6 starts from a whole install again (that uninstall
+    # also pruned runtime B: nothing ran it).
+    Assert-Installed (Invoke-Bootstrap $BundleB) 'a reinstall over what the held uninstall left'
+    Assert-GenLayout $Main
 }
 
 function Step-Uninstall {
