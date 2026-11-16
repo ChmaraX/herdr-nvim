@@ -4,10 +4,11 @@
 //! first keystroke the index is warm. [`FffIndex::search`] returns ranked
 //! repo-relative hits with match highlight spans.
 //!
-//! Frecency reuse is read-only: `~/.cache/nvim/fff_nvim` is copied to a
-//! temp dir before opening, since `FrecencyTracker::open` writes
-//! (garbage-collects) on open.
+//! Frecency reuse is read-only: fff.nvim's DB (`stdpath('cache')/fff_nvim`)
+//! is copied to a temp dir before opening, since `FrecencyTracker::open`
+//! writes (garbage-collects) on open.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -137,13 +138,12 @@ impl Drop for FffIndex {
     }
 }
 
-/// Copy `~/.cache/nvim/fff_nvim` (fff.nvim's default frecency DB) to a
+/// Copy fff.nvim's default frecency DB (`stdpath('cache')/fff_nvim`) to a
 /// temp dir and open the copy. Returns `None` when the DB doesn't exist
 /// or anything fails; a torn copy (fff.nvim writing mid-copy) fails the
 /// open and lands here too.
 fn open_frecency_copy() -> Option<(FrecencyTracker, PathBuf)> {
-    let home = crate::home::home_dir()?;
-    let src = home.join(".cache/nvim/fff_nvim");
+    let src = nvim_cache_dir(|var| std::env::var_os(var))?.join("fff_nvim");
     if !src.is_dir() {
         return None;
     }
@@ -161,6 +161,27 @@ fn open_frecency_copy() -> Option<(FrecencyTracker, PathBuf)> {
     }
 }
 
+/// nvim's `stdpath('cache')` over an env lookup, by nvim's own rule
+/// (`src/nvim/os/stdpaths.c`, `get_xdg_home(kXDGCacheHome)`): the base is
+/// `$XDG_CACHE_HOME`, else on Windows `$TEMP`, else `~/.cache` (Windows:
+/// `~\AppData\Local\Temp`), then `$NVIM_APPNAME` or `nvim`. Windows adds
+/// no `-data` to the cache dir, whatever `:help base-directories` says.
+fn nvim_cache_dir(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let base = set("XDG_CACHE_HOME")
+        .or_else(|| if cfg!(windows) { set("TEMP") } else { None })
+        .map(PathBuf::from)
+        .or_else(|| {
+            let home = crate::home::home_dir()?;
+            Some(if cfg!(windows) {
+                home.join(r"AppData\Local\Temp")
+            } else {
+                home.join(".cache")
+            })
+        })?;
+    Some(base.join(set("NVIM_APPNAME").unwrap_or_else(|| "nvim".into())))
+}
+
 /// Shallow copy of the LMDB env dir (data.mdb + lock.mdb; the DB is
 /// capped at ~10MiB by fff-search, so this is a few ms at worst).
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -172,4 +193,55 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::nvim_available;
+    use std::process::Command;
+
+    type Vars<'a> = [(&'a str, Option<&'a str>)];
+
+    /// What nvim itself answers for `stdpath('cache')` with `vars` set (or
+    /// unset, for `None`) on top of this process's environment.
+    fn nvim_says(vars: &Vars) -> PathBuf {
+        let mut nvim = Command::new("nvim");
+        nvim.args(["--headless", "-u", "NONE", "-i", "NONE"])
+            .args(["--cmd", "lua io.stdout:write(vim.fn.stdpath('cache'))"])
+            .args(["--cmd", "qa!"]);
+        for (name, value) in vars {
+            match value {
+                Some(value) => nvim.env(name, value),
+                None => nvim.env_remove(name),
+            };
+        }
+        let out = nvim.output().expect("run nvim");
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+    }
+
+    #[test]
+    fn cache_dir_is_where_nvim_puts_its_cache() {
+        if !nvim_available() {
+            eprintln!("skipping: nvim not found on PATH");
+            return;
+        }
+        let elsewhere = std::env::temp_dir().join("herdr-nvim-xdg-cache");
+        let elsewhere = elsewhere.to_str().unwrap();
+        let cases: [&Vars; 3] = [
+            &[("XDG_CACHE_HOME", None), ("NVIM_APPNAME", None)],
+            &[("XDG_CACHE_HOME", Some(elsewhere)), ("NVIM_APPNAME", None)],
+            &[
+                ("XDG_CACHE_HOME", None),
+                ("NVIM_APPNAME", Some("herdr-nvim-test")),
+            ],
+        ];
+        for vars in cases {
+            let ours = nvim_cache_dir(|name| match vars.iter().find(|(set, _)| *set == name) {
+                Some((_, value)) => value.map(OsString::from),
+                None => std::env::var_os(name),
+            });
+            assert_eq!(ours, Some(nvim_says(vars)), "with {vars:?}");
+        }
+    }
 }
