@@ -423,10 +423,29 @@ pub fn toggle_cmd() -> Result<()> {
 
 /// `herdr-nvim app-preview --file <path> --ctx JSON` (the controller's
 /// Preview): the file rendered where the tab's nvim shows (`open_preview`).
+/// `app-preview --stage <path>` (the preview itself): a copy of a file the mod
+/// can't read (its `fs` reads only inside the home folder) put where it
+/// can, in the preview's cache; prints the copy's path. The preview reads it
+/// and removes it; its name starts with "." so the cache's clean-up leaves it
+/// alone meanwhile.
 pub fn preview_cmd() -> Result<()> {
     let args: Vec<String> = crate::argv::args().skip(2).collect();
+    if let Some(file) = cli::flag(&args, "--stage")? {
+        let cache = super::env::home_from_env()
+            .join("mods")
+            .join("herdr-nvim")
+            .join(".cache");
+        std::fs::create_dir_all(&cache)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let copy = cache.join(format!(".stage-{}-{nanos}", std::process::id()));
+        std::fs::copy(file, &copy).with_context(|| format!("cannot read {file}"))?;
+        println!("{}", copy.display());
+        return Ok(());
+    }
     let file = cli::flag(&args, "--file")?
-        .context("usage: herdr-nvim app-preview --file <path> --ctx JSON")?;
+        .context("usage: herdr-nvim app-preview --file <path> --ctx JSON | --stage <path>")?;
     let ctx = ctx(&cli::read_ctx(&args)?)?;
     let file = crate::pathkey::absolute(file, &ctx.cwd);
     if !file.is_file() {

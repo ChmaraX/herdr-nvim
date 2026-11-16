@@ -16,6 +16,7 @@ import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
 import { appHome, exec, panes, settings, setShared, shared, theme, watchFolder } from "herdr";
 import * as fs from "fs/promises";
+import { bin } from "./lib.js";
 import { drawMermaid, modeOf, pngSize, splitMermaid } from "./mermaid.js";
 
 const KINDS = {
@@ -128,30 +129,20 @@ async function diagram(code, mode, name) {
   return size ? { width: size.width / 2, height: size.height / 2 } : { error: "The diagram was not drawn." };
 }
 
-// A mod reads files only inside the home folder: one elsewhere (/tmp, a
-// screenshot under /private/var/folders) is read through a process.
-async function readText(file) {
+// A file's text, or its bytes. A mod's `fs` reads only inside the home
+// folder: a file elsewhere (/tmp, a screenshot under /private/var/folders,
+// another drive) is copied into the cache by herdr-nvim (`app-preview
+// --stage`), read there, then removed.
+async function readFile(file, text) {
+  const read = (path) => (text ? fs.readFile(path, "utf8") : fs.readFile(path));
   try {
-    return await fs.readFile(file, "utf8");
+    return await read(file);
   } catch {
-    const r = await exec("cat", [file]);
+    const r = await exec(bin(), ["app-preview", "--stage", file]);
     if (r.code !== 0) throw new Error(r.stderr);
-    return r.stdout;
-  }
-}
-
-async function readBytes(file) {
-  try {
-    return await fs.readFile(file);
-  } catch {
-    // Copied into the cache (inside the app home), read there, then gone.
-    const dir = `${appHome()}/${CACHE}`;
-    await fs.mkdir(dir, { recursive: true });
-    const copy = `${dir}/.copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const r = await exec("cp", [file, copy]);
-    if (r.code !== 0) throw new Error(r.stderr);
+    const copy = r.stdout.trim();
     try {
-      return await fs.readFile(copy);
+      return await read(copy);
     } finally {
       await fs.unlink(copy).catch(() => {});
     }
@@ -166,7 +157,7 @@ async function load(file) {
   if (!kind) return { error: "Can't preview this kind of file." };
   let data;
   try {
-    data = kind === "markdown" ? await readText(file) : await readBytes(file);
+    data = await readFile(file, kind === "markdown");
   } catch {
     return { error: "The file is gone." };
   }
