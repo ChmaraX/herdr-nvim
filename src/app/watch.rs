@@ -86,29 +86,46 @@ pub fn app_watch_cmd() -> Result<()> {
 /// runtime it started with, which an install then prunes (Windows can't
 /// remove a runtime an exe in it runs from).
 pub(crate) fn stop() -> anyhow::Result<()> {
-    use anyhow::Context;
-    let hc = |args: &[&str]| -> anyhow::Result<bool> {
-        Ok(rpc::hc()
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .with_context(|| format!("cannot run {}", rpc::hc_bin().to_string_lossy()))?
-            .success())
-    };
-    if !hc(&["get", NAME])? {
+    if !runs()? {
         return Ok(());
     }
-    hc(&["kill", NAME])?;
+    let _ = hc(&["kill", NAME]);
     let started = std::time::Instant::now();
-    while hc(&["get", NAME])? {
+    while runs()? {
         if started.elapsed() > std::time::Duration::from_secs(3) {
             anyhow::bail!("the watcher terminal {NAME} did not end");
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     Ok(())
+}
+
+/// Whether the watcher terminal exists: `hc get` finds it, or says it
+/// doesn't (exit 3, `not_found`). Anything else is an error: hc ran, but
+/// that says nothing about the watcher.
+fn runs() -> anyhow::Result<bool> {
+    let output = hc(&["get", NAME, "--json"])?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.code() == Some(3) && said.contains("not_found") {
+        return Ok(false);
+    }
+    anyhow::bail!("hc get {NAME} failed: {}", said.trim())
+}
+
+fn hc(args: &[&str]) -> anyhow::Result<std::process::Output> {
+    use anyhow::Context;
+    rpc::hc()
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("cannot run {}", rpc::hc_bin().to_string_lossy()))
 }
 
 /// Start the watcher unless it runs. Its name is unique among live

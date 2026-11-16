@@ -128,14 +128,19 @@ fn install(
         &[&["app-setup", "check"], &width[..]].concat(),
     )
     .context("nothing changed")?;
+    crate::app::rpc::check_hc().context("nothing changed")?;
+    // What can fail without the person's say is checked above. After the
+    // switch only the launcher's own `app-setup install` can fail the
+    // install; the rest is best effort, reported.
     let swapped = mods::stage(app, &source, &record, owned)?.swap()?;
     mods::retire_pick(&app.home);
     // The watcher runs the runtime it started with: ended (the next nvim
     // pane starts it on this one), so it doesn't hold that runtime.
-    crate::app::watch::stop()?;
-    report_prune(store.prune(Some(&runtime), &runtime::live_runtimes()));
+    if let Err(error) = crate::app::watch::stop() {
+        eprintln!("herdr-nvim: {error:#}; the old watcher may keep its runtime until it ends");
+    }
     // Through the launcher, as the mods run it: a launcher that doesn't
-    // work fails the install.
+    // work fails the install (and nothing is pruned).
     run(
         swapped.launcher(),
         None,
@@ -144,6 +149,7 @@ fn install(
     if let Some(tree) = &request.tree {
         run(swapped.launcher(), None, &["app-config", "tree", tree])?;
     }
+    report_prune(store.prune(Some(&runtime), &runtime::live_runtimes()));
     println!("herdr-nvim: installed in {}", app.home.display());
     Ok(())
 }
@@ -170,7 +176,9 @@ fn uninstall(
              with --force to discard their work"
         );
     }
-    crate::app::watch::stop()?;
+    if let Err(error) = crate::app::watch::stop() {
+        eprintln!("herdr-nvim: {error:#}; the watcher ends with the app's next nvim pane");
+    }
     let kept = mods::remove(&app.home, owned);
     crate::app::setup::uninstall_keys_and_layouts(&app.home)?;
     let report = store.prune(None, &runtime::live_runtimes());

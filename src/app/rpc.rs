@@ -31,6 +31,24 @@ pub(crate) fn hc_bin() -> std::ffi::OsString {
         .map_or_else(|| "hc".into(), Into::into)
 }
 
+/// Whether `hc` runs at all (`hc --version`): checked before an install
+/// changes anything, so a missing core CLI stops it with nothing changed.
+pub(crate) fn check_hc() -> Result<()> {
+    let output = hc()
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("cannot run {}", hc_bin().to_string_lossy()))?;
+    if !output.status.success() {
+        bail!(
+            "{} --version failed: {}",
+            hc_bin().to_string_lossy(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 /// A `hc` command for the CLI paths (`hc read`, `hc send`, `hc events`).
 pub(crate) fn hc() -> Command {
     Command::new(hc_bin())

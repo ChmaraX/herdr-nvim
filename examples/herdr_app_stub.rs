@@ -54,6 +54,18 @@ fn main() {
             return;
         }
         ("hc", Some("connect")) => connect(),
+        ("hc", Some("--version")) => {
+            println!("hc stub");
+            0
+        }
+        // No terminal exists here; as herdr-core answers for a missing one.
+        ("hc", Some("get" | "kill")) => {
+            println!(
+                "{}",
+                json!({"error": {"kind": "not_found", "message": "no terminal"}})
+            );
+            3
+        }
         ("hc", _) => 1,
         ("herdr-app", _) => app(&args),
         _ => {
