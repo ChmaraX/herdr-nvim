@@ -95,11 +95,17 @@ impl AppEnv {
     }
 }
 
-/// `HERDR_APP_BIN`: the app's `herdr-app`, when set (the one reader).
+/// `HERDR_APP_BIN`: the app's `herdr-app`, when set (the one reader). One
+/// the install recorded that is gone (an app update moved it) is looked up
+/// again (`discover`).
 pub fn app_bin_from_env() -> Option<PathBuf> {
-    env::var_os("HERDR_APP_BIN")
+    let bin = env::var_os("HERDR_APP_BIN")
         .filter(|bin| !bin.is_empty())
-        .map(PathBuf::from)
+        .map(PathBuf::from)?;
+    if bin.is_absolute() && !bin.exists() {
+        return super::discover::app_bins().into_iter().next().or(Some(bin));
+    }
+    Some(bin)
 }
 
 /// The app home: `HERDR_APP_HOME`, else `~/.config/herdr-app`.

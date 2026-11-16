@@ -122,6 +122,14 @@ the old runtime while that nvim runs, and the next install after closing it
 prunes it. Keep `Get-ChildItem` of the store before, during and after, and
 the install output.
 
+## 6b. Update the app, then use Files
+
+Update the Herdr app itself (its own updater), reopen it, and press Files.
+Check: the tree and nvim open as before. If the update moved
+`herdr-app.exe`, herdr-nvim looks the app up again (PATH, the per-user
+install folders, then the running app); record where the app's exe was
+before and after (`winprobe where`) for `doc/windows-facts.md` row 16.
+
 ## 7. Uninstall
 
 ``& ([scriptblock]::Create((irm $raw/install.ps1))) -App -Uninstall``
