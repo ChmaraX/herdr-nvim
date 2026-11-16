@@ -416,35 +416,50 @@ pub fn daemons_cmd() -> Result<()> {
             }
             Ok(())
         }
-        Invocation::Stop { target, force } => {
-            let outcome = stop(herdr, &sidebar, &target, force)?;
-            for line in &outcome.stopped {
-                println!("{line}");
-            }
-            let problems: Vec<&String> = outcome.refused.iter().chain(&outcome.failed).collect();
-            if outcome.stopped.is_empty() && problems.is_empty() {
-                println!(
-                    "{}",
-                    if target == Target::Orphans {
-                        "no orphaned nvim daemons"
-                    } else {
-                        "no nvim daemons running"
-                    }
-                );
-            }
-            if !problems.is_empty() {
-                bail!(
-                    "{}",
-                    problems
-                        .iter()
-                        .map(|line| line.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-            }
-            Ok(())
-        }
+        Invocation::Stop { target, force } => stop_and_report(herdr, &sidebar, &target, force),
     }
+}
+
+/// `daemons stop --all [--force]`, for the app's uninstall.
+pub(crate) fn stop_all(force: bool) -> Result<()> {
+    let sidebar = crate::config::load().sidebar;
+    let mut herdr = crate::host::ops().herdr();
+    stop_and_report(&mut *herdr, &sidebar, &Target::All, force)
+}
+
+/// Stops `target`, prints what stopped, and fails listing what didn't.
+fn stop_and_report(
+    herdr: &mut dyn Herdr,
+    sidebar: &Sidebar,
+    target: &Target,
+    force: bool,
+) -> Result<()> {
+    let outcome = stop(herdr, sidebar, target, force)?;
+    for line in &outcome.stopped {
+        println!("{line}");
+    }
+    let problems: Vec<&String> = outcome.refused.iter().chain(&outcome.failed).collect();
+    if outcome.stopped.is_empty() && problems.is_empty() {
+        println!(
+            "{}",
+            if *target == Target::Orphans {
+                "no orphaned nvim daemons"
+            } else {
+                "no nvim daemons running"
+            }
+        );
+    }
+    if !problems.is_empty() {
+        bail!(
+            "{}",
+            problems
+                .iter()
+                .map(|line| line.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]

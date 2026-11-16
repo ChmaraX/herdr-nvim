@@ -1,7 +1,7 @@
 //! The app mod's launcher, installed as `<home>/mods/herdr-nvim/bin/herdr-nvim`
-//! (`.exe` on Windows): the path the mods and other mods run. It reads
-//! `../install.json` and runs that runtime's herdr-nvim with the app context
-//! in front of its own arguments:
+//! (`.exe` on Windows): the path the mods and other mods run. It reads the
+//! live generation's record (`launch_record`) and runs that runtime's
+//! herdr-nvim with the app context in front of its own arguments:
 //! `<runtime>/bin/herdr-nvim --app-home <home> --app-bin <app_bin> <args…>`.
 //! No shell parses anything on the way. Unix replaces itself with it; Windows
 //! has no exec, so it waits and passes the exit code on.
@@ -12,10 +12,10 @@ mod launch_record;
 
 use std::{env, path::PathBuf, process::Command};
 
-use launch_record::InstallRecord;
+use launch_record::{InstallRecord, BIN_FLAG, HOME_FLAG};
 
 fn main() {
-    let record = match mod_dir().and_then(|dir| InstallRecord::read(&dir)) {
+    let record = match mod_dir().and_then(|dir| InstallRecord::read_live(&dir)) {
         Ok(record) => record,
         Err(why) => {
             eprintln!("herdr-nvim: {why}; run the herdr-nvim installer again");
@@ -24,11 +24,14 @@ fn main() {
     };
     let mut command = Command::new(record.runtime_exe());
     command
-        .arg("--app-home")
+        .arg(HOME_FLAG)
         .arg(&record.home)
-        .arg("--app-bin")
+        .arg(BIN_FLAG)
         .arg(&record.app_bin)
-        .args(env::args_os().skip(1));
+        .args(env::args_os().skip(1))
+        // Set by the bash era's wrapper and inherited by its nvims' callbacks:
+        // it would send this runtime to that old one's Lua.
+        .env_remove("HERDR_NVIM_PLUGIN_ROOT");
     let why = run(command);
     eprintln!(
         "herdr-nvim: cannot run {}: {why}; run the herdr-nvim installer again",

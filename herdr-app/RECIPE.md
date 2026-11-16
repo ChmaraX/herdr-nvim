@@ -181,11 +181,13 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
   folder per version so running nvims keep theirs, and the mods in
   generations: `mods/<mod>/main.js` points at `gen/<id>/main.js`, and an
   upgrade adds a generation and replaces `main.js`, so the live folder is
-  never renamed.
+  never renamed. A `.herdr-nvim` mark in each mod says it is herdr-nvim's;
+  an install never touches a folder of that name without it.
 - **The `herdr-nvim` binary** (Rust and Lua, in this repo; the same one the
   herdr TUI plugin uses), run through the mod's launcher
   `mods/herdr-nvim/bin/herdr-nvim` (`.exe` on Windows), a small compiled
-  program that reads `mods/herdr-nvim/install.json` and runs that runtime
+  program that reads the live generation's `install.json` (the one
+  `main.js` points at) and runs that runtime
   with `--app-home <home> --app-bin <herdr-app>` in front of its arguments
   (no shell in between). It makes every nvim and every pane: one
   headless nvim per tab, shown in the pane with `nvim --remote-ui`. A rebuild

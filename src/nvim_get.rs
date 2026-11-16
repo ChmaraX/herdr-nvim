@@ -11,16 +11,14 @@
 
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-use crate::install::osfs;
+use crate::osfs;
 
 pub enum Method {
     Homebrew(PathBuf),
@@ -33,9 +31,7 @@ pub enum Method {
 /// Homebrew).
 pub fn method() -> Result<Method> {
     let forced = std::env::var("HERDR_NVIM_INSTALL_METHOD").ok();
-    let brew = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join("brew"))
-        .find(|brew| cfg!(unix) && brew.is_file());
+    let brew = osfs::on_path("brew").into_iter().find(|_| cfg!(unix));
     match (forced.as_deref(), brew) {
         (Some("brew"), None) => bail!("HERDR_NVIM_INSTALL_METHOD=brew, but there is no brew"),
         (Some("brew") | None, Some(brew)) => Ok(Method::Homebrew(brew)),
@@ -73,10 +69,14 @@ pub fn describe(method: &Method) -> String {
 
 /// `<data>/herdr-nvim/nvim`.
 pub fn dest() -> Result<PathBuf> {
-    Ok(crate::install::data_dir()?.join("herdr-nvim").join("nvim"))
+    Ok(crate::home::data_dir()
+        .context("no home folder (HOME or USERPROFILE)")?
+        .join("herdr-nvim")
+        .join("nvim"))
 }
 
-fn usable() -> Result<String, crate::nvim_check::NvimMissing> {
+/// The configured nvim's version, or why herdr-nvim can't run on it.
+pub fn usable() -> Result<String, crate::nvim_check::NvimMissing> {
     crate::nvim_check::check(&crate::config::load().sidebar)
 }
 
@@ -130,7 +130,7 @@ pub fn install(method: &Method) -> Result<()> {
 }
 
 fn set_nvim_bin(bin: &Path) -> Result<()> {
-    crate::app::settings::write_setting("sidebar", "nvim_bin", &bin.to_string_lossy())
+    crate::app::settings::set_nvim_bin(&bin.to_string_lossy())
 }
 
 #[derive(Deserialize)]
@@ -177,7 +177,7 @@ fn download(asset: &str, ext: &str) -> Result<PathBuf> {
     if bin.is_file() && runs(&bin) {
         return Ok(bin);
     }
-    let work = dest.join(osfs::unique(".new-"));
+    let work = dest.join(osfs::unique(osfs::TEMP));
     fs::create_dir_all(&work)?;
     let result = (|| -> Result<PathBuf> {
         let archive = work.join(&file);
@@ -194,7 +194,7 @@ fn download(asset: &str, ext: &str) -> Result<PathBuf> {
         if !status.success() {
             bail!("the download failed");
         }
-        if sha256_file(&archive)? != want.to_ascii_lowercase() {
+        if osfs::sha256_file(&archive)? != want.to_ascii_lowercase() {
             bail!("the download does not match its SHA-256; not installed");
         }
         let status = Command::new(tar())
@@ -242,24 +242,6 @@ fn fetch_text(url: &str) -> Result<String> {
         bail!("curl {url} failed");
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; 1 << 16];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
 }
 
 /// Windows' own, by full path: never Git's curl or tar that PATH may put first.

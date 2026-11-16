@@ -25,11 +25,9 @@ pub fn locate(home: Option<&Path>, app_bin: Option<&Path>) -> Result<AppEnv> {
         bail!("no Herdr app home at {}", home.display());
     }
     let home = crate::pathkey::canonical(&home);
-    let given = app_bin.map(Path::to_path_buf).or_else(|| {
-        env::var_os("HERDR_APP_BIN")
-            .filter(|b| !b.is_empty())
-            .map(PathBuf::from)
-    });
+    let given = app_bin
+        .map(Path::to_path_buf)
+        .or_else(crate::app::env::app_bin_from_env);
     if let Some(bin) = given {
         if answers(&bin, &home) {
             return Ok(AppEnv { home, app_bin: bin });
@@ -79,7 +77,7 @@ fn answers(bin: &Path, home: &Path) -> bool {
 
 /// Where the app's CLI may be, most likely first, existing files only.
 fn candidates() -> Vec<PathBuf> {
-    let mut found = on_path(&format!("herdr-app{}", env::consts::EXE_SUFFIX));
+    let mut found = crate::osfs::on_path(&format!("herdr-app{}", env::consts::EXE_SUFFIX));
     found.extend(platform_candidates());
     let mut seen = Vec::new();
     found.retain(|bin| {
@@ -89,14 +87,6 @@ fn candidates() -> Vec<PathBuf> {
         new
     });
     found
-}
-
-/// Every `name` on PATH, in PATH's order.
-fn on_path(name: &str) -> Vec<PathBuf> {
-    env::split_paths(&env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join(name))
-        .filter(|path| path.is_file())
-        .collect()
 }
 
 /// macOS: a Herdr bundle in /Applications or ~/Applications, found by its

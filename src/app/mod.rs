@@ -11,6 +11,8 @@ pub(crate) mod commands;
 mod doc;
 pub(crate) mod env;
 mod host;
+// Its readers are the launcher's (src/bin/herdr-nvim-launch.rs).
+#[allow(dead_code)]
 pub(crate) mod launch_record;
 mod layout_patch;
 pub(crate) mod mermaid;

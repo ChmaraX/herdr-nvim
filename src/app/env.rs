@@ -20,8 +20,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 
-pub const HOME_FLAG: &str = "--app-home";
-pub const BIN_FLAG: &str = "--app-bin";
+use super::launch_record::{BIN_FLAG, HOME_FLAG};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppEnv {
@@ -59,9 +58,7 @@ impl AppEnv {
         }
         Some(AppEnv {
             home: home_from_env(),
-            app_bin: env::var_os("HERDR_APP_BIN")
-                .filter(|bin| !bin.is_empty())
-                .map_or_else(|| PathBuf::from("herdr-app"), PathBuf::from),
+            app_bin: app_bin_from_env().unwrap_or_else(|| PathBuf::from("herdr-app")),
         })
     }
 
@@ -96,6 +93,13 @@ impl AppEnv {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect())
     }
+}
+
+/// `HERDR_APP_BIN`: the app's `herdr-app`, when set (the one reader).
+pub fn app_bin_from_env() -> Option<PathBuf> {
+    env::var_os("HERDR_APP_BIN")
+        .filter(|bin| !bin.is_empty())
+        .map(PathBuf::from)
 }
 
 /// The app home: `HERDR_APP_HOME`, else `~/.config/herdr-app`.

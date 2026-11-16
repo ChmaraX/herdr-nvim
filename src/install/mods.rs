@@ -1,33 +1,43 @@
 //! The two mods in `<home>/mods/`, installed so the live folder is never
 //! renamed: Windows refuses to rename a folder while anything holds a file
-//! in it, and whether the app does is unknown (doc/windows-facts.md). One
-//! layout on every OS:
+//! in it, and whether the app does is unknown (doc/windows-facts.md, row 11).
+//! One layout on every OS, so macOS proves the Windows path daily:
 //!
 //! ```text
-//! mods/herdr-nvim/
-//!   main.js        `export … from "./gen/<id>/main.js"`: replaced last, the switch
+//! mods/<mod>/
+//!   main.js        the pointer: re-exports gen/<id>/main.js (launch_record)
 //!   mod.json
-//!   install.json   the launcher's record (main mod)
-//!   .herdr-nvim    the mark (header mod)
+//!   .herdr-nvim    the mark: this folder is herdr-nvim's
 //!   bin/herdr-nvim the launcher (main mod)
-//!   gen/<id>/      the mod's own files; <id> is their stamp
+//!   gen/<id>/      the mod's files, and install.json (main mod); <id> is their stamp
 //! ```
 //!
-//! A new version is built and checked whole in `mods/.<name>.new/<name>`,
-//! its `gen/<id>` moved in beside the old one, and `main.js` replaced: the
-//! app reloads the mod on that save. Older generations and files of older
-//! layouts go after both mods have switched.
+//! An install builds each mod whole in `mods/.<mod>.new/<mod>` and has the
+//! app check it. Then, for both mods, it places what nothing runs yet (the
+//! generation, `mod.json`, the mark, the next launcher), and only then
+//! switches: each `main.js` (and the launcher) in turn, undone in reverse if
+//! one fails. The app reloads a mod when its `main.js` changes.
 
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{bail, Context, Result};
 
-use super::{osfs, runtime::Stamp, source::Source, state};
-use crate::app::{env::AppEnv, launch_record::InstallRecord};
+use super::{
+    runtime::Stamp,
+    source::Source,
+    state::{self, Owned, Ownership},
+};
+use crate::{
+    app::{
+        env::AppEnv,
+        launch_record::{exe_name, pointer, InstallRecord, GEN},
+    },
+    osfs,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModName {
@@ -46,32 +56,46 @@ impl ModName {
     }
 
     pub fn live(self, home: &Path) -> PathBuf {
-        home.join("mods").join(self.as_str())
+        mods_dir(home).join(self.as_str())
     }
 
     fn stage(self, home: &Path) -> PathBuf {
-        home.join("mods").join(format!(".{}.new", self.as_str()))
+        mods_dir(home).join(format!(".{}.new", self.as_str()))
     }
 
     /// The bash installer's swap leftover.
     fn old(self, home: &Path) -> PathBuf {
-        home.join("mods").join(format!(".{}.old", self.as_str()))
+        mods_dir(home).join(format!(".{}.old", self.as_str()))
     }
 }
 
-const GEN: &str = "gen";
-const LAUNCHER: &str = "herdr-nvim";
+pub fn mods_dir(home: &Path) -> PathBuf {
+    home.join("mods")
+}
+
+/// The generation a mod is built in before it has its name.
+const BUILD: &str = "build";
+/// The launcher waiting to be switched in, and the one switched out.
+const NEXT: &str = ".next-";
+const PREV: &str = ".prev-";
+
 /// Repairs what a crashed run left: the bash installer's half-done swap
-/// (live gone, `.old` there) and any stage.
-pub fn recover(home: &Path) -> Result<()> {
+/// (live gone, its own `.old` there), stages, and half-written or
+/// half-removed files.
+pub fn recover(home: &Path, _: &Owned) -> Result<()> {
+    osfs::sweep(&mods_dir(home), &[]);
     for name in ModName::ALL {
         let (live, old) = (name.live(home), name.old(home));
-        if !live.exists() && old.exists() {
+        if !live.exists() && matches!(state::read_mod(&old), Ownership::Ours) {
             osfs::rename_retrying(&old, &live)
                 .with_context(|| format!("cannot restore {}", live.display()))?;
         }
-        osfs::remove_tree(&old)?;
-        osfs::remove_tree(&name.stage(home))?;
+        if matches!(state::read_mod(&old), Ownership::Ours) {
+            remove_or_say(&old);
+        }
+        remove_or_say(&name.stage(home));
+        osfs::sweep(&live, &[]);
+        osfs::sweep(&live.join("bin"), &[NEXT]);
     }
     Ok(())
 }
@@ -91,12 +115,19 @@ pub struct Staged {
     mods: Vec<StagedMod>,
 }
 
-/// Proof both mods run the new version; the launcher to call them through.
+/// Proof that both mods' `main.js` point at the new generation, and the
+/// launcher the mods run.
 pub struct Swapped {
-    pub launcher: PathBuf,
+    launcher: PathBuf,
 }
 
-pub fn stage(app: &AppEnv, source: &Source, record: &InstallRecord) -> Result<Staged> {
+impl Swapped {
+    pub fn launcher(&self) -> &Path {
+        &self.launcher
+    }
+}
+
+pub fn stage(app: &AppEnv, source: &Source, record: &InstallRecord, _: &Owned) -> Result<Staged> {
     let mut staged = Staged {
         home: app.home.clone(),
         mods: Vec::new(),
@@ -105,29 +136,30 @@ pub fn stage(app: &AppEnv, source: &Source, record: &InstallRecord) -> Result<St
         let stage = name.stage(&app.home);
         osfs::remove_tree(&stage)?;
         let dir = stage.join(name.as_str());
-        let build = dir.join(GEN).join(".build");
+        let build = dir.join(GEN).join(BUILD);
         osfs::copy_tree(&source.mod_dir(name.as_str()), &build)
             .with_context(|| format!("cannot stage {}", dir.display()))?;
         fs::copy(build.join("mod.json"), dir.join("mod.json"))?;
-        match name {
-            ModName::Main => {
-                fs::create_dir_all(dir.join("bin"))?;
-                fs::copy(&source.launcher, dir.join("bin").join(launcher_file()))?;
-                record.write_atomic(&dir)?;
-            }
-            ModName::Header => fs::write(dir.join(state::MARK_FILE), format!("{}\n", state::MARK))?,
+        fs::write(dir.join(state::MARK_FILE), format!("{}\n", state::MARK))?;
+        if name == ModName::Main {
+            record.write(&build)?;
+            fs::create_dir_all(dir.join("bin"))?;
+            fs::copy(&source.launcher, dir.join("bin").join(exe_name()))?;
         }
-        let generation = if name == ModName::Header {
-            header_generation(app, &dir, &build)?
-        } else {
-            switch_to(&dir, &build)?
+        fs::write(dir.join("main.js"), pointer(BUILD))?;
+        let checked = match name {
+            ModName::Main => check(app, &dir),
+            ModName::Header => check_header(app, &dir, &build),
         };
-        if let Err(error) = check(app, &dir) {
-            bail!(
-                "herdr-app check failed for {}; nothing replaced: {error}",
+        checked.with_context(|| {
+            format!(
+                "herdr-app check failed for {}; nothing replaced",
                 name.as_str()
-            );
-        }
+            )
+        })?;
+        let generation = Stamp::of(&build, &[])?;
+        osfs::rename_retrying(&build, &dir.join(GEN).join(generation.as_str()))?;
+        fs::write(dir.join("main.js"), pointer(generation.as_str()))?;
         staged.mods.push(StagedMod {
             name,
             dir,
@@ -140,51 +172,23 @@ pub fn stage(app: &AppEnv, source: &Source, record: &InstallRecord) -> Result<St
 /// The header is the app's own pane header plus a button: built on this
 /// app's shipped `mods/pane/main.js` when the mod passes the check with it,
 /// else on the copy in this repo.
-fn header_generation(app: &AppEnv, dir: &Path, build: &Path) -> Result<Stamp> {
+fn check_header(app: &AppEnv, dir: &Path, build: &Path) -> Result<()> {
     let shipped = app.home.join("mods/pane/main.js");
     if shipped.is_file() {
         let repo_base = fs::read(build.join("pane-base.js"))?;
         fs::copy(&shipped, build.join("pane-base.js"))?;
-        let generation = switch_to(dir, build)?;
         if check(app, dir).is_ok() {
-            return Ok(generation);
+            return Ok(());
         }
-        let generation_dir = dir.join(GEN).join(generation.as_str());
-        osfs::rename_retrying(&generation_dir, build)?;
         fs::write(build.join("pane-base.js"), repo_base)?;
     }
-    switch_to(dir, build)
-}
-
-/// Names the files in `build` by their stamp (`gen/<id>`) and points the
-/// mod's `main.js` at them.
-fn switch_to(dir: &Path, build: &Path) -> Result<Stamp> {
-    let generation = Stamp::of(build, &[])?;
-    let target = dir.join(GEN).join(generation.as_str());
-    osfs::remove_tree(&target)?;
-    osfs::rename_retrying(build, &target)?;
-    fs::write(dir.join("main.js"), pointer(&generation))?;
-    Ok(generation)
-}
-
-fn pointer(generation: &Stamp) -> String {
-    let id = generation.as_str();
-    format!(
-        "// Written by herdr-nvim's installer: this mod's code is in gen/{id}/.\n\
-         export * from \"./{GEN}/{id}/main.js\";\n\
-         export {{ default }} from \"./{GEN}/{id}/main.js\";\n"
-    )
-}
-
-fn launcher_file() -> String {
-    format!("{LAUNCHER}{}", std::env::consts::EXE_SUFFIX)
+    check(app, dir)
 }
 
 fn check(app: &AppEnv, dir: &Path) -> Result<()> {
     let output = Command::new(&app.app_bin)
         .arg("check")
         .arg(dir)
-        .env("HERDR_APP_HOME", &app.home)
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("cannot run {}", app.app_bin.display()))?;
@@ -198,34 +202,53 @@ fn check(app: &AppEnv, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What a switch changed, to put back if a later one fails.
+enum Undo {
+    /// A fresh mod: its folder goes back to the stage.
+    Moved { live: PathBuf, stage: PathBuf },
+    /// `main.js`'s bytes before, and the launcher switched out (if any).
+    Pointed {
+        main_js: PathBuf,
+        before: Vec<u8>,
+        launcher: Option<(PathBuf, Option<PathBuf>)>,
+    },
+}
+
 impl Staged {
-    /// Puts both mods' new generation live. A fresh mod folder is moved in
-    /// whole; an existing one gets the new generation, launcher, record and
-    /// `mod.json` beside the old ones, then its `main.js`.
+    /// Places both mods' new generation, then switches both, all or none.
     pub fn swap(self) -> Result<Swapped> {
         for staged in &self.mods {
             let live = staged.name.live(&self.home);
-            let placed = if fs::symlink_metadata(&live).is_err() {
-                osfs::rename_retrying(&staged.dir, &live).map_err(anyhow::Error::from)
-            } else {
-                update(&staged.dir, &live, &staged.generation)
-            };
-            placed.with_context(|| {
-                format!(
-                    "cannot put {} in place{}",
-                    live.display(),
-                    holders_hint(&live)
-                )
-            })?;
+            if live.exists() {
+                place(&staged.dir, &live, &staged.generation).with_context(|| {
+                    format!("cannot update {}{}", live.display(), holders_hint(&live))
+                })?;
+            }
+        }
+        let mut done: Vec<Undo> = Vec::new();
+        for staged in &self.mods {
+            let live = staged.name.live(&self.home);
+            match switch(&staged.dir, &live) {
+                Ok(undo) => done.push(undo),
+                Err(error) => {
+                    for undo in done.into_iter().rev() {
+                        undo.apply();
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "cannot switch {} to the new version{}; the previous one is back",
+                            live.display(),
+                            holders_hint(&live)
+                        )
+                    });
+                }
+            }
         }
         for staged in &self.mods {
             tidy(&staged.name.live(&self.home), &staged.generation);
         }
         Ok(Swapped {
-            launcher: ModName::Main
-                .live(&self.home)
-                .join("bin")
-                .join(launcher_file()),
+            launcher: ModName::Main.live(&self.home).join("bin").join(exe_name()),
         })
     }
 }
@@ -238,30 +261,96 @@ impl Drop for Staged {
     }
 }
 
-fn update(stage: &Path, live: &Path, generation: &Stamp) -> Result<()> {
-    let id = generation.as_str();
-    let target = live.join(GEN).join(id);
+/// Phase one, into a live mod: what nothing runs yet.
+fn place(stage: &Path, live: &Path, generation: &Stamp) -> Result<()> {
+    let target = live.join(GEN).join(generation.as_str());
     if !target.join("main.js").is_file() {
         fs::create_dir_all(live.join(GEN))?;
         osfs::remove_tree(&target)?;
-        osfs::rename_retrying(&stage.join(GEN).join(id), &target)?;
+        osfs::rename_retrying(&stage.join(GEN).join(generation.as_str()), &target)?;
     }
-    let launcher = stage.join("bin").join(launcher_file());
-    if launcher.is_file() {
+    for file in ["mod.json", state::MARK_FILE] {
+        osfs::replace_file(&live.join(file), &fs::read(stage.join(file))?)?;
+    }
+    let launcher = stage.join("bin").join(exe_name());
+    let current = live.join("bin").join(exe_name());
+    if launcher.is_file() && fs::read(&current).ok() != Some(fs::read(&launcher)?) {
         fs::create_dir_all(live.join("bin"))?;
-        osfs::replace_exe(&launcher, &live.join("bin").join(launcher_file()))?;
-    }
-    for file in [InstallRecord::FILE, state::MARK_FILE, "mod.json", "main.js"] {
-        let from = stage.join(file);
-        if from.is_file() {
-            osfs::replace_file(&live.join(file), &fs::read(&from)?)?;
-        }
+        fs::copy(
+            &launcher,
+            live.join("bin").join(format!("{NEXT}{}", exe_name())),
+        )?;
     }
     Ok(())
 }
 
-/// After the switch: older generations, launchers moved aside, and the
-/// older layout's copies of our files at the top (now under `gen/`) go.
+/// Phase two: the mod runs the new version.
+fn switch(stage: &Path, live: &Path) -> Result<Undo> {
+    if !live.exists() {
+        osfs::rename_retrying(stage, live)?;
+        return Ok(Undo::Moved {
+            live: live.to_path_buf(),
+            stage: stage.to_path_buf(),
+        });
+    }
+    let current = live.join("bin").join(exe_name());
+    let next = live.join("bin").join(format!("{NEXT}{}", exe_name()));
+    let launcher = if next.is_file() {
+        let prev = current
+            .exists()
+            .then(|| live.join("bin").join(osfs::unique(PREV)));
+        if let Some(prev) = &prev {
+            osfs::rename_retrying(&current, prev)?;
+        }
+        if let Err(error) = osfs::rename_retrying(&next, &current) {
+            if let Some(prev) = &prev {
+                let _ = osfs::rename_retrying(prev, &current);
+            }
+            return Err(error.into());
+        }
+        Some((current, prev))
+    } else {
+        None
+    };
+    let main_js = live.join("main.js");
+    let before = fs::read(&main_js).unwrap_or_default();
+    let undo = Undo::Pointed {
+        main_js: main_js.clone(),
+        before,
+        launcher,
+    };
+    if let Err(error) = osfs::replace_file(&main_js, &fs::read(stage.join("main.js"))?) {
+        undo.apply();
+        return Err(error.into());
+    }
+    Ok(undo)
+}
+
+impl Undo {
+    fn apply(self) {
+        match self {
+            Undo::Moved { live, stage } => {
+                let _ = osfs::rename_retrying(&live, &stage);
+            }
+            Undo::Pointed {
+                main_js,
+                before,
+                launcher,
+            } => {
+                let _ = osfs::replace_file(&main_js, &before);
+                if let Some((current, prev)) = launcher {
+                    let _ = fs::remove_file(&current);
+                    if let Some(prev) = prev {
+                        let _ = osfs::rename_retrying(&prev, &current);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// After the switch: older generations, launchers switched out, and what
+/// older layouts left at the top (the bash era's JS, its wrapper scripts).
 /// Best effort: what Windows holds stays until the next install.
 fn tidy(live: &Path, generation: &Stamp) {
     let remove_except = |dir: &Path, keep: &dyn Fn(&str) -> bool| {
@@ -272,12 +361,15 @@ fn tidy(live: &Path, generation: &Stamp) {
             }
         }
     };
-    let current = live.join(GEN).join(generation.as_str());
     remove_except(live, &|name| {
-        matches!(name, "main.js" | "mod.json") || !current.join(name).exists()
+        matches!(name, "main.js" | "mod.json" | "bin" | GEN | ".cache")
+            || name == state::MARK_FILE
+            // What the app writes into a mod folder (`herdr-app check`).
+            || name == "jsconfig.json"
+            || name.ends_with(".d.ts")
     });
     remove_except(&live.join(GEN), &|name| name == generation.as_str());
-    let launcher = launcher_file();
+    let launcher = exe_name();
     remove_except(&live.join("bin"), &|name| name == launcher);
 }
 
@@ -292,33 +384,77 @@ fn holders_hint(dir: &Path) -> String {
             .map(|proc| format!("{} (pid {})", proc.image.display(), proc.pid))
             .collect();
         if !holders.is_empty() {
-            return format!("; in use by {}", holders.join(", "));
+            return format!(" (in use by {})", holders.join(", "));
         }
     }
     let _ = dir;
     String::new()
 }
 
-/// Uninstall: both mods, whole, and the bash era's leftovers.
-pub fn remove(home: &Path) -> Result<()> {
+fn remove_or_say(dir: &Path) -> bool {
+    match osfs::remove_tree(dir) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "herdr-nvim: could not remove {}{}: {error}",
+                dir.display(),
+                holders_hint(dir)
+            );
+            false
+        }
+    }
+}
+
+/// Uninstall: both mods, whole, and the bash era's leftovers. Returns the
+/// folders Windows kept (in use), already reported.
+pub fn remove(home: &Path, _: &Owned) -> Vec<PathBuf> {
+    let mut kept = Vec::new();
     for name in ModName::ALL {
         for dir in [name.live(home), name.stage(home), name.old(home)] {
-            osfs::remove_tree(&dir).with_context(|| {
-                format!("cannot remove {}{}", dir.display(), holders_hint(&dir))
-            })?;
+            if !remove_or_say(&dir) {
+                kept.push(dir);
+            }
         }
     }
     retire_pick(home);
-    Ok(())
+    kept
 }
 
 /// The picker was its own mod (`herdr-nvim-pick`) before it joined
 /// herdr-nvim: that folder goes, when it is that mod.
 pub fn retire_pick(home: &Path) {
-    let pick = home.join("mods/herdr-nvim-pick");
+    let pick = mods_dir(home).join("herdr-nvim-pick");
     let ours = fs::read_to_string(pick.join("mod.json"))
         .is_ok_and(|text| text.contains("\"nvim: open file from agent output\""));
     if ours {
         let _ = osfs::remove_tree(&pick);
+    }
+}
+
+/// An exclusive lock on this app home's mods for one install or uninstall:
+/// a second run waits, so it never removes the first one's stage.
+pub struct InstallLock(#[allow(dead_code)] fs::File, PathBuf);
+
+impl InstallLock {
+    pub fn take(home: &Path) -> io::Result<Self> {
+        fs::create_dir_all(mods_dir(home))?;
+        let path = mods_dir(home).join(".herdr-nvim.lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        if file.try_lock().is_err() {
+            println!(
+                "herdr-nvim: another herdr-nvim install runs on this app home; waiting for it"
+            );
+            file.lock()?;
+        }
+        Ok(Self(file, path))
+    }
+
+    /// After an uninstall: nothing of herdr-nvim stays in the mods folder.
+    pub fn remove(self) {
+        let _ = fs::remove_file(&self.1);
     }
 }

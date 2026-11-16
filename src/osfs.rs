@@ -1,17 +1,27 @@
 //! File moves that hold up on Windows, where an open file or a running exe
-//! blocks renaming or deleting it and the folders above it for a while.
+//! blocks renaming or deleting it and the folders above it for a while; and
+//! the few file facts the installers share (PATH lookup, SHA-256).
 
 use std::{
-    fs, io,
+    env, fs, io,
+    io::Read,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
 
+use sha2::{Digest, Sha256};
+
 /// How long a rename keeps trying while something holds the path (on
 /// Windows a launcher run lasts milliseconds, at most the 25 s deadline of a
 /// short command).
 const RETRY_FOR: Duration = Duration::from_secs(5);
+
+/// The prefixes of every name this module makes beside a real one: a
+/// half-written file (`TEMP`) and a half-removed one (`TRASH`). `sweep` takes
+/// what a crashed run left of them.
+pub const TEMP: &str = ".tmp-";
+pub const TRASH: &str = ".trash-";
 
 /// A name no other run uses: `<prefix><pid>-<nanos>`.
 pub fn unique(prefix: &str) -> String {
@@ -43,16 +53,18 @@ pub fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Removes a folder (or file) whole, or not at all as far as its name goes:
 /// it is first renamed to a `.trash-*` sibling, which Windows refuses while
-/// an exe inside runs (`Err`, nothing changed), then deleted. A delete that
-/// fails halfway leaves only the `.trash-*` name, which `sweep` takes later.
+/// an exe inside runs (`Err`, nothing changed; retried a few seconds), then
+/// deleted. A delete that fails halfway leaves only the `.trash-*` name,
+/// which `sweep` takes later.
 pub fn remove_tree(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path).is_err() {
         return Ok(());
     }
     let parent = path.parent().unwrap_or(Path::new("."));
-    let trash = parent.join(unique(".trash-"));
-    fs::rename(path, &trash)?;
-    remove_any(&trash)
+    let trash = parent.join(unique(TRASH));
+    rename_retrying(path, &trash)?;
+    let _ = remove_any(&trash);
+    Ok(())
 }
 
 fn remove_any(path: &Path) -> io::Result<()> {
@@ -64,8 +76,8 @@ fn remove_any(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Deletes what earlier runs left in `dir`: entries whose names start with
-/// one of `prefixes` (`.trash-`, `.new.`). Best effort.
+/// Deletes what earlier runs left in `dir`: `TEMP` and `TRASH` names, and
+/// any other `prefixes`. Best effort.
 pub fn sweep(dir: &Path, prefixes: &[&str]) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -73,41 +85,26 @@ pub fn sweep(dir: &Path, prefixes: &[&str]) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+        if [TEMP, TRASH]
+            .iter()
+            .chain(prefixes)
+            .any(|prefix| name.starts_with(prefix))
+        {
             let _ = remove_any(&entry.path());
         }
     }
 }
 
 /// Writes `bytes` to `path` through a temp file renamed over it, so a reader
-/// sees the old file or the new one, never half of one.
+/// sees the old file or the new one, never half of one. The same bytes
+/// already there: nothing is written (a write would reload a mod).
 pub fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temp = path.with_file_name(unique(&format!(".{name}.")));
-    fs::write(&temp, bytes)?;
-    rename_retrying(&temp, path).inspect_err(|_| {
-        let _ = fs::remove_file(&temp);
-    })
-}
-
-/// Puts the program `from` at `to` unless the same bytes are there. Windows
-/// can't overwrite a running exe, but it can rename one: the running one is
-/// moved aside (`.<name>.old-*`, deleted by a later `sweep`).
-pub fn replace_exe(from: &Path, to: &Path) -> io::Result<()> {
-    if fs::read(to).ok() == Some(fs::read(from)?) {
+    if fs::read(path).is_ok_and(|now| now == bytes) {
         return Ok(());
     }
-    let name = to.file_name().unwrap_or_default().to_string_lossy();
-    let temp = to.with_file_name(unique(&format!(".{name}.new-")));
-    fs::copy(from, &temp)?;
-    let placed = match fs::rename(&temp, to) {
-        Err(error) if held(&error) => {
-            fs::rename(to, to.with_file_name(unique(&format!(".{name}.old-"))))
-                .and_then(|()| fs::rename(&temp, to))
-        }
-        other => other,
-    };
-    placed.inspect_err(|_| {
+    let temp = path.with_file_name(unique(TEMP));
+    fs::write(&temp, bytes)?;
+    rename_retrying(&temp, path).inspect_err(|_| {
         let _ = fs::remove_file(&temp);
     })
 }
@@ -153,4 +150,36 @@ pub fn files_under(root: &Path) -> io::Result<Vec<String>> {
     walk(root, root, &mut out)?;
     out.sort();
     Ok(out)
+}
+
+/// Every `name` on PATH, in PATH's order.
+pub fn on_path(name: &str) -> Vec<PathBuf> {
+    env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(name))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+/// Lowercase hex of the SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+/// Lowercase hex of the SHA-256 of the file at `path`, read in pieces.
+pub fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 1 << 16];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -3,43 +3,62 @@
 
 use std::{fs, path::Path};
 
-use crate::app::launch_record::InstallRecord;
+use anyhow::{bail, Result};
+
+use super::mods::ModName;
 
 /// The line every install wrote into what it owns: the bash installer's
 /// wrappers (`# …`, `rem # …`) and the header mod's `.herdr-nvim` mark.
 pub const MARK: &str = "# Written by herdr-nvim's herdr-app/install.sh";
 
-/// The header mod's mark file (the main mod is marked by its record).
+/// The mark file in both mods (the bash installer marked the header only).
 pub const MARK_FILE: &str = ".herdr-nvim";
 
 pub enum Ownership {
     Absent,
-    /// Written by an install of this repo, in any format it ever wrote:
-    /// `install.json`, the bash installer's sh wrapper (macOS, Linux), the
-    /// Git Bash era's `herdr-nvim.cmd` (Windows testers of #72), the
-    /// header's mark file.
+    /// Written by an install of this repo, in any format it ever wrote: the
+    /// mark file in either mod (this installer, and the bash one's header),
+    /// the bash installer's sh wrapper (macOS, Linux), the Git Bash era's
+    /// `herdr-nvim.cmd` (Windows testers of #72).
     Ours,
     /// Someone else's folder of that name: never touched.
     Foreign,
 }
 
-/// Reads `<home>/mods/<name>`.
+/// Reads a mod folder.
 pub fn read_mod(dir: &Path) -> Ownership {
     if fs::symlink_metadata(dir).is_err() {
         return Ownership::Absent;
     }
-    let ours = InstallRecord::read(dir).is_ok_and(|record| record.by.starts_with("herdr-nvim"))
-        || ["bin/herdr-nvim", "bin/herdr-nvim.cmd", MARK_FILE]
-            .iter()
-            .any(|rel| {
-                fs::read(dir.join(rel))
-                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(MARK))
-            });
+    let ours = [MARK_FILE, "bin/herdr-nvim", "bin/herdr-nvim.cmd"]
+        .iter()
+        .any(|rel| {
+            fs::read(dir.join(rel))
+                .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(MARK))
+        });
     if ours {
         Ownership::Ours
     } else {
         Ownership::Foreign
     }
+}
+
+/// Proof that the app home's mod folders are herdr-nvim's or absent: what
+/// changes them asks for it, so no path skips the check.
+pub struct Owned(());
+
+/// Checks both mod folders of `home`.
+pub fn claim(home: &Path) -> Result<Owned> {
+    for name in ModName::ALL {
+        let dir = name.live(home);
+        if let Ownership::Foreign = read_mod(&dir) {
+            bail!(
+                "{} is not herdr-nvim's: move it away first; nothing changed",
+                dir.display()
+            );
+        }
+    }
+    Ok(Owned(()))
 }
 
 #[cfg(test)]
@@ -80,6 +99,7 @@ mod tests {
         let theirs = mod_with(&[("main.js", ""), ("bin/herdr-nvim", "#!/bin/sh\nexec x\n")]);
         assert!(matches!(read_mod(&theirs.0), Ownership::Foreign));
         let header = mod_with(&[(MARK_FILE, MARK)]);
+        // The bash installer's header mark; this installer marks both mods so.
         assert!(matches!(read_mod(&header.0), Ownership::Ours));
         assert!(matches!(
             read_mod(&header.0.join("missing")),
@@ -91,7 +111,7 @@ mod tests {
         pub struct Dir(pub std::path::PathBuf);
         impl Dir {
             pub fn new() -> Self {
-                let path = std::env::temp_dir().join(crate::install::osfs::unique("hn-state-"));
+                let path = std::env::temp_dir().join(crate::osfs::unique("hn-state-"));
                 std::fs::create_dir_all(&path).unwrap();
                 Dir(path)
             }

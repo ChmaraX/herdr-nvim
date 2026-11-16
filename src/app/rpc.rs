@@ -25,10 +25,8 @@ pub(crate) fn hc_bin() -> std::ffi::OsString {
     if let Some(hc) = env::var_os("HERDR_NVIM_HC").filter(|hc| !hc.is_empty()) {
         return hc;
     }
-    env::var_os("HERDR_APP_BIN")
-        .map(|app| {
-            std::path::PathBuf::from(app).with_file_name(format!("hc{}", env::consts::EXE_SUFFIX))
-        })
+    super::env::app_bin_from_env()
+        .map(|app| app.with_file_name(format!("hc{}", env::consts::EXE_SUFFIX)))
         .filter(|hc| hc.is_file())
         .map_or_else(|| "hc".into(), Into::into)
 }

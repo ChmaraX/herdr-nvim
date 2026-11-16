@@ -17,6 +17,7 @@ mod maneuver;
 mod nvim_check;
 mod nvim_get;
 mod openlink;
+mod osfs;
 mod path;
 mod pathkey;
 mod picker;
@@ -73,6 +74,11 @@ fn main() {
     argv::init(args);
 
     let mode = argv::args().nth(1).unwrap_or_default();
+    // The installer finds the app first, then serves it (it exports the app
+    // context), so it runs before a host is chosen from the env.
+    if mode == "app-install" {
+        std::process::exit(run(install::app_install_cmd));
+    }
     // The one place that asks which Herdr this is (`host`).
     let host = host::choose();
     let app = host == host::Host::App;
@@ -103,8 +109,6 @@ fn main() {
         ("app-current", true) => run(app::tree::current_cmd),
         ("app-reveal", true) => run(app::tree::reveal_cmd),
         ("app-preview", true) => run(app::sidebar::preview_cmd),
-        // The installer: the bootstraps and a checkout's build run it.
-        ("app-install", _) => run(install::app_install_cmd),
         // The installer runs these before the mods are in place.
         ("app-setup", _) => run(app::setup::setup_cmd),
         ("app-config", _) => run(app::settings::app_config_cmd),

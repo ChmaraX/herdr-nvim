@@ -238,8 +238,12 @@ fn spawn_daemon(
 
 /// The app host's daemon outlives the terminal that started it, so it must
 /// not keep that terminal's identity (`hc` would treat the daemon's sends as
-/// the terminal's), and its Lua calls this binary back (`HERDR_NVIM_SELF`,
-/// see `herdr-nvim.agents`/`dispatch`) with the app context it inherits.
+/// the terminal's), and its Lua calls herdr-nvim back (`HERDR_NVIM_SELF`,
+/// see `herdr-nvim.agents`/`dispatch`) with the app context it inherits:
+/// through the mod's launcher, so a long-lived nvim's callbacks run the
+/// newest install, not the runtime it started with (which an upgrade may
+/// prune once nothing reports it). Only the launcher's short runs touch the
+/// mod folder; the daemon itself runs from its runtime.
 ///
 /// It also names its window: the app's pane header shows the terminal title,
 /// which nvim sets from `titlestring` (a user config may still change it).
@@ -261,10 +265,15 @@ pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>
         .env("HERDR_NVIM_HOST", "app")
         .env_remove("HC_TERMINAL_ID")
         .env_remove("HC_SCOPE");
-    if env::var_os("HERDR_NVIM_SELF").is_none() {
-        if let Ok(exe) = env::current_exe() {
-            command.env("HERDR_NVIM_SELF", exe);
-        }
+    let launcher = crate::app::env::AppEnv::from_env()
+        .map(|app| {
+            app.home
+                .join("mods/herdr-nvim/bin")
+                .join(crate::app::launch_record::exe_name())
+        })
+        .filter(|launcher| launcher.is_file());
+    if let Some(me) = launcher.or_else(|| env::current_exe().ok()) {
+        command.env("HERDR_NVIM_SELF", me);
     }
 }
 

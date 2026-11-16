@@ -7,15 +7,16 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-use super::{osfs, source::Source};
-use crate::app::env::AppEnv;
+use super::source::Source;
+use crate::{
+    app::launch_record::exe_name,
+    daemon::{inventory, registry},
+    osfs,
+};
 
 /// 16 lowercase hex digits naming a set of files by their content: sha256
 /// over the `shasum -a 256` lines of each file (sorted paths, `/`-separated).
@@ -35,11 +36,9 @@ impl Stamp {
                 continue;
             }
             let bytes = fs::read(root.join(&rel))?;
-            lines.push_str(&format!("{}  {rel}\n", hex(&Sha256::digest(&bytes))));
+            lines.push_str(&format!("{}  {rel}\n", osfs::sha256_hex(&bytes)));
         }
-        Ok(Stamp(
-            hex(&Sha256::digest(lines.as_bytes()))[..16].to_owned(),
-        ))
+        Ok(Stamp(osfs::sha256_hex(lines.as_bytes())[..16].to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -47,14 +46,16 @@ impl Stamp {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+/// A complete runtime folder of the store; only `RuntimeStore::put` makes one.
+pub struct RuntimeDir {
+    path: PathBuf,
+    stamp: Stamp,
 }
 
-/// A complete runtime folder of the store.
-pub struct RuntimeDir {
-    pub path: PathBuf,
-    pub stamp: Stamp,
+impl RuntimeDir {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Which runtimes running tab nvims use, from the daemons' own answers.
@@ -73,6 +74,8 @@ pub struct PruneReport {
 }
 
 const STAMP_FILE: &str = "runtime-stamp";
+/// A runtime being built (the bash installer's name for it too).
+const NEW: &str = ".new.";
 const STAMPED: &[&str] = &["bin", "lua", "plugin"];
 
 pub struct RuntimeStore {
@@ -82,13 +85,16 @@ pub struct RuntimeStore {
 impl RuntimeStore {
     pub fn open() -> Result<Self> {
         Ok(Self {
-            dir: super::data_dir()?.join("herdr-nvim").join("app"),
+            dir: crate::home::data_dir()
+                .context("no home folder (HOME or USERPROFILE)")?
+                .join("herdr-nvim")
+                .join("app"),
         })
     }
 
     /// What a crashed run left: half-built runtimes, half-removed ones.
     pub fn sweep_leftovers(&self) {
-        osfs::sweep(&self.dir, &[".new.", ".trash-"]);
+        osfs::sweep(&self.dir, &[NEW]);
     }
 
     /// The runtime of `source`, made once: built in `.new.*`, stamped, and
@@ -96,11 +102,10 @@ impl RuntimeStore {
     pub fn put(&self, source: &Source) -> Result<RuntimeDir> {
         fs::create_dir_all(&self.dir)
             .with_context(|| format!("cannot create {}", self.dir.display()))?;
-        let staged = self.dir.join(osfs::unique(".new."));
+        let staged = self.dir.join(osfs::unique(NEW));
         let built = (|| -> Result<Stamp> {
             fs::create_dir_all(staged.join("bin"))?;
-            let exe = format!("herdr-nvim{}", std::env::consts::EXE_SUFFIX);
-            fs::copy(&source.exe, staged.join("bin").join(exe))?;
+            fs::copy(&source.exe, staged.join("bin").join(exe_name()))?;
             osfs::copy_tree(&source.tree.join("lua"), &staged.join("lua"))?;
             osfs::copy_tree(&source.tree.join("plugin"), &staged.join("plugin"))?;
             let stamp = Stamp::of(&staged, STAMPED)?;
@@ -175,42 +180,27 @@ impl RuntimeStore {
     }
 }
 
-/// Asks the registered tab nvims of this app which runtime each runs
-/// (`herdr-nvim daemons --json` run by `exe` for `app`).
-pub fn live_runtimes(exe: &Path, app: &AppEnv) -> LiveRuntimes {
-    #[derive(Deserialize)]
-    struct Row {
-        state: String,
-        #[serde(default)]
-        stamp: Option<String>,
-    }
-    let unknown = LiveRuntimes {
-        stamps: HashSet::new(),
-        unknown: true,
+/// Asks the registered tab nvims of this app which runtime each runs (the
+/// app context must be this process's: `AppEnv::export`).
+pub fn live_runtimes() -> LiveRuntimes {
+    let Ok(keys) = registry::daemon_keys() else {
+        return LiveRuntimes {
+            stamps: HashSet::new(),
+            unknown: true,
+        };
     };
-    let Ok(output) = Command::new(exe)
-        .args(app.prefix())
-        .args(["daemons", "--json"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return unknown;
-    };
-    let Ok(rows) = serde_json::from_slice::<Vec<Row>>(&output.stdout) else {
-        return unknown;
-    };
+    let sidebar = crate::config::load().sidebar;
     let mut live = LiveRuntimes {
         stamps: HashSet::new(),
         unknown: false,
     };
-    for row in rows {
-        match (row.state.as_str(), row.stamp) {
-            ("stale", _) => {}
-            ("alive" | "orphaned" | "unknown", Some(stamp)) => {
-                live.stamps.insert(stamp);
+    for daemon in inventory::describe(keys, None, &sidebar) {
+        match daemon.answered() {
+            Some(probe) => {
+                live.stamps.insert(probe.stamp.clone());
             }
-            _ => live.unknown = true,
+            None if daemon.state() == inventory::DaemonState::Stale => {}
+            None => live.unknown = true,
         }
     }
     live

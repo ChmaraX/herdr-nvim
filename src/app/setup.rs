@@ -332,6 +332,30 @@ fn panel_width(args: &[String]) -> Result<u32> {
     }
 }
 
+/// Takes out herdr-nvim's keys (every OS's set) and its edits to every
+/// personal layout. The app's uninstall runs it in-process.
+pub(crate) fn uninstall_keys_and_layouts(home: &Path) -> Result<()> {
+    uninstall(home, &OurKeys::built_in())
+}
+
+fn uninstall(home: &Path, ours: &OurKeys) -> Result<()> {
+    let keys = home.join("keys.json");
+    if keys.exists() {
+        let mut removed = Vec::new();
+        edit_json(&keys, &mut |value| {
+            removed = drop_retired(value);
+            for set in ours.every() {
+                removed.extend(unmerge_keys(value, set));
+            }
+            Ok(!removed.is_empty())
+        })?;
+        removed
+            .iter()
+            .for_each(|line| println!("keys: removed {line}"));
+    }
+    uninstall_layouts(home)
+}
+
 pub fn setup_cmd() -> Result<()> {
     let args: Vec<String> = crate::argv::args().skip(2).collect();
     let home = super::env::home_from_env();
@@ -376,20 +400,7 @@ pub fn setup_cmd() -> Result<()> {
             }
             Ok(())
         }
-        Some("uninstall") => {
-            let mut removed = Vec::new();
-            edit_json(&keys, &mut |value| {
-                removed = drop_retired(value);
-                for set in ours.every() {
-                    removed.extend(unmerge_keys(value, set));
-                }
-                Ok(!removed.is_empty())
-            })?;
-            removed
-                .iter()
-                .for_each(|line| println!("keys: removed {line}"));
-            uninstall_layouts(&home)
-        }
+        Some("uninstall") => uninstall(&home, &ours),
         _ => bail!(
             "usage: herdr-nvim app-setup check|install|uninstall [--keys <keys.json>] [--panel-width N]"
         ),

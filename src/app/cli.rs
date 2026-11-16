@@ -1,19 +1,16 @@
 //! Talking to the Herdr app window (`herdr-app do`/`status`), and reading the
 //! invocation context a mod passes.
 
-use std::{
-    env,
-    process::{Command, Stdio},
-};
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-/// The `herdr-app` binary: `HERDR_APP_BIN` (the install script bakes the app's
-/// path into the wrapper), else `herdr-app` on PATH.
-fn app_bin() -> String {
-    env::var("HERDR_APP_BIN").unwrap_or_else(|_| "herdr-app".to_owned())
+/// The `herdr-app` binary: the one the launcher passed (`--app-bin`, now
+/// `HERDR_APP_BIN`), else `herdr-app` on PATH.
+fn app_bin() -> std::path::PathBuf {
+    super::env::app_bin_from_env().unwrap_or_else(|| "herdr-app".into())
 }
 
 /// Runs an app command and returns what it made (`{pane, terminal}`, ...).
@@ -25,7 +22,7 @@ pub(crate) fn app_do(command: &str, args: &Value) -> Result<Value> {
         .arg(args.to_string())
         .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("cannot run {} (set HERDR_APP_BIN)", app_bin()))?;
+        .with_context(|| format!("cannot run {} (set HERDR_APP_BIN)", app_bin().display()))?;
     let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
     if let Some(error) = value.get("error").and_then(Value::as_str) {
         bail!("herdr-app do {command}: {error}");
@@ -45,7 +42,7 @@ pub(crate) fn app_status() -> Result<Value> {
         .arg("status")
         .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("cannot run {}", app_bin()))?;
+        .with_context(|| format!("cannot run {}", app_bin().display()))?;
     if !output.status.success() {
         bail!("herdr-app status failed: is the Herdr app open?");
     }

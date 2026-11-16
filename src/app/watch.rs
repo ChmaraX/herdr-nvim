@@ -82,6 +82,35 @@ pub fn app_watch_cmd() -> Result<()> {
     Ok(())
 }
 
+/// Ends the watcher, if it runs, and waits until it has exited: it runs the
+/// runtime it started with, which an install then prunes (Windows can't
+/// remove a runtime an exe in it runs from).
+pub(crate) fn stop() -> anyhow::Result<()> {
+    use anyhow::Context;
+    let hc = |args: &[&str]| -> anyhow::Result<bool> {
+        Ok(rpc::hc()
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .with_context(|| format!("cannot run {}", rpc::hc_bin().to_string_lossy()))?
+            .success())
+    };
+    if !hc(&["get", NAME])? {
+        return Ok(());
+    }
+    hc(&["kill", NAME])?;
+    let started = std::time::Instant::now();
+    while hc(&["get", NAME])? {
+        if started.elapsed() > std::time::Duration::from_secs(3) {
+            anyhow::bail!("the watcher terminal {NAME} did not end");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
+}
+
 /// Start the watcher unless it runs. Its name is unique among live
 /// terminals, so a second start is refused by herdr-core: no lock needed.
 pub(crate) fn ensure_running() {

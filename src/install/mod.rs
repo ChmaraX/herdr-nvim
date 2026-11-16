@@ -8,8 +8,7 @@
 //! crash repairs what the crash left first.
 
 mod locate;
-pub(crate) mod mods;
-pub(crate) mod osfs;
+mod mods;
 mod prompt;
 mod runtime;
 mod source;
@@ -19,16 +18,14 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
 
 use crate::app::{env::AppEnv, launch_record::InstallRecord};
-use mods::ModName;
 use runtime::RuntimeStore;
 use source::Source;
-use state::Ownership;
 
 const USAGE: &str = "usage: herdr-nvim app-install [--home DIR] [--app-bin PATH] [--source DIR] \
                      [--panel-width PX] [--tree native|nvim] [--install-nvim]\n       \
@@ -80,24 +77,30 @@ pub fn app_install_cmd() -> Result<()> {
     let store = RuntimeStore::open()?;
     runtime::refuse_running_from(&store)?;
     let app = locate::locate(request.home.as_deref(), request.app_bin.as_deref())?;
-    for name in ModName::ALL {
-        if let Ownership::Foreign = state::read_mod(&name.live(&app.home)) {
-            bail!(
-                "{} is not herdr-nvim's: move it away first; nothing changed",
-                name.live(&app.home).display()
-            );
-        }
-    }
-    mods::recover(&app.home)?;
+    // From here this process serves the app it found, and so does every
+    // program it runs (`herdr-app`, `hc`, a runtime). `main` dispatched this
+    // command before choosing a host, and no thread runs yet.
+    app.export();
+    let lock = mods::InstallLock::take(&app.home)
+        .with_context(|| format!("cannot lock {}", app.home.display()))?;
+    let owned = state::claim(&app.home)?;
+    mods::recover(&app.home, &owned)?;
     store.sweep_leftovers();
     if request.uninstall {
-        uninstall(&request, &app, &store)
+        let result = uninstall(&request, &app, &store, &owned);
+        lock.remove();
+        result
     } else {
-        install(&request, &app, &store)
+        install(&request, &app, &store, &owned)
     }
 }
 
-fn install(request: &Request, app: &AppEnv, store: &RuntimeStore) -> Result<()> {
+fn install(
+    request: &Request,
+    app: &AppEnv,
+    store: &RuntimeStore,
+    owned: &state::Owned,
+) -> Result<()> {
     let source = Source::locate(request.source.as_deref())?;
     ensure_nvim(request.install_nvim)?;
     let runtime = store.put(&source)?;
@@ -105,7 +108,7 @@ fn install(request: &Request, app: &AppEnv, store: &RuntimeStore) -> Result<()> 
         schema: InstallRecord::SCHEMA,
         home: app.home.clone(),
         app_bin: app.app_bin.clone(),
-        runtime: runtime.path.clone(),
+        runtime: runtime.path().to_path_buf(),
         by: format!("herdr-nvim {}", env!("CARGO_PKG_VERSION")),
     };
     let width: Vec<&str> = match &request.panel_width {
@@ -120,76 +123,77 @@ fn install(request: &Request, app: &AppEnv, store: &RuntimeStore) -> Result<()> 
         &[&["app-setup", "check"], &width[..]].concat(),
     )
     .context("nothing changed")?;
-    let swapped = mods::stage(app, &source, &record)?.swap()?;
+    let swapped = mods::stage(app, &source, &record, owned)?.swap()?;
     mods::retire_pick(&app.home);
     // The watcher runs the runtime it started with: ended (the next nvim
     // pane starts it on this one), so it doesn't hold that runtime.
-    stop_watcher();
-    report_prune(store.prune(
-        Some(&runtime),
-        &runtime::live_runtimes(&record.runtime_exe(), app),
-    ));
+    crate::app::watch::stop()?;
+    report_prune(store.prune(Some(&runtime), &runtime::live_runtimes()));
     // Through the launcher, as the mods run it: a launcher that doesn't
     // work fails the install.
     run(
-        &swapped.launcher,
+        swapped.launcher(),
         None,
         &[&["app-setup", "install"], &width[..]].concat(),
     )?;
     if let Some(tree) = &request.tree {
-        run(&swapped.launcher, None, &["app-config", "tree", tree])?;
+        run(swapped.launcher(), None, &["app-config", "tree", tree])?;
     }
     println!("herdr-nvim: installed in {}", app.home.display());
     Ok(())
 }
 
-fn uninstall(request: &Request, app: &AppEnv, store: &RuntimeStore) -> Result<()> {
-    let me = std::env::current_exe().context("cannot find the herdr-nvim binary")?;
+/// Takes it all out: the app's Files button back, the nvims (those with
+/// unsaved work kept unless `--force`), the mods, the keys and layout edits,
+/// the runtimes nothing runs. A folder Windows holds is reported, and the
+/// rest still goes.
+fn uninstall(
+    request: &Request,
+    app: &AppEnv,
+    store: &RuntimeStore,
+    owned: &state::Owned,
+) -> Result<()> {
     // The Files button back first, if `tree = "nvim"` took it out (the
-    // controller does it; the mods go below).
-    let restored = Command::new(&app.app_bin)
-        .args(["do", "herdr-nvim.uninstall"])
-        .env("HERDR_APP_HOME", &app.home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if restored {
+    // controller does it, so before the mods go).
+    if crate::app::cli::app_do("herdr-nvim.uninstall", &serde_json::json!({})).is_ok() {
         thread::sleep(Duration::from_millis(500));
     }
-    run(&me, Some(app), &["app-setup", "uninstall"])?;
-    // Unsaved work is never thrown away unasked: those nvims are listed and
-    // kept, with the runtime they run.
-    let force: &[&str] = if request.force { &["--force"] } else { &[] };
-    if run(
-        &me,
-        Some(app),
-        &[&["daemons", "stop", "--all"], force].concat(),
-    )
-    .is_err()
-    {
+    if let Err(error) = crate::daemon::inventory::stop_all(request.force) {
+        eprintln!("herdr-nvim: {error:#}");
         eprintln!(
             "herdr-nvim: kept the nvims above; save (:wa) and quit them, or run the uninstall \
              with --force to discard their work"
         );
     }
-    stop_watcher();
-    mods::remove(&app.home)?;
-    report_prune(store.prune(None, &runtime::live_runtimes(&me, app)));
+    crate::app::watch::stop()?;
+    let kept = mods::remove(&app.home, owned);
+    crate::app::setup::uninstall_keys_and_layouts(&app.home)?;
+    let report = store.prune(None, &runtime::live_runtimes());
+    let locked = !report.kept_locked.is_empty();
+    report_prune(report);
     let _ = std::fs::remove_dir(&store.dir);
-    println!("herdr-nvim: uninstalled from {}", app.home.display());
-    let nvim = store.dir.with_file_name("nvim");
+    let nvim = crate::nvim_get::dest()?;
     if nvim.is_dir() {
         println!(
             "herdr-nvim: kept the Neovim it downloaded, in {} (delete that folder if nothing else uses it)",
             nvim.display()
         );
     }
+    if !kept.is_empty() || locked {
+        bail!(
+            "uninstalled from {}, except what is still in use (above); close those programs \
+             (nvim panes, Explorer windows) and run the uninstall again",
+            app.home.display()
+        );
+    }
+    println!("herdr-nvim: uninstalled from {}", app.home.display());
     Ok(())
 }
 
 fn report_prune(report: runtime::PruneReport) {
+    for dir in report.kept_live {
+        println!("herdr-nvim: kept {}: a running nvim uses it", dir.display());
+    }
     for dir in report.kept_locked {
         println!(
             "herdr-nvim: kept {} (in use; the next install removes it)",
@@ -198,8 +202,8 @@ fn report_prune(report: runtime::PruneReport) {
     }
 }
 
-/// Runs a herdr-nvim (`exe`, with `app`'s context in argv when given; the
-/// launcher brings its own). Its output is the person's.
+/// Runs a herdr-nvim: a runtime with `app`'s context in argv, or the
+/// launcher (`None`: it reads its own record). Its output is the person's.
 fn run(exe: &Path, app: Option<&AppEnv>, args: &[&str]) -> Result<()> {
     let mut command = Command::new(exe);
     if let Some(app) = app {
@@ -216,29 +220,9 @@ fn run(exe: &Path, app: Option<&AppEnv>, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Ends the watcher terminal (`herdr-nvim-watch`) and waits until it is gone.
-fn stop_watcher() {
-    let hc = |args: &[&str]| {
-        crate::app::rpc::hc()
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    };
-    if !hc(&["kill", crate::app::watch::NAME]) {
-        return;
-    }
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(3) && hc(&["get", crate::app::watch::NAME]) {
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// Neovim 0.10+, before anything changes: without it nothing would open.
 fn ensure_nvim(yes: bool) -> Result<()> {
-    let Err(missing) = crate::nvim_check::check(&crate::config::load().sidebar) else {
+    let Err(missing) = crate::nvim_get::usable() else {
         return Ok(());
     };
     let method = crate::nvim_get::method()?;
@@ -255,14 +239,4 @@ fn ensure_nvim(yes: bool) -> Result<()> {
         );
     }
     crate::nvim_get::install(&method).context("Neovim was not installed; nothing changed")
-}
-
-/// `$XDG_DATA_HOME`, else `~/.local/share` (on Windows too: the runtime
-/// and Neovim live where they do on every OS).
-pub(crate) fn data_dir() -> Result<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| crate::home::home_dir().map(|home| home.join(".local/share")))
-        .context("no home folder (HOME or USERPROFILE)")
 }

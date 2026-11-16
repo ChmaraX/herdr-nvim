@@ -65,6 +65,11 @@ pub(crate) fn with_setting(text: &str, section: &str, key: &str, value: &str) ->
     Ok(doc.to_string())
 }
 
+/// Write `[sidebar] nvim_bin = <path>` (the Neovim herdr-nvim installed).
+pub(crate) fn set_nvim_bin(path: &str) -> Result<()> {
+    write_setting("sidebar", "nvim_bin", path)
+}
+
 /// Write `[app] tree = <mode>` into the config file.
 pub(crate) fn set_tree(mode: &str) -> Result<()> {
     let mode = match mode {
@@ -76,7 +81,7 @@ pub(crate) fn set_tree(mode: &str) -> Result<()> {
 }
 
 /// Write `[section] key = <value>` into the config file.
-pub(crate) fn write_setting(section: &str, key: &str, value: &str) -> Result<()> {
+fn write_setting(section: &str, key: &str, value: &str) -> Result<()> {
     let path = config::config_path().context("no config folder (HOME is not set)")?;
     // No file yet: start from nothing. Any other read error stops here: the
     // file is the person's, never replaced by one holding only `[app]`.
