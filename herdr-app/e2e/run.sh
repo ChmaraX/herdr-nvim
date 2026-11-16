@@ -585,6 +585,9 @@ drawn_is dark 2 || fail "the light diagrams evicted the dark ones on screen a mo
 appearance dark
 ls "$cache" > "$proof/mermaid-cache.txt"
 say "Mermaid: two diagrams drawn dark, then light on a theme switch, none drawn again for a text edit (cache: mermaid-cache.txt)"
+# Source: nvim back in its place, so the next flow starts from the baseline.
+H do "herdr-nvim.swap:$tab_a:" >/dev/null
+poll 15 sidebar_of "$tab_a" && poll 5 no_preview || fail "Source did not put nvim back after the plan"
 fi
 
 if begin nvim-tree; then
@@ -609,7 +612,8 @@ if begin nvim-install; then
 # --- no Neovim: the card's Install downloads it, then cmd-e opens nvim -------
 # HERDR_NVIM_INSTALL_METHOD=download: Neovim's release into this run's data
 # folder, checked against GitHub's SHA-256; nvim_bin then points at it.
-"$launcher" daemons stop "$space:$tab_a" >/dev/null || fail "could not stop tab A's nvim"
+# Earlier flows may leave an edit in it (tree: a renamed, modified buffer).
+"$launcher" daemons stop "$space:$tab_a" --force >/dev/null || fail "could not stop tab A's nvim"
 no_nvim
 record nvim-install
 cmd_e
