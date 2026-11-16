@@ -12,8 +12,9 @@
 //!   where                    herdr-app and hc: on PATH, beside the running app,
 //!                            under %LOCALAPPDATA%\Programs; System32 curl.exe/tar.exe
 //!   spawn PROGRAM [ARGS...]  start PROGRAM with Rust std's Command, report what ran
-//!   spawn-detached [SECS]    start `tick SECS` the way herdr-nvim starts its daemons
-//!   tick [SECS]              log a line every 3 s for SECS (default 120)
+//!   spawn-detached [SECS]    start `tick SECS APP_PID` the way herdr-nvim starts its daemons
+//!   tick [SECS [PID]]        log a line every 3 s for SECS (default 120), saying
+//!                            whether PID (the app that started it) still runs
 //!   copy-self                copy this exe beside the log, print its path
 //!   rename-dir DIR           rename DIR aside and back, report each OS error
 //!   motw FILE                print FILE's Zone.Identifier stream (Mark of the Web)
@@ -42,7 +43,7 @@ enum Job {
     Where,
     Spawn(OsString, Vec<OsString>),
     SpawnDetached(u64),
-    Tick(u64),
+    Tick(u64, Option<u32>),
     CopySelf,
     RenameDir(PathBuf),
     Motw(PathBuf),
@@ -62,7 +63,7 @@ fn main() -> ExitCode {
         Job::Where => where_apps(),
         Job::Spawn(program, rest) => spawn(&program, &rest),
         Job::SpawnDetached(secs) => spawn_detached(&probe, secs),
-        Job::Tick(secs) => return tick(&probe, &args, secs),
+        Job::Tick(secs, app) => return tick(&probe, &args, secs, app),
         Job::CopySelf => copy_self(&probe),
         Job::RenameDir(dir) => rename_dir(&dir),
         Job::Motw(file) => sys::zone_identifier(&file),
@@ -96,7 +97,13 @@ fn job(name: &str, args: &[OsString]) -> Option<Job> {
         "where" => Job::Where,
         "spawn" => Job::Spawn(args.first()?.clone(), args[1..].to_vec()),
         "spawn-detached" => Job::SpawnDetached(secs(120)?),
-        "tick" => Job::Tick(secs(120)?),
+        "tick" => Job::Tick(
+            secs(120)?,
+            match args.get(1) {
+                Some(pid) => Some(pid.to_str()?.parse().ok()?),
+                None => None,
+            },
+        ),
         "copy-self" => Job::CopySelf,
         "rename-dir" => Job::RenameDir(args.first()?.into()),
         "motw" => Job::Motw(args.first()?.into()),
@@ -277,26 +284,36 @@ fn spawn_detached(probe: &Probe, secs: u64) -> Value {
         Ok(exe) => exe,
         Err(error) => return json!({"error": os_error(&error)}),
     };
+    let app = sys::app_pid();
     let mut command = Command::new(exe);
     probe.forward(&mut command);
+    command.arg("tick").arg(secs.to_string());
+    if let Some(pid) = app {
+        command.arg(pid.to_string());
+    }
     command
-        .arg("tick")
-        .arg(secs.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let (spawned, flags) = sys::spawn_detached(&mut command);
     match spawned {
         // Not waited for: it must outlive this process.
-        Ok(child) => json!({"child_pid": child.id(), "seconds": secs, "flags": flags}),
+        Ok(child) => {
+            json!({"child_pid": child.id(), "seconds": secs, "app_pid": app, "flags": flags})
+        }
         Err(error) => json!({"error": os_error(&error), "flags": flags}),
     }
 }
 
 /// A stand-in daemon: one full record at start (its Job Object shows whether
 /// breakaway worked), then a short line every few seconds until `secs`.
-fn tick(probe: &Probe, args: &[OsString], secs: u64) -> ExitCode {
-    probe.write(&record(probe, "tick-start", args, json!({"seconds": secs})));
+fn tick(probe: &Probe, args: &[OsString], secs: u64, app: Option<u32>) -> ExitCode {
+    probe.write(&record(
+        probe,
+        "tick-start",
+        args,
+        json!({"seconds": secs, "app_pid": app}),
+    ));
     let started = Instant::now();
     let mut n = 0u64;
     while started.elapsed() < Duration::from_secs(secs) {
@@ -308,7 +325,7 @@ fn tick(probe: &Probe, args: &[OsString], secs: u64) -> ExitCode {
             "tag": probe.tag,
             "sub": "tick",
             "n": n,
-            "app_running": sys::app_running(),
+            "app_running": app.map(sys::alive),
         }));
     }
     probe.write(&json!({"ts_ms": now_ms(), "pid": std::process::id(), "tag": probe.tag, "sub": "tick-end", "n": n}));
@@ -556,12 +573,28 @@ mod sys {
             .collect()
     }
 
-    pub fn app_running() -> Value {
-        Value::Bool(
-            processes()
-                .iter()
-                .any(|p| p.name.eq_ignore_ascii_case("herdr-app.exe")),
-        )
+    /// The app among this process's ancestors (its name has "herdr"),
+    /// else the direct parent: a shell between the app and the probe would
+    /// otherwise look like the app quitting.
+    pub fn app_pid() -> Option<u32> {
+        let all = processes();
+        let parent_of = |pid: u32| all.iter().find(|p| p.pid == pid).map(|p| p.parent);
+        let direct = parent_of(std::process::id())?;
+        let mut pid = direct;
+        for _ in 0..6 {
+            let Some(p) = all.iter().find(|p| p.pid == pid) else {
+                break;
+            };
+            if p.name.to_ascii_lowercase().contains("herdr") {
+                return Some(pid);
+            }
+            pid = p.parent;
+        }
+        Some(direct)
+    }
+
+    pub fn alive(pid: u32) -> bool {
+        processes().iter().any(|p| p.pid == pid)
     }
 
     /// herdr-nvim's daemon flags plus breakaway from the parent's Job
@@ -615,8 +648,12 @@ mod sys {
     pub fn running_images(_name: &str) -> Vec<String> {
         Vec::new()
     }
-    pub fn app_running() -> Value {
-        Value::Null
+    pub fn app_pid() -> Option<u32> {
+        Some(std::os::unix::process::parent_id())
+    }
+    pub fn alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
     pub fn spawn_detached(command: &mut Command) -> (io::Result<Child>, Value) {
         command.process_group(0);

@@ -373,7 +373,7 @@ export default class WinProbe extends View {
         .child(button("wp-read", "Read log", (cx) => this.read(cx))))
       .child(v_flex().gap(6).children(STEPS.map(line)))
       .child(div().text_color(t.muted).child(survive
-        ? `survive: ${survive.ticks ?? 0} ticks, ${survive.ticks_without_app ?? 0} while the app was closed, last ${survive.last_tick_age_s ?? "?"} s ago`
+        ? `survive: ${survive.ticks ?? 0} ticks, ${survive.ticks_without_app ?? 0} after the app that started it quit, last ${survive.last_tick_age_s ?? "?"} s ago`
         : "survive: not started"))
       .child(div().text_size(11).text_color(t.dim).child(this.run ? this.run.file : "No run yet."));
   }
