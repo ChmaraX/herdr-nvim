@@ -1,9 +1,11 @@
 // What the tree shows: a root folder (the tab's folder, or one the person
 // moved to with `.` / Backspace), the folders that are open, the entries of
 // each, git marks, which entries git ignores, and the hidden/ignored toggles.
-// Paths are absolute; a folder's entries are listed on first open and again
-// when something under the root changes (a folder watch, no polling).
+// Paths are the mod's (path.js); a folder's entries are listed on first open
+// and again when something under the root changes (a folder watch, no
+// polling).
 
+import { child, dirname, inside, key, relative, same } from "./path.js";
 import { gitMarks, listFolder } from "./tree.js";
 
 const ROWS = 3000;
@@ -20,10 +22,6 @@ async function each(items, fn) {
   await Promise.all(Array.from({ length: Math.min(AT_ONCE, queue.length) }, async () => {
     while (queue.length) await fn(queue.shift());
   }));
-}
-
-export function dirname(path) {
-  return path.replace(/\/[^/]*$/, "") || "/";
 }
 
 export class TreeModel {
@@ -52,9 +50,9 @@ export class TreeModel {
     this.loads.set(folder, seq);
     const { entries, ignored } = await listFolder(folder);
     if (this.root !== root || this.loads.get(folder) !== seq) return false;
-    const same = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir && e.hidden === b[i].hidden);
+    const unchanged = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir && e.hidden === b[i].hidden);
     const was = this.ignored.get(folder);
-    if (same(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
+    if (unchanged(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
     this.entries.set(folder, entries);
     this.ignored.set(folder, ignored);
     this.version++;
@@ -80,7 +78,7 @@ export class TreeModel {
   // and the caller runs refreshMarks once that time is up.
   async reloadChanged(changed) {
     const root = this.root;
-    if (!changed?.length || changed.includes(root)) {
+    if (!changed?.length || changed.some((path) => same(path, root))) {
       await this.reload();
       return { marks: "done" };
     }
@@ -88,19 +86,22 @@ export class TreeModel {
     // inside .git change nothing the tree shows unless ignored files show.
     const unseen = (path) => {
       if (path.includes("/.git/") || path.endsWith("/.git")) return true;
-      if (this.showIgnored || !path.startsWith(`${root}/`)) return false;
+      const rel = relative(path, root);
+      if (this.showIgnored || !rel) return false;
       let folder = root;
-      for (const part of path.slice(root.length + 1).split("/")) {
+      for (const part of rel.split("/")) {
         if (this.ignored.get(folder)?.has(part)) return true;
-        folder = `${folder}/${part}`;
+        folder = child(folder, part);
       }
       return false;
     };
     const seen = changed.filter((path) => !unseen(path));
     if (!seen.length) return { marks: "none" };
-    const listed = new Set([root, ...this.open]);
+    const listed = new Map([root, ...this.open].map((folder) => [key(folder), folder]));
     const touched = new Set();
-    for (const path of seen) for (const folder of [dirname(path), path]) if (listed.has(folder)) touched.add(folder);
+    for (const path of seen) {
+      for (const folder of [dirname(path), path]) if (listed.has(key(folder))) touched.add(listed.get(key(folder)));
+    }
     await each(touched, (folder) => this.load(folder).catch(() => {}));
     if (Date.now() - this.marksAt < GIT_EVERY_MS) return { marks: "later" };
     await this.refreshMarks();
@@ -128,7 +129,7 @@ export class TreeModel {
     for (const entry of this.entries.get(folder) ?? []) {
       if (out.length >= ROWS) break;
       if (!this.shown(folder, entry)) continue;
-      const abs = `${folder}/${entry.name}`;
+      const abs = child(folder, entry.name);
       out.push({ ...entry, abs, depth, ignored: this.ignored.get(folder)?.has(entry.name) ?? false });
       if (entry.dir && this.open.has(abs)) this.walk(abs, depth + 1, out);
     }
@@ -143,7 +144,7 @@ export class TreeModel {
   }
 
   close(abs) {
-    for (const folder of [...this.open]) if (folder === abs || folder.startsWith(`${abs}/`)) this.open.delete(folder);
+    for (const folder of [...this.open]) if (inside(folder, abs)) this.open.delete(folder);
     this.version++;
   }
 
@@ -152,23 +153,27 @@ export class TreeModel {
     this.version++;
   }
 
-  // Opens every folder on the way to `abs` (inside the root); true if it can
-  // be shown.
+  // Opens every folder on the way to `abs` (inside the root), and shows
+  // hidden or ignored entries if one on the way is: its row's path, named as
+  // the listings name it (on Windows a path may differ from them in case),
+  // or null if it can't be shown.
   async expandTo(abs) {
-    if (!this.root || !abs.startsWith(`${this.root}/`)) return false;
-    const parts = abs.slice(this.root.length + 1).split("/");
-    let folder = this.root;
-    for (const part of parts.slice(0, -1)) {
-      folder = `${folder}/${part}`;
-      if (!this.open.has(folder)) {
-        this.open.add(folder);
-        this.version++;
+    const rel = this.root && relative(abs, this.root);
+    if (!rel) return null;
+    let folder = this.root, entry = null;
+    for (const part of rel.split("/")) {
+      if (entry) {
+        folder = child(folder, entry.name);
+        if (!this.open.has(folder)) {
+          this.open.add(folder);
+          this.version++;
+        }
       }
       if (!this.entries.has(folder)) await this.load(folder).catch(() => {});
+      entry = this.entries.get(folder)?.find((e) => same(e.name, part)) ?? { name: part, hidden: part.startsWith(".") };
+      if (entry.hidden) this.showHidden = true;
+      if (this.ignored.get(folder)?.has(entry.name)) this.showIgnored = true;
     }
-    const name = parts[parts.length - 1];
-    if (this.entries.get(dirname(abs))?.find((e) => e.name === name)?.hidden) this.showHidden = true;
-    if (this.ignored.get(dirname(abs))?.has(name)) this.showIgnored = true;
-    return true;
+    return child(folder, entry.name);
   }
 }

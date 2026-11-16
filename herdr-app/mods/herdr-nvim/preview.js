@@ -14,10 +14,11 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, exec, panes, settings, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, settings, setShared, shared, theme } from "herdr";
 import * as fs from "fs/promises";
-import { bin } from "./lib.js";
+import { changesIn } from "./lib.js";
 import { drawMermaid, modeOf, pngSize, splitMermaid } from "./mermaid.js";
+import { bin, canonical, dirname, same } from "./path.js";
 
 const KINDS = {
   md: "markdown", markdown: "markdown", mdx: "markdown",
@@ -46,8 +47,6 @@ export function previewKind(path) {
   const ext = /\.([^./]+)$/.exec(path ?? "")?.[1]?.toLowerCase();
   return (ext && KINDS[ext]) || null;
 }
-
-const dirname = (p) => p.replace(/\/[^/]*$/, "") || "/";
 
 // `byTab` with `tab` set to `value`, and only the tabs that still show a
 // preview kept.
@@ -176,7 +175,7 @@ const markdown = (id, text) => TextView.markdown(id, text).selectable(true);
 
 export class Preview {
   constructor(props, cx) {
-    this.file = props.preview;
+    this.file = canonical(props.preview);
     this.tab = props.tab;
     this.shown = null;
     // The diagrams' theme: the one Herdr shows, followed in render().
@@ -188,7 +187,7 @@ export class Preview {
     setShared(SHOWN, withTab(shared(SHOWN), this.tab, this.file));
     cx.spawn(async (cx) => {
       // A changed path of the folder's root means "anything may have changed".
-      const ours = (changed) => !changed.length || changed.some((p) => p === this.file || p === dirname(this.file));
+      const ours = (changed) => !changed.length || changed.some((p) => same(p, this.file) || same(p, dirname(this.file)));
       while (!this.closed) {
         const s = await load(this.file);
         if (this.closed) break;
@@ -198,7 +197,7 @@ export class Preview {
         keepCached(this.tab, names); // the pane shows first, the clean-up after
         cx.notify();
         this.nudge();
-        while (!this.closed && !ours(await watchFolder(dirname(this.file))));
+        while (!this.closed && !ours(await changesIn(dirname(this.file))));
       }
     });
     cx.spawn((cx) => this.drawDiagrams(cx));

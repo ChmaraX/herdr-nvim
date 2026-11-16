@@ -7,10 +7,11 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
-import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme, watchFolder } from "herdr";
+import { focused, layout, nextCommand, notify, panes, readTextFile, run, setShared, shared, spaces, theme } from "herdr";
 import { previewKind } from "./preview.js";
-import { nvim } from "./lib.js";
-import { current, findFiles, fsOp, inside, request, systemOpen, tabOf } from "./ops.js";
+import { changesIn, nvim } from "./lib.js";
+import { current, findFiles, fsOp, request, systemOpen, tabOf } from "./ops.js";
+import { basename, canonical, child, dirname, inside, join, key, relative, same } from "./path.js";
 import { openDialog } from "./dialog.js";
 import { openKeyHelp } from "./keys-help.js";
 import { ACTIONS } from "./tree-keys.js";
@@ -19,7 +20,7 @@ import { goToTree, nvimPanes, panelState } from "./panel.js";
 // The tree key when nvim hasn't said (an nvim from before tree_key): <leader>e
 // with LazyVim's leader.
 const TREE_KEY = ["space", "e"];
-import { GIT_EVERY_MS, TreeModel, dirname } from "./tree-model.js";
+import { GIT_EVERY_MS, TreeModel } from "./tree-model.js";
 import { markOf } from "./tree.js";
 import { KeyboardHandover, TabRoots } from "./tree-parts.js";
 
@@ -34,7 +35,7 @@ function place(previous) {
   const f = focused();
   const space = spaces().find((s) => s.id === f?.space) ?? spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const cwd = pane?.cwd || (f?.tab === previous?.tab ? previous?.cwd : null) || f?.cwd || space?.folder || null;
+  const cwd = canonical(pane?.cwd || (f?.tab === previous?.tab ? previous?.cwd : null) || f?.cwd || space?.folder || null);
   return { space: space?.id ?? null, tab: f?.tab ?? null, cwd, machine: space?.machine ?? null };
 }
 
@@ -104,7 +105,7 @@ export class Tree {
   // The tab's folder is `tabRoot`: show the root chosen for this tab, unless
   // the tab's folder changed since (then the folder itself).
   adopt(tab, tabRoot, cx) {
-    if (this.rootTab !== tab || (this.shownTab === tab && this.tabRoot === tabRoot)) return;
+    if (this.rootTab !== tab || (this.shownTab === tab && same(this.tabRoot, tabRoot))) return;
     this.shownTab = tab;
     this.tabRoot = tabRoot;
     this.setRoot(this.roots.rootFor(tab, tabRoot), cx);
@@ -142,7 +143,7 @@ export class Tree {
         await this.model.reload();
         cx.notify();
         while (this.rootGen === gen) {
-          const changed = await watchFolder(root);
+          const changed = await changesIn(root);
           if (this.rootGen !== gen) return;
           // Hidden (Files closed): no listing or git status for every change
           // (a build makes many); it catches up once when shown (`render`).
@@ -199,10 +200,10 @@ export class Tree {
       // only for a new file or a new FocusGained.
       let seen = await this.nvimState();
       while (this.currentGen === gen) {
-        const changed = await watchFolder(dirname(watch));
+        const changed = await changesIn(dirname(watch));
         if (this.currentGen !== gen) return;
         // Its own file, or the temp file nvim renames over it.
-        if (changed.length && !changed.some((p) => p.startsWith(watch) || p === dirname(watch))) continue;
+        if (changed.length && !changed.some((p) => key(p).startsWith(key(watch)) || same(p, dirname(watch)))) continue;
         const now = await this.nvimState();
         if (now.file && now.file !== seen.file) await this.reveal(now.file, cx);
         // nvim took the keyboard, maybe: draw the focus again (a file
@@ -220,7 +221,9 @@ export class Tree {
     // answer for this tab.
     const ours = this.watching && this.watchingTab === this.place?.tab;
     const text = ours ? await readTextFile(this.watching).catch(() => null) : null;
-    try { return (text && JSON.parse(text)) || {}; } catch { return {}; }
+    let state = {};
+    try { state = (text && JSON.parse(text)) || {}; } catch {}
+    return { ...state, file: canonical(state.file), cwd: canonical(state.cwd) };
   }
 
   // What the tab's nvim wrote on its last FocusGained.
@@ -238,7 +241,7 @@ export class Tree {
     const state = this.watching && this.watchingTab === this.place.tab ? await this.nvimState() : null;
     const { file, tab_root } = state?.cwd ? { file: state.file ?? null, tab_root: state.cwd } : await current(this.place);
     if (seq !== this.revealSeq) return;
-    if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
+    if (tab_root && !same(tab_root, this.tabRoot)) this.adopt(this.rootTab, tab_root, cx);
     if (file && inside(file, this.model.root ?? "")) await this.reveal(file, cx);
     else if (arriving) {
       this.selected = 0;
@@ -254,15 +257,15 @@ export class Tree {
     if (!path || !inside(path, this.model.root ?? "")) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
     if (reload) await this.model.reload().catch(() => {});
-    await this.model.expandTo(path);
-    if (seq !== this.revealSeq) return;
-    this.current = path;
-    this.revealing = path;
+    const row = await this.model.expandTo(path);
+    if (seq !== this.revealSeq || !row) return;
+    this.current = row;
+    this.revealing = row;
     cx.notify();
   }
 
   rows() {
-    if (this.filter) return this.filter.results.map((rel) => ({ name: rel, abs: `${this.filter.root}/${rel}`, dir: false, depth: 0 }));
+    if (this.filter) return this.filter.results.map((rel) => ({ name: rel, abs: join(this.filter.root, rel), dir: false, depth: 0 }));
     return this.model.rows();
   }
 
@@ -315,7 +318,7 @@ export class Tree {
   }
 
   action(name, row, cx) {
-    const rel = (path) => path.slice(this.model.root.length + 1);
+    const rel = (path) => relative(path, this.model.root) ?? path;
     switch (name) {
       case "add":
         return this.dialog({ kind: "input", title: "New file or folder", hint: `In ${rel(this.dirOf(row)) || "."}/ — end with / for a folder`,
@@ -453,7 +456,7 @@ export class Tree {
       collapse: () => this.model.collapseAll(),
       reload: (_row, _rows, cx) => cx.spawn(async (cx) => { await this.model.reload(); cx.notify(); }),
       rootHere: (row, _rows, cx) => { if (row) this.setRoot(this.dirOf(row), cx); },
-      rootUp: (_row, _rows, cx) => { if (this.model.root !== "/") this.setRoot(dirname(this.model.root), cx); },
+      rootUp: (_row, _rows, cx) => { if (this.model.root !== dirname(this.model.root)) this.setRoot(dirname(this.model.root), cx); },
       rootHome: (_row, _rows, cx) => { if (this.tabRoot) this.setRoot(this.tabRoot, cx); },
       help: () => { this.overlayOpen = true; openKeyHelp(this.treeKey ?? TREE_KEY); },
       find: () => { this.filter = { query: "", results: [], seq: 0, root: this.findRoot() }; this.selected = 0; },
@@ -518,24 +521,24 @@ export class Tree {
         .on_click((_e, cx) => this.setRoot(path, cx)))
       .child(label);
     const crumbs = [];
-    if (root && home && root !== home) {
+    if (root && home && !same(root, home)) {
       if (inside(root, home)) {
-        crumbs.push(crumb("crumb-home", home.split("/").pop(), home, false));
+        crumbs.push(crumb("crumb-home", basename(home), home, false));
         let path = home;
-        for (const part of root.slice(home.length + 1).split("/")) {
-          path = `${path}/${part}`;
+        for (const part of relative(root, home).split("/")) {
+          path = child(path, part);
           crumbs.push(div().flex_none().text_size(12).text_color(t.dim).child("/"));
-          crumbs.push(crumb(`crumb-${path}`, part, path, path === root));
+          crumbs.push(crumb(`crumb-${path}`, part, path, same(path, root)));
         }
       } else {
         crumbs.push(crumb("crumb-root", root, root, true));
-        crumbs.push(crumb("crumb-home", `↩ ${home.split("/").pop()}`, home, false));
+        crumbs.push(crumb("crumb-home", `↩ ${basename(home)}`, home, false));
       }
     }
     return h_flex().h(42).flex_none().px(14).gap(6).items_center().border_b(1).border_color(t.border)
       .child(div().flex_none().font_semibold().child("Files"))
       .child(h_flex().id("crumbs").flex_1().min_w(0).gap(4).items_center().overflow_hidden()
-        .when(!crumbs.length, (el) => el.child(div().truncate().text_size(12).text_color(t.dim).child(root?.split("/").pop() ?? "")))
+        .when(!crumbs.length, (el) => el.child(div().truncate().text_size(12).text_color(t.dim).child(root ? basename(root) : "")))
         .children(crumbs))
       .when(this.busy, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.muted).spin(900)))
       .child(badge(this.model.showHidden, "H")).child(badge(this.model.showIgnored, "I"));
