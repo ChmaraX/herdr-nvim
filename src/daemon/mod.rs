@@ -314,6 +314,7 @@ pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
         // console process group. Unlike DETACHED_PROCESS, it still permits the
         // redirected standard handles used above.
         let detached = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+        keep_std_handles_to_self();
         // Out of the launcher's Job Object, if it is in one, so closing
         // the job does not end the child. A job that forbids breakaway
         // refuses the flag with ACCESS_DENIED: then the child stays in it.
@@ -325,6 +326,31 @@ pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
                 command.creation_flags(detached).spawn()
             }
             spawned => spawned,
+        }
+    }
+}
+
+/// Windows gives a child every inheritable handle of its parent, not only
+/// the stdio it is told: a daemon would hold this process's own stdin,
+/// stdout and stderr. When this process is an app `exec`, those are the
+/// app's pipes, and the app's `exec` doesn't return until every holder
+/// closes them: the daemon's whole life (the real app, 0.1.16). Rust
+/// passes its children duplicates of what they inherit, so this changes
+/// nothing for them.
+#[cfg(windows)]
+fn keep_std_handles_to_self() {
+    use windows_sys::Win32::{
+        Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: GetStdHandle and SetHandleInformation on this process's
+        // own handles; a missing or invalid one is skipped, a failure ignored.
+        unsafe {
+            let handle = GetStdHandle(id);
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
         }
     }
 }

@@ -423,8 +423,13 @@ mod sys {
     use std::path::Path;
     use std::process::{Child, Command};
     use std::{mem, ptr};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, SetHandleInformation, ERROR_ACCESS_DENIED, HANDLE_FLAG_INHERIT,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetConsoleWindow, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -600,6 +605,17 @@ mod sys {
     /// herdr-nvim's daemon flags plus breakaway from the parent's Job
     /// Object, retried without it where the job forbids breakaway.
     pub fn spawn_detached(command: &mut Command) -> (io::Result<Child>, Value) {
+        // As herdr-nvim's `keep_std_handles_to_self`: the child holds none
+        // of this process's stdio (an exec's pipes).
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: this process's own handles; failure ignored.
+            unsafe {
+                let handle = GetStdHandle(id);
+                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
         let base = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
         command.creation_flags(base | CREATE_BREAKAWAY_FROM_JOB);
         match command.spawn() {
