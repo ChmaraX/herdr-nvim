@@ -21,9 +21,9 @@ use crate::config::{self, TreeMode};
 /// `herdr-nvim app-config`: the settings the mods and the nvim plugin need.
 /// `herdr-nvim app-config tree <native|nvim>` sets `[app] tree`;
 /// `herdr-nvim app-config nvim-bin <path>` sets `[sidebar] nvim_bin` (the
-/// Neovim install, `install-nvim.sh`).
+/// Neovim install, `nvim_get`).
 pub fn app_config_cmd() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let value = || args.get(1).map(String::as_str).unwrap_or_default();
     match args.first().map(String::as_str) {
         None => {}
@@ -63,6 +63,11 @@ pub(crate) fn with_setting(text: &str, section: &str, key: &str, value: &str) ->
     };
     table.insert(key, toml_edit::value(value));
     Ok(doc.to_string())
+}
+
+/// Write `[sidebar] nvim_bin = <path>` (the Neovim herdr-nvim installed).
+pub(crate) fn set_nvim_bin(path: &str) -> Result<()> {
+    write_setting("sidebar", "nvim_bin", path)
 }
 
 /// Write `[app] tree = <mode>` into the config file.
@@ -127,7 +132,7 @@ mod tests {
     #[test]
     fn the_written_file_parses_back() {
         let text = with_setting("[picker]\nmax_files = 9\n", "app", "tree", "nvim").unwrap();
-        // Where install-nvim.sh points herdr-nvim at the Neovim it installed.
+        // Where `nvim_get` points herdr-nvim at the Neovim it installed.
         let text = with_setting(&text, "sidebar", "nvim_bin", "/x/nvim/bin/nvim").unwrap();
         let parsed: crate::config::Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.app.tree, TreeMode::Nvim);

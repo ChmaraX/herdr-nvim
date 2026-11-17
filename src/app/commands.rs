@@ -1,7 +1,7 @@
 //! The app host's own subcommands: what the Lua plugin and the mods call
 //! instead of the TUI's `herdr agent list` / `pane send-text` / plugin panes.
 
-use std::{env, path::Path, process::Stdio};
+use std::{path::Path, process::Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -37,7 +37,7 @@ pub fn agents_cmd() -> Result<()> {
 /// `herdr-nvim app-send <terminal> <text> [--submit]`: submit through
 /// `hc send` (paste + Enter once the person pauses typing), or paste only.
 pub fn send_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let submit = args.iter().any(|arg| arg == "--submit");
     let mut rest = args.iter().filter(|arg| *arg != "--submit");
     let (Some(terminal), Some(text)) = (rest.next(), rest.next()) else {
@@ -78,10 +78,12 @@ pub(crate) fn show_pick(pick: Pick) -> Result<()> {
         }
         Pick::Ready { handoff, cwd } => (handoff, cwd),
     };
+    let mut argv = super::env::self_argv()?;
+    argv.push("picker".to_owned());
     let started = rpc::call(
         "terminal.run",
         json!({
-            "argv": [cli::self_command()?.to_string_lossy(), "picker"],
+            "argv": argv,
             "cwd": cwd,
             "env": {"HERDR_NVIM_HANDOFF": handoff, "TERM": "xterm-256color", "COLORTERM": "truecolor"},
             "no_parent": true,
@@ -118,7 +120,7 @@ pub(crate) fn split_location(text: &str) -> (String, Option<u32>, Option<u32>) {
 /// it needs no mod copy to be shown, only the tab. Relative paths resolve
 /// against the tab's folder. Prints `{"terminal": "<sidebar>"}`.
 pub(crate) fn open_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let target = cli::positional(&args, &["--tab", "--space", "--ctx"]).context(
         "usage: herdr-nvim open [--tab <tab> [--space <space>]] [--no-focus] <file>[:line[:col]]",
     )?;
@@ -201,7 +203,7 @@ pub(crate) fn mentioned_line(text: &str, cwd: &Path, file: &Path) -> Option<u32>
 /// the system opener without their `:line`, so when none came with it, the
 /// line is read back from the focused terminal's own text.
 pub(crate) fn open_link() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let Some(clicked) = args
         .iter()
         .find(|arg| !arg.starts_with("--") && !arg.starts_with('{'))
@@ -241,34 +243,6 @@ pub(crate) fn open_link() -> Result<()> {
             })
     });
     bridge::open_in_sidebar(&ctx, &resolved.to_string_lossy(), line).map(drop)
-}
-
-/// `herdr-nvim app-install-nvim [--pause]`: the "Neovim is needed" card's
-/// Install button, in a terminal tab of its own so the person sees what runs
-/// (and any password prompt): the runtime's `install-nvim.sh`, which installs
-/// Neovim and points `[sidebar] nvim_bin` at it. macOS and Linux (a shell
-/// script, like the app install itself).
-#[cfg(unix)]
-pub fn install_nvim_cmd() -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    let root = crate::daemon::plugin_root()?;
-    let script = ["bin/install-nvim.sh", "herdr-app/install-nvim.sh"]
-        .iter()
-        .map(|rel| root.join(rel))
-        .find(|path| path.is_file())
-        .with_context(|| format!("no install-nvim.sh in {}", root.display()))?;
-    let error = std::process::Command::new("sh")
-        .arg(&script)
-        .arg("--herdr-nvim")
-        .arg(cli::self_command()?)
-        .args(env::args().skip(2))
-        .exec();
-    Err(error).with_context(|| format!("cannot run {}", script.display()))
-}
-
-#[cfg(not(unix))]
-pub fn install_nvim_cmd() -> Result<()> {
-    bail!("install Neovim 0.10+ yourself (winget install Neovim.Neovim), then press cmd-e again")
 }
 
 #[cfg(test)]

@@ -14,9 +14,11 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
-import { appHome, exec, panes, settings, setShared, shared, theme, watchFolder } from "herdr";
+import { appHome, exec, panes, settings, setShared, shared, theme } from "herdr";
 import * as fs from "fs/promises";
+import { changesIn } from "./lib.js";
 import { drawMermaid, modeOf, pngSize, splitMermaid } from "./mermaid.js";
+import { bin, canonical, dirname, same } from "./path.js";
 
 const KINDS = {
   md: "markdown", markdown: "markdown", mdx: "markdown",
@@ -45,8 +47,6 @@ export function previewKind(path) {
   const ext = /\.([^./]+)$/.exec(path ?? "")?.[1]?.toLowerCase();
   return (ext && KINDS[ext]) || null;
 }
-
-const dirname = (p) => p.replace(/\/[^/]*$/, "") || "/";
 
 // `byTab` with `tab` set to `value`, and only the tabs that still show a
 // preview kept.
@@ -128,30 +128,20 @@ async function diagram(code, mode, name) {
   return size ? { width: size.width / 2, height: size.height / 2 } : { error: "The diagram was not drawn." };
 }
 
-// A mod reads files only inside the home folder: one elsewhere (/tmp, a
-// screenshot under /private/var/folders) is read through a process.
-async function readText(file) {
+// A file's text, or its bytes. A mod's `fs` reads only inside the home
+// folder: a file elsewhere (/tmp, a screenshot under /private/var/folders,
+// another drive) is copied into the cache by herdr-nvim (`app-preview
+// --stage`), read there, then removed.
+async function readFile(file, text) {
+  const read = (path) => (text ? fs.readFile(path, "utf8") : fs.readFile(path));
   try {
-    return await fs.readFile(file, "utf8");
+    return await read(file);
   } catch {
-    const r = await exec("cat", [file]);
+    const r = await exec(bin(), ["app-preview", "--stage", file]);
     if (r.code !== 0) throw new Error(r.stderr);
-    return r.stdout;
-  }
-}
-
-async function readBytes(file) {
-  try {
-    return await fs.readFile(file);
-  } catch {
-    // Copied into the cache (inside the app home), read there, then gone.
-    const dir = `${appHome()}/${CACHE}`;
-    await fs.mkdir(dir, { recursive: true });
-    const copy = `${dir}/.copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const r = await exec("cp", [file, copy]);
-    if (r.code !== 0) throw new Error(r.stderr);
+    const copy = r.stdout.trim();
     try {
-      return await fs.readFile(copy);
+      return await read(copy);
     } finally {
       await fs.unlink(copy).catch(() => {});
     }
@@ -166,7 +156,7 @@ async function load(file) {
   if (!kind) return { error: "Can't preview this kind of file." };
   let data;
   try {
-    data = kind === "markdown" ? await readText(file) : await readBytes(file);
+    data = await readFile(file, kind === "markdown");
   } catch {
     return { error: "The file is gone." };
   }
@@ -185,7 +175,7 @@ const markdown = (id, text) => TextView.markdown(id, text).selectable(true);
 
 export class Preview {
   constructor(props, cx) {
-    this.file = props.preview;
+    this.file = canonical(props.preview);
     this.tab = props.tab;
     this.shown = null;
     // The diagrams' theme: the one Herdr shows, followed in render().
@@ -197,7 +187,7 @@ export class Preview {
     setShared(SHOWN, withTab(shared(SHOWN), this.tab, this.file));
     cx.spawn(async (cx) => {
       // A changed path of the folder's root means "anything may have changed".
-      const ours = (changed) => !changed.length || changed.some((p) => p === this.file || p === dirname(this.file));
+      const ours = (changed) => !changed.length || changed.some((p) => same(p, this.file) || same(p, dirname(this.file)));
       while (!this.closed) {
         const s = await load(this.file);
         if (this.closed) break;
@@ -207,7 +197,7 @@ export class Preview {
         keepCached(this.tab, names); // the pane shows first, the clean-up after
         cx.notify();
         this.nudge();
-        while (!this.closed && !ours(await watchFolder(dirname(this.file))));
+        while (!this.closed && !ours(await changesIn(dirname(this.file))));
       }
     });
     cx.spawn((cx) => this.drawDiagrams(cx));

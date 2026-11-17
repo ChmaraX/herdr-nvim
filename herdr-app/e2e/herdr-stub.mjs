@@ -10,6 +10,9 @@ export const app = {
   shared: {},
   ran: [],
   overlays: [],
+  platform: "macos",
+  home: "/nonexistent-app-home",
+  userHome: "/Users/me",
   // exec(cmd, args, opts) -> {code, stdout, stderr}; a check replaces it.
   exec: async () => ({ code: 1, stdout: "", stderr: "no exec in this check" }),
 };
@@ -29,10 +32,11 @@ export const setShared = (k, v) => {
 export const run = (name, args) => app.ran.push([name, args]);
 export const notify = () => {};
 export const nextCommand = () => new Promise(() => {});
-export const appHome = () => "/nonexistent-app-home";
+export const appHome = () => app.home;
+export const home = () => app.userHome;
 export const readTextFile = async () => { throw new Error("no files in this check"); };
 export const watchFolder = () => new Promise(() => {});
-export const window = () => ({ platform: "macos" });
+export const window = () => ({ platform: app.platform });
 export const hc = async () => ({ code: 1, stdout: "", stderr: "" });
 export const openOverlay = (spec) => app.overlays.push(spec);
 export const closeOverlay = () => {};

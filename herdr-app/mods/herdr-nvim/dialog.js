@@ -6,7 +6,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay, openOverlay, props, setShared, shared, theme } from "herdr";
-import { fsOp, inside, pathsOf, requestFor } from "./ops.js";
+import { fsOp, pathsOf, requestFor } from "./ops.js";
+import { canonical, inside } from "./path.js";
 
 export function openDialog(spec) {
   openOverlay({ mod: "herdr-nvim", kind: "dialog", width: 460, props: { dialog: spec } });
@@ -51,7 +52,7 @@ export class Dialog {
           detail: `${result.error}. Do it anyway?`,
           action: { type: "request", request: { ...request, outside: true } } });
       }
-      const show = result.path ?? result.paths?.[0] ?? request.dir;
+      const show = canonical(result.path ?? result.paths?.[0] ?? request.dir);
       const n = (shared("herdr-nvim.reveal")?.n ?? 0) + 1;
       setShared("herdr-nvim.reveal", { tab: d.place.tab, path: show ?? "", n });
     });

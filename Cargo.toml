@@ -2,6 +2,8 @@
 name = "herdr-nvim"
 version = "1.3.1"
 edition = "2021"
+# std::fs::File::lock (the daemon start lock, the install locks).
+rust-version = "1.89"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -9,11 +11,15 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 toml_edit = "0.22"
 anyhow = "1"
+# The installer's runtime stamp (`install::runtime`).
+sha2 = "0.11"
 crossterm = "0.28"
 # fff-search backend for the picker's fuzzy fallback tier. Users install
 # prebuilt release binaries, so the extra dependency weight is a CI/build
 # cost, not a user-facing one.
 fff-search = "0.10.6"
+# The file tree's ignore marks (`app-list`); fff-search already builds it.
+git2 = "0.21"
 # The app's markdown preview draws Mermaid diagrams (`app-mermaid`) with
 # Mermaid's own layouts and themes, measured and painted with the system fonts.
 merman = { version = "0.10.0", default-features = false, features = ["all-diagrams", "layout-cytoscape", "png", "system-fonts"] }
@@ -26,8 +32,21 @@ merman = { version = "0.10.0", default-features = false, features = ["experiment
 # tcflush: keys typed into an nvim pane before nvim attaches are dropped.
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Daemon control: spawning out of a Job Object (daemon), process list and tree kill (winproc).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Threading"] }
+
+# What only the Windows facts probe (examples/winprobe.rs) and the test
+# harness's daemon markers ask. Dev features stay out of the shipped binary.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [[example]]
 name = "fff_cold"
+
+# The Windows facts probe (doc/windows-facts.md).
+[[example]]
+name = "winprobe"
 
 [dev-dependencies]
 regex = "1"

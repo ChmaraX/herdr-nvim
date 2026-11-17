@@ -174,9 +174,15 @@ function M.write_state(changes)
   if not path then return end
   vim.fn.mkdir(vim.fs.dirname(path), "p")
   local tmp = path .. ".tmp"
-  if pcall(vim.fn.writefile, { vim.json.encode(M.state) }, tmp) then
-    pcall(vim.uv.fs_rename, tmp, path)
+  if not pcall(vim.fn.writefile, { vim.json.encode(M.state) }, tmp) then return end
+  -- On Windows a process holding the file open (a reader, a virus scanner)
+  -- fails the rename for a moment.
+  local tries = vim.fn.has("win32") == 1 and 4 or 1
+  for attempt = 1, tries do
+    if vim.uv.fs_rename(tmp, path) then return end
+    if attempt < tries then vim.uv.sleep(20) end
   end
+  vim.uv.fs_unlink(tmp)
 end
 
 -- The tree key's presses for the tree (it reads them when it takes the

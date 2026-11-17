@@ -8,7 +8,7 @@
 // one of its images.
 
 import { exec } from "herdr";
-import { bin } from "./lib.js";
+import { bin } from "./path.js";
 
 // The fence that opens a code block: ``` or ~~~, up to three spaces in, as
 // CommonMark has it, then its info string (the language first). Every fence

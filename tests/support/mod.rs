@@ -24,6 +24,40 @@ pub fn nvim_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Whether the OS still runs `pid`. A process the test started and never
+/// reaped lingers as a zombie on Unix: that counts as gone.
+pub fn process_alive(pid: u32) -> bool {
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("run ps");
+        let stat = String::from_utf8_lossy(&output.stdout);
+        let stat = stat.trim();
+        !stat.is_empty() && !stat.starts_with('Z')
+    }
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .expect("run tasklist");
+        String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    }
+}
+
+/// Wait (briefly) for `pid` to exit; `true` once it has.
+pub fn wait_dead(pid: u32) -> bool {
+    for _ in 0..60 {
+        if !process_alive(pid) {
+            return true;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 pub struct Sandbox {
     pub dir: PathBuf,
 }
@@ -156,8 +190,9 @@ impl Drop for Sandbox {
 }
 
 /// A real headless nvim registered for `tab` in the sandbox, spawned the way
-/// `ensure_daemon` does it (listen address, identity env), minus the plugin.
-/// Killed and reaped on drop.
+/// `ensure_daemon` does it (listen address, identity env, its own process
+/// group, a Windows marker holding its pid), minus the plugin. Killed and
+/// reaped on drop.
 pub struct Daemon {
     pub tab: String,
     pub entry: PathBuf,
@@ -186,7 +221,8 @@ impl Daemon {
         let address = entry.clone();
         #[cfg(windows)]
         let address = PathBuf::from(format!(r"\\.\pipe\herdr-nvim-{}", tab.replace(':', "_")));
-        let child = Command::new("nvim")
+        let mut command = Command::new("nvim");
+        command
             .args(["--headless", "--clean", "--listen"])
             .arg(&address)
             .args(extra)
@@ -194,11 +230,12 @@ impl Daemon {
             .env("HERDR_WORKSPACE_ID", tab.split(':').next().unwrap())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn nvim");
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let child = command.spawn().expect("spawn nvim");
         #[cfg(windows)]
-        fs::write(&entry, tab).unwrap();
+        fs::write(&entry, marker(tab, child.id())).unwrap();
         let daemon = Self {
             tab: tab.to_owned(),
             entry,
@@ -239,6 +276,32 @@ impl Daemon {
 
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Start a process from it the way `vim.lsp` starts a server
+    /// (`vim.system`), running for minutes; its pid.
+    pub fn start_child(&self) -> u32 {
+        self.eval(
+            r#"luaeval("vim.system({vim.v.progpath, '--clean', '--headless', '-c', 'sleep 300'}).pid")"#,
+        )
+        .expect("start a child")
+        .parse()
+        .expect("child pid")
+    }
+
+    /// Busy-loop its main loop, like a plugin stuck in a loop: its socket
+    /// still takes connections, but nothing answers, and it does not act on
+    /// SIGTERM either.
+    pub fn busy(&self) {
+        let sent = Command::new("nvim")
+            .args(["--headless", "--clean", "--server"])
+            .arg(&self.address)
+            .args(["--remote-send", "<cmd>lua while true do end<cr>"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run nvim --remote-send");
+        assert!(sent.success(), "{} not busied", self.tab);
     }
 
     /// SIGSTOP it: its socket still takes connections, but nothing answers
@@ -346,4 +409,29 @@ impl Artifact {
         }
         self.note(&text);
     }
+}
+
+/// A Windows registry marker as `registry::register_daemon` writes it: the
+/// tab, the pid, and that process's creation time (FILETIME ticks).
+#[cfg(windows)]
+fn marker(tab: &str, pid: u32) -> String {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, FILETIME},
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: plain Win32 calls on a handle closed below.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        assert!(!process.is_null(), "open the daemon process {pid}");
+        let ok = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(process);
+        assert!(ok != 0, "the daemon's creation time");
+    }
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    format!("{tab}\n{pid}\n{ticks}\n")
 }

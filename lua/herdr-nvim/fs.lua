@@ -1,7 +1,7 @@
 -- File operations for the Herdr app's native tree, done by the tab's nvim so
 -- its buffers and language servers stay in step, as with LazyVim's explorer:
 -- Snacks' own rename (LSP `workspace/willRenameFiles` / `didRenameFiles`),
--- copy, trash and buffer delete when Snacks is there; the same steps done here
+-- trash and buffer delete when Snacks is there; the same steps done here
 -- otherwise. `herdr-nvim fs '<request>'` calls run() with a JSON request
 -- `{op, root, ...}` and gets a JSON answer, `{ok = true, ...}` or `{error}`.
 --
@@ -9,22 +9,51 @@
 -- `outside = true`, which the app sends only after the person confirmed.
 local M = {}
 local uv = vim.uv or vim.loop
+local WIN = vim.fn.has("win32") == 1
 
 local function snacks()
   local ok, s = pcall(require, "snacks")
   return ok and type(s) == "table" and s.rename and s or nil
 end
 
+-- Absolute, with "/" between names on Windows too; a root keeps its "/"
+-- (`C:` alone is the current folder on drive C).
 local function norm(path)
-  return vim.fs.normalize(vim.fn.fnamemodify(path, ":p")):gsub("/$", "")
+  return vim.fs.normalize(vim.fn.fnamemodify(path, ":p"), { expand_env = false })
+end
+
+-- `dir` with a "/" after it to put a name on: a root has one already.
+local function slash(dir)
+  return dir:sub(-1) == "/" and dir or dir .. "/"
 end
 
 local function exists(path)
   return uv.fs_stat(path) ~= nil
 end
 
+-- `to` is `from` itself named in other case, on a volume that ignores case
+-- (Windows; macOS by default). vim.fn.rename goes through a temp name then.
+local function case_only(from, to)
+  local a, b = uv.fs_lstat(from), uv.fs_lstat(to)
+  return from ~= to and vim.fn.tolower(from) == vim.fn.tolower(to)
+    and a ~= nil and b ~= nil and a.dev == b.dev and a.ino == b.ino
+end
+
+-- A path as compared: Windows names ignore case. A macOS or Linux volume
+-- may not, so there a name is only ever its own.
+local function key(path)
+  return WIN and vim.fn.tolower(path) or path
+end
+
 local function under(path, dir)
-  return path == dir or path:sub(1, #dir + 1) == dir .. "/"
+  path, dir = key(path), key(dir)
+  return path == dir or vim.startswith(path, slash(dir))
+end
+
+-- libuv answers C:\x on Windows; compared with paths from norm().
+local function realpath(path)
+  local resolved = uv.fs_realpath(path)
+  return resolved and vim.fs.normalize(resolved, { expand_env = false })
 end
 
 -- Where `path` really is, symlinks resolved: a folder all the way, else its
@@ -35,16 +64,15 @@ local function real(path)
   -- touches only the link, wherever it points.
   local stat = uv.fs_lstat(path)
   if stat and stat.type == "link" then
-    local dir = uv.fs_realpath(vim.fs.dirname(path)) or vim.fs.dirname(path)
-    return (dir .. "/" .. vim.fs.basename(path)):gsub("//+", "/")
+    return slash(realpath(vim.fs.dirname(path)) or vim.fs.dirname(path)) .. vim.fs.basename(path)
   end
-  if vim.fn.isdirectory(path) == 1 then return uv.fs_realpath(path) or path end
+  if vim.fn.isdirectory(path) == 1 then return realpath(path) or path end
   local dir, rest = vim.fs.dirname(path), { vim.fs.basename(path) }
-  while not uv.fs_realpath(dir) and dir ~= vim.fs.dirname(dir) do
+  while not realpath(dir) and dir ~= vim.fs.dirname(dir) do
     table.insert(rest, 1, vim.fs.basename(dir))
     dir = vim.fs.dirname(dir)
   end
-  return ((uv.fs_realpath(dir) or dir) .. "/" .. table.concat(rest, "/")):gsub("//+", "/")
+  return slash(realpath(dir) or dir) .. table.concat(rest, "/")
 end
 
 -- Every path inside the root, as the file system resolves them (a symlink in
@@ -73,7 +101,7 @@ end
 -- The buffer named exactly `path`, if any.
 local function buffer_named(path)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if norm(vim.api.nvim_buf_get_name(buf)) == path then return buf end
+    if key(norm(vim.api.nvim_buf_get_name(buf))) == key(path) then return buf end
   end
 end
 
@@ -129,15 +157,51 @@ local function lsp_rename(from, to, rename)
   end
 end
 
+-- `from` made again at `to`: a file, a folder with all in it, or a link as a
+-- link to the same place. Not Snacks' copy, which follows links and reports
+-- a failure only as a notification.
 local function copy_path(from, to)
-  local s = snacks()
-  if s then
-    require("snacks.picker.util").copy_path(from, to)
+  local stat = assert(uv.fs_lstat(from))
+  if stat.type == "link" then
+    local dir = vim.fn.isdirectory(from) == 1
+    local ok, err = uv.fs_symlink(assert(uv.fs_readlink(from)), to, { dir = dir })
+    -- A folder link needs a privilege on Windows that a junction doesn't.
+    if not ok and WIN and dir then ok, err = uv.fs_symlink(uv.fs_realpath(from), to, { junction = true }) end
+    assert(ok, err)
+  elseif stat.type == "directory" then
+    -- The whole listing is read here, before the copy exists: a folder
+    -- copied into itself gets itself as it was.
+    local listing = assert(uv.fs_scandir(from))
+    -- Writable while it fills; the source's mode once full (a read-only
+    -- folder would refuse its own contents).
+    assert(uv.fs_mkdir(to, 448))
+    for name in uv.fs_scandir_next, listing do copy_path(from .. "/" .. name, to .. "/" .. name) end
+    assert(uv.fs_chmod(to, stat.mode % 512))
   else
-    local out = vim.fn.system({ "cp", "-R", from, to })
-    if vim.v.shell_error ~= 0 then error(out) end
+    assert(uv.fs_copyfile(from, to, { excl = true, ficlone = true }))
   end
-  if not exists(to) then error("could not copy to " .. to) end
+end
+
+-- Whether the folder `from` is a folder above `to` other than its parent:
+-- then the copy's own folders are on its way down and it would never end
+-- (into its direct child it ends: the listing is read before the child
+-- exists). By identity, so a volume that ignores case can't hide it.
+local function into_itself(from, to)
+  local f = uv.fs_stat(from)
+  if not f or f.type ~= "directory" then return false end
+  local dir, parent = vim.fs.dirname(to), true
+  while true do
+    local s = uv.fs_stat(dir)
+    if s and s.dev == f.dev and s.ino == f.ino then return not parent end
+    local up = vim.fs.dirname(dir)
+    if up == dir then return false end
+    dir, parent = up, false
+  end
+end
+
+local function copy(from, to)
+  if into_itself(from, to) then error("cannot copy a folder into a folder inside it: " .. to) end
+  copy_path(from, to)
 end
 
 local ops = {}
@@ -168,7 +232,7 @@ function ops.rename(req)
   local from, to = norm(req.path), norm(req.to)
   check_inside(req, from, to)
   if not exists(from) then error("no such file: " .. from) end
-  if exists(to) then error("already exists: " .. to) end
+  if exists(to) and not case_only(from, to) then error("already exists: " .. to) end
   -- Snacks' own rename swaps in a fresh buffer and force-deletes the old one,
   -- losing unsaved edits, so the buffers are always moved here; Snacks, when
   -- it is there, only tells the language servers.
@@ -188,7 +252,7 @@ function ops.copy(req)
   local from, to = norm(req.path), norm(req.to)
   check_inside(req, from, to)
   if exists(to) then error("already exists: " .. to) end
-  copy_path(from, to)
+  copy(from, to)
   return { ok = true, path = to }
 end
 
@@ -197,7 +261,7 @@ end
 local function each_into(req, op)
   local done = {}
   for _, path in ipairs(req.paths or {}) do
-    local to = norm(req.dir) .. "/" .. vim.fn.fnamemodify(norm(path), ":t")
+    local to = slash(norm(req.dir)) .. vim.fn.fnamemodify(norm(path), ":t")
     table.insert(done, op({ root = req.root, outside = req.outside, path = path, to = to }).path)
   end
   return { ok = true, paths = done }
@@ -249,9 +313,9 @@ function ops.paste(req)
   if #files == 0 then error(("the %s register holds no files"):format(register)) end
   local pasted = {}
   for _, from in ipairs(files) do
-    local to = dir .. "/" .. vim.fn.fnamemodify(from, ":t")
+    local to = slash(dir) .. vim.fn.fnamemodify(from, ":t")
     if exists(to) then error("already exists: " .. to) end
-    copy_path(norm(from), to)
+    copy(norm(from), to)
     table.insert(pasted, to)
   end
   return { ok = true, paths = pasted }

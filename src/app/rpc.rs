@@ -17,10 +17,36 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-/// The `hc` binary (`HERDR_NVIM_HC` overrides; PATH already includes
-/// `~/.local/bin`, see `path::augment_path`).
-pub(crate) fn hc_bin() -> String {
-    env::var("HERDR_NVIM_HC").unwrap_or_else(|_| "hc".to_owned())
+/// The `hc` binary: `HERDR_NVIM_HC`, else the one beside the app's
+/// `herdr-app` (`HERDR_APP_BIN`; the macOS bundle has it there), else `hc`
+/// on PATH (which includes `~/.local/bin`, and on Windows the registry's
+/// PATH, where the core's installer adds its folder; see `path::augment_path`).
+pub(crate) fn hc_bin() -> std::ffi::OsString {
+    if let Some(hc) = env::var_os("HERDR_NVIM_HC").filter(|hc| !hc.is_empty()) {
+        return hc;
+    }
+    super::env::app_bin_from_env()
+        .map(|app| app.with_file_name(format!("hc{}", env::consts::EXE_SUFFIX)))
+        .filter(|hc| hc.is_file())
+        .map_or_else(|| "hc".into(), Into::into)
+}
+
+/// Whether `hc` runs at all (`hc --version`): checked before an install
+/// changes anything, so a missing core CLI stops it with nothing changed.
+pub(crate) fn check_hc() -> Result<()> {
+    let output = hc()
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("cannot run {}", hc_bin().to_string_lossy()))?;
+    if !output.status.success() {
+        bail!(
+            "{} --version failed: {}",
+            hc_bin().to_string_lossy(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// A `hc` command for the CLI paths (`hc read`, `hc send`, `hc events`).

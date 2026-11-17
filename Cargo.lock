@@ -810,13 +810,16 @@ dependencies = [
  "anyhow",
  "crossterm",
  "fff-search",
+ "git2",
  "libc",
  "merman",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
  "toml_edit",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

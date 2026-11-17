@@ -7,7 +7,7 @@
 # checks the real effects (daemons, buffers, what the agent received), takes
 # screenshots, uninstalls, and removes everything it started.
 #
-#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE]
+#   herdr-app/e2e/run.sh [--proof DIR] [--keep] [--app-bin PATH] [--only GROUPS] [--bundle FILE] [--upgrade-from TAG]
 #   herdr-app/e2e/run.sh --only nvim-install   # opt-in: downloads Neovim (~10 MB)
 #
 # A smoke test of the flows a person uses: Files and cmd-e (core), cmd-o
@@ -21,6 +21,8 @@
 # with it, recorded as nvim-install.mp4. --bundle installs and uninstalls the way a person
 # does, through the root install.sh with a release's app bundle
 # (herdr-app/bundle.sh makes one), instead of this checkout's build.
+# --upgrade-from TAG first installs that release (downloaded by the root
+# install.sh, with its own installer), so the install under test upgrades it.
 #
 # Needs: the Herdr app (0.1.11+), hc, nvim, cargo, git, and a python3 with
 # pyobjc (Quartz) for the key presses. The window is moved on screen once
@@ -33,6 +35,7 @@ proof=/tmp/nvim-port-proof/run-$(date +%Y%m%d-%H%M%S)
 keep=0
 app_bin=
 bundle=
+upgrade_from=
 only=
 groups=" picker tree preview nvim-tree nvim-install teardown "
 while [ $# -gt 0 ]; do
@@ -41,6 +44,7 @@ while [ $# -gt 0 ]; do
     --keep) keep=1 ;;
     --app-bin) app_bin=$2; shift ;;
     --bundle) bundle=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift ;;
+    --upgrade-from) upgrade_from=$2; shift ;;
     --only)
       only=$2; shift
       for g in ${only//,/ }; do
@@ -98,6 +102,7 @@ cleanup() {
   say "cleanup (root $root)"
   # The app's own log goes with the proof, failed run or not.
   [ -f "$root/app.log" ] && cp "$root/app.log" "$proof/app.log"
+  [ -n "${pump_pid:-}" ] && kill "$pump_pid" 2>/dev/null
   if [ "$keep" = 1 ]; then say "kept: . with HERDR_APP_HOME=$HERDR_APP_HOME HC_SESSION=$HC_SESSION"; return; fi
   [ -n "${rec_pid:-}" ] && kill "$rec_pid" 2>/dev/null
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
@@ -119,16 +124,20 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# One frame drawn now. The mods act when they draw (the controller pairs
+# the panel and nvim from what changed since its last frame), so two layout
+# changes with no frame between them reach it as one; every wait draws.
+frame() { [ -z "$app_pid" ] || H shot "$root/.frame.png" >/dev/null 2>&1 || true; }
 poll() { # poll <seconds> <command...>: until it succeeds
   local until=$((SECONDS + $1)); shift
-  until "$@" >/dev/null 2>&1; do [ $SECONDS -lt $until ] || return 1; sleep 0.2; done
+  until "$@" >/dev/null 2>&1; do [ $SECONDS -lt $until ] || return 1; frame; sleep 0.2; done
 }
 keys() { "$py" "$here/keys.py" "$app_pid" "$@"; }
 shot() { H shot "$proof/$1.png" >/dev/null && say "screenshot $1.png"; }
 # cmd_e: what cmd-e runs (keys.json), after a moment for the last action to
 # settle. Not a key press: those are lost now and then when the window isn't
 # frontmost, and a person never presses within milliseconds of the last change.
-cmd_e() { sleep 0.5; H do mod.open:herdr-nvim >/dev/null; }
+cmd_e() { sleep 0.5; frame; H do mod.open:herdr-nvim >/dev/null; }
 files_button() { # exactly what the tab bar's Files button runs (mods/tabs/main.js)
   H do layout.select '{"stack":"panel-body","child":"files"}' >/dev/null
   H do layout.show '{"id":"panel"}' >/dev/null
@@ -186,7 +195,15 @@ place_window() {
   osascript -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set position of window 1 to {40, 60}" \
     -e "tell application \"System Events\" to tell (first process whose unix id is $app_pid) to set size of window 1 to {1280, 820}"
 }
-poll 15 place_window || say "note: could not move the window (Accessibility); screenshots may be stale"
+if ! poll 15 place_window; then
+  # macOS draws a window it can't see only when asked to: without Accessibility
+  # (the window stays where it opened, maybe behind others) a frame is asked
+  # for every FRAMES_EVERY seconds (default 0.25; a loaded Mac draws fewer:
+  # FRAMES_EVERY=0.75 stands in for that), or the mods lag.
+  say "note: could not move the window (Accessibility); asking the app for frames instead"
+  (while :; do frame; sleep "${FRAMES_EVERY:-0.25}"; done) &
+  pump_pid=$!
+fi
 
 # --- a repo and two agent tabs ----------------------------------------------
 demo=$root/work/demo
@@ -256,12 +273,31 @@ echo "$refused" | grep -q -- '--install-nvim' || fail "without Neovim the instal
   fail "without Neovim the install changed something"
 rm "$nvim_conf"
 say "without Neovim: the install stops, says how (--install-nvim), changes nothing"
+if [ -n "$upgrade_from" ]; then
+  old=$(sh "$repo/install.sh" --app --version "$upgrade_from" -- --app-bin "$app_bin" 2>&1 | tee -a "$log")
+  echo "$old" | grep -q '^herdr-nvim: installed in' || fail "the $upgrade_from install did not finish: $old"
+  grep -q "^# Written by herdr-nvim's herdr-app/install.sh" "$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim" ||
+    fail "$upgrade_from did not leave its sh wrapper"
+  find "$HERDR_APP_HOME/mods" "$XDG_DATA_HOME/herdr-nvim/app" -maxdepth 2 | sort > "$proof/before-upgrade.txt"
+  say "installed $upgrade_from (its sh wrapper, its runtime); the install below upgrades it"
+fi
 installed=$(app_install 2>&1 | tee -a "$log")
 echo "$installed" | grep -q '^herdr-nvim: installed in' || fail "the install did not finish: $installed"
 say "installed from ${bundle:-the checkout build}"
-echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
+if [ -n "$upgrade_from" ]; then
+  echo "$installed" | grep -q 'already uses herdr-nvim' || fail "the upgrade changed the layout again: $installed"
+  gen=$(sed -n 's|.*"\./gen/\([0-9a-f]*\)/main\.js".*|\1|p' "$HERDR_APP_HOME/mods/herdr-nvim/main.js" | head -1)
+  [ -n "$gen" ] && [ -f "$HERDR_APP_HOME/mods/herdr-nvim/gen/$gen/install.json" ] &&
+    [ -f "$HERDR_APP_HOME/mods/herdr-nvim/.herdr-nvim" ] ||
+    fail "the upgrade did not point main.js at a generation with the launcher's record, marked"
+  [ ! -e "$HERDR_APP_HOME/mods/herdr-nvim/lib.js" ] || fail "the upgrade left $upgrade_from's mod files at the top"
+  find "$HERDR_APP_HOME/mods" "$XDG_DATA_HOME/herdr-nvim/app" -maxdepth 2 | sort > "$proof/after-upgrade.txt"
+  say "upgraded $upgrade_from: main.js points at gen/$gen (with install.json), the launcher replaced the sh wrapper, old mod files gone"
+else
+  echo "$installed" | grep -q '^layout: cloned main as main-copy' || fail "on shipped main, the install did not clone main-copy"
+fi
 poll 10 shown_is main-copy || fail "the install did not show main-copy"
-wrapper=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim
+launcher=$HERDR_APP_HOME/mods/herdr-nvim/bin/herdr-nvim  # what the mods run
 H check "$HERDR_APP_HOME/mods/herdr-nvim" | tee -a "$log"
 node "$here/js-checks.mjs" | tee -a "$log" || fail "the mod's pure checks failed (node herdr-app/e2e/js-checks.mjs)"
 # RECIPE.md's key table is the tree's key table (tree-keys.js).
@@ -302,12 +338,15 @@ baseline() {
   local t
   for t in "$tab_a" "$tab_b"; do
     if sidebar_of "$t" >/dev/null; then
-      "$wrapper" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$t\"}" >/dev/null
+      "$launcher" toggle --state close --ctx "{\"space\":\"$space\",\"tab\":\"$t\"}" >/dev/null
     fi
     poll 15 no_sidebar_of "$t" || fail "baseline: tab $t's nvim pane stayed"
   done
+  # The controller sees the pair close before anything else changes.
+  frame; frame
   H do layout.hide '{"id":"panel"}' >/dev/null
   poll 10 panel_is hidden || fail "baseline: the panel stayed"
+  frame; frame
   sock_a=$(sock_of "$space" "$tab_a") || fail "baseline: no daemon for tab A"; pid_a=$(daemon_pid "$sock_a")
   sock_b=$(sock_of "$space" "$tab_b") || fail "baseline: no daemon for tab B"; pid_b=$(daemon_pid "$sock_b")
   H do pane.focus "{\"terminal\":\"$agent_a\"}" >/dev/null
@@ -340,7 +379,7 @@ say "Files: the tree (300 px) and tab A's nvim pane $sidebar_a (daemon $pid_a) i
 sleep 1
 shot 01-files-tree-and-nvim
 # What a click on a file in the tree runs (tree-view.js).
-"$wrapper" open --no-focus "$demo/src/greet.js" --ctx "$ctx" >/dev/null
+"$launcher" open --no-focus "$demo/src/greet.js" --ctx "$ctx" >/dev/null
 poll 10 nvim_at "$sock_a" greet.js:1 || fail "tab A's nvim is not on greet.js"
 say "a click in the tree: src/greet.js opens in tab A's nvim"
 files_button_off
@@ -487,7 +526,7 @@ files_button
 poll 10 panel_is files || fail "Files did not show the panel again"
 poll 10 has_preview || fail "Files on did not bring the preview back"
 # A code file clicked in the tree with the preview shown: nvim takes its place.
-"$wrapper" open --no-focus "$demo/package.json" --ctx "$ctx" >/dev/null
+"$launcher" open --no-focus "$demo/package.json" --ctx "$ctx" >/dev/null
 poll 10 sidebar_of "$tab_a" || fail "the code file did not bring nvim back in the preview's place"
 poll 5 no_preview || fail "the preview stayed beside nvim"
 poll 10 nvim_on package.json || fail "nvim is not on package.json"
@@ -534,6 +573,8 @@ sequenceDiagram
 
 [herdr]: https://herdr.dev
 EOF
+# Dark first, whatever the Mac's own appearance (the app follows it by default).
+appearance dark
 open_in_nvim "$demo/plan.md"
 sleep 1
 H do "herdr-nvim.swap:$tab_a:$(enc "$demo/plan.md")" >/dev/null
@@ -552,12 +593,15 @@ drawn_is dark 2 || fail "the light diagrams evicted the dark ones on screen a mo
 appearance dark
 ls "$cache" > "$proof/mermaid-cache.txt"
 say "Mermaid: two diagrams drawn dark, then light on a theme switch, none drawn again for a text edit (cache: mermaid-cache.txt)"
+# Source: nvim back in its place, so the next flow starts from the baseline.
+H do "herdr-nvim.swap:$tab_a:" >/dev/null
+poll 15 sidebar_of "$tab_a" && poll 5 no_preview || fail "Source did not put nvim back after the plan"
 fi
 
 if begin nvim-tree; then
 # --- tree = "nvim": no Files button; cmd-e opens and closes nvim alone --------
 panel_stays_hidden() { local i; for i in 1 2 3 4 5 6 7 8; do panel_is hidden || return 1; done; }
-"$wrapper" app-config tree nvim >/dev/null
+"$launcher" app-config tree nvim >/dev/null
 poll 10 no_files_button || fail "nvim tree: the Files button stayed"
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e showed the panel"
@@ -567,7 +611,7 @@ shot nvim-tree-no-files-button
 cmd_e
 panel_stays_hidden || fail "nvim tree: cmd-e (close) showed the panel"
 poll 10 no_sidebar_of "$tab_a" || fail "nvim tree: cmd-e did not close tab A's nvim"
-"$wrapper" app-config tree native >/dev/null
+"$launcher" app-config tree native >/dev/null
 poll 10 files_button_shown || fail "nvim tree: back to native, the Files button did not come back"
 say "tree = nvim: no Files button; cmd-e opens and closes the tab's nvim, no panel; native brings the button back"
 fi
@@ -576,7 +620,8 @@ if begin nvim-install; then
 # --- no Neovim: the card's Install downloads it, then cmd-e opens nvim -------
 # HERDR_NVIM_INSTALL_METHOD=download: Neovim's release into this run's data
 # folder, checked against GitHub's SHA-256; nvim_bin then points at it.
-"$wrapper" daemons stop "$space:$tab_a" >/dev/null || fail "could not stop tab A's nvim"
+# Earlier flows may leave an edit in it (tree: a renamed, modified buffer).
+"$launcher" daemons stop "$space:$tab_a" --force >/dev/null || fail "could not stop tab A's nvim"
 no_nvim
 record nvim-install
 cmd_e
@@ -616,7 +661,7 @@ poll 15 sh -c "! kill -0 $pid_a" || fail "tab A's daemon survived its space"
 poll 15 sh -c "! hc ls --json | grep -q herdr-nvim-watch" || fail "the watcher kept running with no daemons"
 say "closing tab B stopped its daemon, closing the space the rest and the watcher"
 # Uninstalled in nvim mode: the Files button it took out comes back.
-"$wrapper" app-config tree nvim >/dev/null
+"$launcher" app-config tree nvim >/dev/null
 poll 10 no_files_button || fail "teardown: nvim mode kept the Files button"
 app_install --uninstall 2>&1 | tee -a "$log" >/dev/null
 poll 10 files_button_shown || fail "uninstall (nvim mode) did not bring the Files button back"

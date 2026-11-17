@@ -15,17 +15,15 @@
 
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { appHome, exec, panes, props, readTextFile, run, shared, spaces, terminals, theme, watchFolder } from "herdr";
+import { exec, panes, props, readTextFile, run, shared, spaces, terminals, theme, watchFolder } from "herdr";
 import Pane from "./pane-base.js";
+import { basename, bin, canonical, dirname, key, same } from "./path.js";
 
 const KINDS = {
   md: "markdown", markdown: "markdown", mdx: "markdown",
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", ico: "image", svg: "image",
 };
 const kindOf = (path) => KINDS[/\.([^./]+)$/.exec(path ?? "")?.[1]?.toLowerCase()] ?? null;
-const basename = (p) => p.replace(/^.*\//, "");
-const dirname = (p) => p.replace(/\/[^/]*$/, "") || "/";
-const bin = () => `${appHome()}/mods/herdr-nvim/bin/herdr-nvim`;
 
 // How long a failed first look waits before asking again.
 const RETRY_MS = 2000;
@@ -80,23 +78,24 @@ export default class Header extends Pane {
       const out = await exec(bin(), ["app-current", "--ctx", this.ctxOf(r)]).catch(() => null);
       let at = null;
       try { at = out?.code === 0 ? JSON.parse(out.stdout) : null; } catch {}
-      this.file = at?.file ?? null;
+      this.file = canonical(at?.file ?? null);
       cx.notify();
       if (!at?.watch) {
         await cx.sleep(RETRY_MS);
         this.watching = null;
         return cx.notify();
       }
-      this.watching = at.watch;
+      const watch = canonical(at.watch);
+      this.watching = watch;
       while (!this.closed) {
         // The folder holds every tab's file: only this tab's matters (a
         // batch naming the folder itself may be anything).
-        const changed = await watchFolder(dirname(at.watch));
+        const changed = (await watchFolder(dirname(watch))).map(canonical);
         if (this.closed) return;
-        if (changed.length && !changed.some((p) => p.startsWith(at.watch) || p === dirname(at.watch))) continue;
-        const text = await readTextFile(at.watch).catch(() => null);
+        if (changed.length && !changed.some((p) => key(p).startsWith(key(watch)) || same(p, dirname(watch)))) continue;
+        const text = await readTextFile(watch).catch(() => null);
         let file = null;
-        try { file = (text && JSON.parse(text).file) || null; } catch {}
+        try { file = canonical((text && JSON.parse(text).file) || null); } catch {}
         if (file !== this.file) { this.file = file; cx.notify(); }
       }
     });

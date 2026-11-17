@@ -6,12 +6,14 @@
 // - "welcome": once, the first time the tab's nvim opens (`welcome`): just
 //   the keys, as the person's keys.json binds them, and where they live.
 //   `herdr-nvim.welcome` shows it again (`welcome({ again: true })`).
+// Both name keys as keys.json binds them: they differ by OS and person.
 // Enter does the main button, Esc closes.
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { appHome, closeOverlay, openOverlay, props, readTextFile, run, setShared, shared, theme } from "herdr";
+import { appHome, closeOverlay, home, openOverlay, props, readTextFile, run, setShared, shared, theme } from "herdr";
 import { appConfig } from "./ops.js";
+import { bin, canonical, child, tilde, windows } from "./path.js";
 
 // The last time the "Neovim is needed" card opened: several requests failing
 // at once (the tree and the controller) open one.
@@ -51,21 +53,46 @@ export function welcomeRows(keys, config) {
   return rows.filter(([key]) => key);
 }
 
+const keysFile = () => child(canonical(appHome()), "keys.json");
+
+// The person's keys.json ({} without one).
+async function readKeys() {
+  const text = await readTextFile(keysFile()).catch(() => null);
+  try { return JSON.parse(text ?? "{}"); } catch { return {}; }
+}
+
+// `path` as the card shows it: the home folder as "~".
+const shown = (path) => tilde(canonical(path), canonical(home()));
+
 // Once: the first time a tab's nvim opened; `again`: whenever asked.
 export async function welcome({ again = false } = {}) {
   if (shared(SEEN) === true && !again) return;
   setShared(SEEN, true);
-  const text = await readTextFile(`${appHome()}/keys.json`).catch(() => null);
-  let keys = {};
-  try { keys = JSON.parse(text ?? "{}"); } catch {}
+  const keys = await readKeys();
   const config = await appConfig().catch(() => ({ tree: "native" }));
   openCard({ kind: "welcome", rows: welcomeRows(keys, config), config: config.path ?? "~/.config/herdr-nvim/config.toml" });
+}
+
+// What the "Neovim is needed" card says Install does, and what to press after.
+export function installHint(keys) {
+  const how = windows()
+    ? "Install opens a terminal tab that installs Neovim's own release into ~/.local/share/herdr-nvim/nvim, no admin."
+    : "Install opens a terminal tab that installs it: with Homebrew (brew install neovim), else Neovim's own release into ~/.local/share/herdr-nvim/nvim, no sudo.";
+  const open = keyFor(keys, "mod.open:herdr-nvim");
+  return `${how} ${open ? `Then press ${open} again.` : "Then open nvim again."}`;
 }
 
 export class Card {
   constructor(cx) {
     this.handle = cx.focus_handle();
     this.handle.focus();
+    this.keys = {};
+    if (props().card.kind === "nvim") {
+      cx.spawn(async (cx) => {
+        this.keys = await readKeys();
+        cx.notify();
+      });
+    }
   }
 
   close() {
@@ -78,7 +105,7 @@ export class Card {
     this.close();
     if (card.kind === "nvim") {
       run("terminal.open", {
-        argv: [`${appHome()}/mods/herdr-nvim/bin/herdr-nvim`, "app-install-nvim", "--pause"],
+        argv: [bin(), "app-install-nvim", "--pause"],
         place: "tab", name: "Install Neovim",
       });
     }
@@ -106,8 +133,7 @@ export class Card {
       return shell
         .child(title(`Neovim ${card.need ?? "0.10"} or newer is needed`))
         .child(div().text_color(t.muted).child(`herdr-nvim runs each tab's nvim with it, and ${what}.`))
-        .child(div().text_size(11.5).text_color(t.dim).child(
-          "Install opens a terminal tab that installs it: with Homebrew (brew install neovim), else Neovim's own release into ~/.local/share/herdr-nvim/nvim, no sudo. Then press cmd-e again."))
+        .child(div().text_size(11.5).text_color(t.dim).child(installHint(this.keys)))
         .child(h_flex().pt(8).gap(8).justify_end()
           .child(button("card-cancel", "Not now", false, () => this.close()))
           .child(button("card-install", "Install Neovim", true, () => this.submit())));
@@ -118,7 +144,7 @@ export class Card {
         .child(div().w(110).flex_none().child(mono(key)))
         .child(div().flex_1().min_w(0).child(what)))))
       .child(div().pt(4).text_size(11.5).text_color(t.dim).child(
-        `Keys: ~/.config/herdr-app/keys.json · Settings: ${card.config.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, "~")}`))
+        `Keys: ${shown(keysFile())} · Settings: ${shown(card.config)}`))
       .child(h_flex().pt(8).justify_end().child(button("card-ok", "Got it", true, () => this.submit())));
   }
 }

@@ -21,7 +21,7 @@ picker_term() {
 }
 
 # The tree, driven as a person does: what cmd-shift-e runs, then keys.
-open_in_nvim() { "$wrapper" open "$1" --ctx "$ctx" >/dev/null; }
+open_in_nvim() { "$launcher" open "$1" --ctx "$ctx" >/dev/null; }
 nvim_on() { [ "$(nvim_eval "$sock_a" 'expand("%:t")')" = "$1" ]; }
 dialog_open() { H status | tr -d ' \n' | grep -q '"overlays":\["herdr-nvim"'; }
 no_dialog() { ! dialog_open; }

@@ -4,7 +4,8 @@
 // where a path may go.
 
 import { exec, focused, notify, readTextFile, setShared, shared, window } from "herdr";
-import { bin, nvim } from "./lib.js";
+import { nvim } from "./lib.js";
+import { bin, canonical, join, namesFolder, native, windows } from "./path.js";
 
 // The tab the tree works for: what `--ctx` takes. No folder: herdr-nvim
 // finds where the tab works from its terminals (where its nvim starts). The
@@ -16,8 +17,8 @@ export function tabOf(place) {
 // Every request the tree makes, by op (fs.lua's `ops`).
 export const request = {
   defaults: () => ({ op: "defaults" }),
-  // A name ending in / is a folder.
-  create: (dir, name) => ({ op: "create", path: join(dir, name), folder: name.endsWith("/") }),
+  // A name ending in / (or \ on Windows) is a folder.
+  create: (dir, name) => ({ op: "create", path: join(dir, name), folder: namesFolder(name) }),
   rename: (from, to) => ({ op: "rename", path: from, to }),
   copy: (from, to) => ({ op: "copy", path: from, to }),
   move: (paths, dir) => ({ op: "move", paths, dir }),
@@ -57,7 +58,9 @@ export async function findFiles(root, query) {
 // The file the tab's nvim shows, and the file to watch for its changes.
 export async function current(place) {
   const out = await nvim("app-current", [], tabOf(place));
-  return out === null ? { file: null, watch: null } : JSON.parse(out);
+  if (out === null) return { file: null, watch: null };
+  const now = JSON.parse(out);
+  return { ...now, file: canonical(now.file), watch: canonical(now.watch), tab_root: canonical(now.tab_root) };
 }
 
 // herdr-nvim's `tree` setting ("native" or "nvim"), read at the moment it
@@ -87,22 +90,14 @@ export async function treeMode() {
   return (await appConfig()).tree;
 }
 
+// The system's opener for each platform. The mods run no other program but
+// herdr-nvim and git (js-checks holds them to it).
+const OPENERS = { windows: "explorer.exe", linux: "xdg-open", macos: "open" };
+
 export async function systemOpen(path) {
-  const opener = window()?.platform === "windows" ? "explorer.exe" : window()?.platform === "linux" ? "xdg-open" : "open";
-  const r = await exec(opener, [path]).catch((e) => ({ code: 1, stderr: String(e) }));
-  if (r.code !== 0) notify({ title: "Cannot open", body: r.stderr || path, level: "error" });
-}
-
-// Whether `path` is the folder `root` or inside it.
-export function inside(path, root) {
-  return path === root || path.startsWith(`${root.replace(/\/$/, "")}/`);
-}
-
-export function join(dir, name) {
-  const parts = [];
-  for (const part of `${dir}/${name}`.split("/")) {
-    if (part === "..") parts.pop();
-    else if (part && part !== ".") parts.push(part);
-  }
-  return `/${parts.join("/")}`;
+  const opener = OPENERS[window()?.platform] ?? OPENERS.macos;
+  const r = await exec(opener, [native(path)]).catch((e) => ({ code: -1, stderr: String(e) }));
+  // Explorer exits 1 when it did open the file: on Windows only a start
+  // that failed is an error.
+  if (windows() ? r.code === -1 : r.code !== 0) notify({ title: "Cannot open", body: r.stderr || path, level: "error" });
 }

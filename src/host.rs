@@ -1,9 +1,10 @@
 //! Which Herdr this process serves: the Herdr TUI (0.9.x, `herdr` CLI and
 //! plugin env), or the Herdr desktop app (herdr-app + herdr-core `hc`).
 //!
-//! The choice is explicit: `HERDR_NVIM_HOST=app` selects the desktop app. The
-//! app's mods and the `herdr-app/bin/herdr-nvim` wrapper set it; nothing in
-//! the TUI plugin does, so the TUI flow is the default and stays unchanged.
+//! The choice is explicit: `HERDR_NVIM_HOST=app` selects the desktop app.
+//! `main` sets it from the `--app-home`/`--app-bin` prefix the app's launcher
+//! passes (`app::env`); nothing in the TUI plugin does, so the TUI flow is the
+//! default and stays unchanged.
 //!
 //! `main` chooses once ([`choose`]); the shared code never asks which host it
 //! runs under, it calls the chosen host's [`HostOps`]: the few steps that
@@ -43,10 +44,16 @@ pub fn choose() -> Host {
 }
 
 fn from_value(value: Option<&str>) -> Host {
-    match value.map(str::trim) {
-        Some(value) if value.eq_ignore_ascii_case("app") => Host::App,
-        _ => Host::Herdr,
+    if is_app_value(value) {
+        Host::App
+    } else {
+        Host::Herdr
     }
+}
+
+/// Whether a `HERDR_NVIM_HOST` value selects the app.
+pub fn is_app_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("app"))
 }
 
 /// The tab's nvim pane after [`HostOps::ensure_sidebar`]: its pane (TUI) or

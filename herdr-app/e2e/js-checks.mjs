@@ -1,6 +1,7 @@
 // Checks of the mod's pure parts, outside the app: `node herdr-app/e2e/js-checks.mjs`
 // (run.sh runs it first).
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import { register } from "node:module";
 import { wanted } from "../mods/herdr-nvim/sync-rule.js";
 import { ACTIONS, helpGroups, recipeTable } from "../mods/herdr-nvim/tree-keys.js";
@@ -44,7 +45,8 @@ const { app } = await import("./herdr-stub.mjs");
 const { gitMarks, listFolder, markOf } = await import("../mods/herdr-nvim/tree.js");
 const { TreeModel } = await import("../mods/herdr-nvim/tree-model.js");
 const { panelState } = await import("../mods/herdr-nvim/panel.js");
-const { inside, join } = await import("../mods/herdr-nvim/ops.js");
+const { request } = await import("../mods/herdr-nvim/ops.js");
+const path = await import("../mods/herdr-nvim/path.js");
 const { Sync } = await import("../mods/herdr-nvim/sync.js");
 const ok = (stdout) => ({ code: 0, stdout, stderr: "" });
 
@@ -60,29 +62,36 @@ assert.equal(markOf(marks, "/r/newdir/deep/x.md"), "A");
 assert.equal(markOf(marks, "/r/src/a.js"), "M");
 assert.equal(markOf(marks, "/r/src/other.js"), null);
 
-// A folder's listing (the script's records): folders first, then by name;
-// the names git ignores, a folder's without its slash.
-app.exec = async () => ok("f\0b.txt\0d\0src\0f\0a.txt\0d\0build\0x\0x\0build/\0a.txt\0");
-assert.deepEqual(await listFolder("/r"), {
-  entries: [{ name: "build", dir: true }, { name: "src", dir: true }, { name: "a.txt", dir: false }, { name: "b.txt", dir: false }],
-  ignored: new Set(["build", "a.txt"]),
-});
-app.exec = async () => ({ code: 1, stdout: "", stderr: "" });
-await assert.rejects(listFolder("/gone"), /Cannot list \/gone/);
+// A folder's listing is herdr-nvim's (`app-list`, src/app/list.rs, which
+// sorts it): its entries in its order, each saying whether git ignores it.
+const entry = (name, dir = false, ignored = false) => ({ name, dir, hidden: name.startsWith("."), ignored });
+const listing = (...entries) => ok(JSON.stringify({ entries, truncated: false }));
+const bin = "/nonexistent-app-home/mods/herdr-nvim/bin/herdr-nvim";
+app.exec = async (cmd, args) => (cmd === bin && args[0] === "app-list" && args[1] === "/r"
+  ? listing(entry("build", true, true), entry("src", true), entry(".env"), entry("a.txt", false, true)) : ok(""));
+const r = await listFolder("/r");
+assert.deepEqual(r.map((e) => e.name), ["build", "src", ".env", "a.txt"]);
+assert.deepEqual(r.filter((e) => e.ignored).map((e) => e.name), ["build", "a.txt"]);
+app.exec = async () => ({ code: 1, stdout: "", stderr: "herdr-nvim: not a folder: /gone\n" });
+await assert.rejects(listFolder("/gone"), /^Error: not a folder: \/gone$/);
 
 // The tree model: a watch batch lists again only the folders on screen it
 // touches; a build in an ignored folder lists nothing; the same listing
 // again changes no rows.
-const listings = { "/r": "d\0src\0d\0target\0f\0x.md\0x\0x\0target\0", "/r/src": "f\0a.js\0x\0x\0", "/r/target": "f\0out\0x\0x\0" };
+const listings = {
+  "/r": listing(entry("src", true), entry("target", true, true), entry(".env"), entry("x.md")),
+  "/r/src": listing(entry("a.js")),
+  "/r/target": listing(entry("out", false, true)),
+};
 let listed = [];
 app.exec = async (cmd, args) => {
-  if (cmd === "sh") { listed.push(args[3]); return ok(listings[args[3]]); }
+  if (cmd === bin && args[0] === "app-list") { listed.push(args[1]); return listings[args[1]]; }
   return args[0] === "rev-parse" ? ok("/r\n") : ok("");
 };
 const model = new TreeModel();
 model.reset("/r");
 await model.reload();
-assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/x.md"]); // target/ ignored, hidden
+assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/x.md"]); // target/ ignored and .env hidden: not shown
 await model.toggle("/r/src");
 assert.deepEqual(model.rows().map((r) => r.abs), ["/r/src", "/r/src/a.js", "/r/x.md"]);
 listed = [];
@@ -98,6 +107,13 @@ assert.deepEqual(listed, []);
 listed = [];
 await model.reloadChanged(["/r"]); // the root itself: anything may have changed
 assert.deepEqual(listed.sort(), ["/r", "/r/src"]);
+// Hidden is what the listing says (a dotfile, or Windows' Hidden attribute);
+// revealing a file in a hidden or ignored folder shows those.
+assert.equal(await model.expandTo("/r/target/out"), "/r/target/out");
+assert.ok(model.showIgnored && model.rows().some((r) => r.abs === "/r/target/out"));
+model.showHidden = true;
+assert.ok(model.rows().some((r) => r.abs === "/r/.env"));
+model.showHidden = model.showIgnored = false;
 
 // The Files panel: shown, hidden, or another child (Changes) on top.
 const files = { id: "files", type: "block", content: { mod: "herdr-nvim" } };
@@ -113,8 +129,8 @@ assert.equal(panelState({ id: "root", children: [{ ...files, hidden: true }] }).
 assert.equal(panelState({ id: "root", children: [] }), null);
 
 // Paths the tree sends.
-assert.equal(join("/r/src", "../b/./c.txt"), "/r/b/c.txt");
-assert.ok(inside("/r/src/a", "/r") && inside("/r", "/r") && !inside("/rx/a", "/r"));
+assert.equal(path.join("/r/src", "../b/./c.txt"), "/r/b/c.txt");
+assert.ok(path.inside("/r/src/a", "/r") && path.inside("/r", "/r") && !path.inside("/rx/a", "/r"));
 
 // The controller's idea of a tab's nvim: its own open counts until the app
 // lists the pane, and stops counting once the pane ended without ever being
@@ -239,5 +255,92 @@ assert.deepEqual(splitMermaid("[a]: http://a\n```mermaid\nx\n```\n```js\nunclose
 assert.deepEqual(splitMermaid("```` ```mermaid ```` blocks are drawn.\n\n```mermaid\nx\n```"),
   [{ md: "```` ```mermaid ```` blocks are drawn.\n" }, { mermaid: "x" }]);
 assert.deepEqual(splitMermaid("```mermaid title=\"Plan\"\nx\n```"), [{ mermaid: "x" }]);
+
+// --- Windows, and the programs the mods run ---------------------------------
+
+// Both mods run herdr-nvim's launcher, named one way: the header mod carries
+// the same path.js (it can't import this mod's files).
+const modsDir = new URL("../mods/", import.meta.url);
+assert.equal(readFileSync(new URL("herdr-nvim-header/path.js", modsDir), "utf8"), readFileSync(new URL("herdr-nvim/path.js", modsDir), "utf8"),
+  "herdr-nvim-header/path.js is no longer a copy of herdr-nvim/path.js: copy it again");
+assert.equal(path.bin(), "/nonexistent-app-home/mods/herdr-nvim/bin/herdr-nvim");
+app.platform = "windows";
+app.home = "C:\\Users\\Me\\.config\\herdr-app";
+assert.equal(path.bin(), "C:\\Users\\Me\\.config\\herdr-app\\mods\\herdr-nvim\\bin\\herdr-nvim.exe");
+
+// The mods start no program but herdr-nvim, git and the system's opener (no
+// sh, cat, cp or PowerShell: they differ by OS, or Windows lacks them).
+const started = new Set();
+for (const mod of ["herdr-nvim", "herdr-nvim-header"]) {
+  for (const file of readdirSync(new URL(`${mod}/`, modsDir)).filter((f) => f.endsWith(".js"))) {
+    const source = readFileSync(new URL(`${mod}/${file}`, modsDir), "utf8");
+    for (const [, program] of source.matchAll(/(?<![.\w])exec\(\s*([^,]+?)\s*,/g)) started.add(program.trim());
+  }
+}
+assert.deepEqual([...started].sort(), ['"git"', "bin()", "opener"]);
+const { systemOpen } = await import("../mods/herdr-nvim/ops.js");
+const opened = [];
+app.exec = async (cmd, args) => { opened.push([cmd, ...args]); return { code: 1, stdout: "", stderr: "" }; };
+await systemOpen("C:/r/a b.txt");
+app.platform = "linux";
+await systemOpen("/r/a b.txt");
+app.platform = "macos";
+await systemOpen("/r/a b.txt");
+assert.deepEqual(opened, [["explorer.exe", "C:\\r\\a b.txt"], ["xdg-open", "/r/a b.txt"], ["open", "/r/a b.txt"]]);
+
+// Windows paths: every form the app, git and nvim give is one path, compared
+// case aside; a drive's root is a root. Never case-folded on macOS or Linux.
+app.platform = "windows";
+for (const [given, canonical] of [
+  ["\\\\?\\C:\\Users\\Me\\repo\\", "C:/Users/Me/repo"], ["c:\\x\\y", "C:/x/y"], ["C:/x\\y/", "C:/x/y"],
+  ["C:", "C:/"], ["d:\\", "D:/"], ["\\\\?\\UNC\\host\\share\\x", "//host/share/x"], ["\\\\host\\share", "//host/share/"],
+]) assert.equal(path.canonical(given), canonical, given);
+assert.equal(path.dirname("C:/x"), "C:/");
+assert.equal(path.dirname("C:/"), "C:/");
+assert.equal(path.dirname("//host/share/x"), "//host/share/");
+assert.equal(path.basename("C:/x/y.md"), "y.md");
+assert.equal(path.join("C:/r/src", "..\\b\\.\\c.txt"), "C:/r/b/c.txt");
+assert.equal(path.join("C:/", "../x"), "C:/x");
+assert.ok(path.same("C:/Repo/x", "c:/repo/X") && path.inside("C:/REPO/src/a", "C:/repo") && !path.inside("C:/repox/a", "C:/repo"));
+assert.equal(path.relative("C:/Repo/src/a.js", "C:/repo"), "src/a.js");
+assert.equal(path.relative("D:/x", "D:/"), "x");
+assert.equal(path.native("C:/r/a"), "C:\\r\\a");
+assert.equal(path.tilde("C:/Users/Me/.config/herdr-nvim/config.toml", "c:/users/me"), "~/.config/herdr-nvim/config.toml");
+assert.deepEqual(request.create("C:/r", "new\\"), { op: "create", path: "C:/r/new", folder: true });
+app.platform = "macos";
+assert.ok(!path.same("/r/X", "/r/x") && !path.inside("/R/a", "/r"));
+assert.equal(path.canonical("C:\\x"), "C:\\x", "on macOS \\ is a character of a name");
+assert.deepEqual(request.create("/r", "a\\"), { op: "create", path: "/r/a\\", folder: false });
+assert.deepEqual(request.create("/r", "new/"), { op: "create", path: "/r/new", folder: true });
+assert.equal(path.tilde("/Users/me/.config/herdr-nvim/config.toml", "/Users/me"), "~/.config/herdr-nvim/config.toml");
+
+// The tree on Windows: git names the repo in its own case, nvim a file in
+// what was typed; the marks, the reveal and the rows still meet.
+app.platform = "windows";
+const winListings = {
+  "C:/r": listing(entry("Src", true), entry("x.md")),
+  "C:/r/Src": listing(entry("A.js")),
+};
+app.exec = async (cmd, args, opts) => {
+  if (cmd === path.bin() && args[0] === "app-list") return winListings[args[1]];
+  if (args[0] === "rev-parse") return ok("c:/R\n");
+  return ok(" M Src/A.js\0?? x.md\0");
+};
+const winModel = new TreeModel();
+winModel.reset("C:/r");
+await winModel.reload();
+assert.equal(markOf(winModel.marks, "C:/r/Src/A.js"), "M");
+assert.equal(markOf(winModel.marks, "C:/r/x.md"), "A");
+assert.equal(await winModel.expandTo("c:/R/src/a.JS"), "C:/r/Src/A.js");
+assert.deepEqual(winModel.rows().map((r) => r.abs), ["C:/r/Src", "C:/r/Src/A.js", "C:/r/x.md"]);
+
+// The "Neovim is needed" card names the key that opens nvim on this OS.
+const { installHint } = await import("../mods/herdr-nvim/card.js");
+const hint = installHint({ global: { "alt-e": "mod.open:herdr-nvim" } });
+assert.ok(hint.includes("Then press alt-e again.") && hint.includes("no admin") && !hint.includes("Homebrew"), hint);
+app.platform = "macos";
+assert.ok(installHint({ global: { "cmd-e": "mod.open:herdr-nvim" } }).includes("Then press cmd-e again."));
+assert.ok(installHint({}).endsWith("Then open nvim again."));
+app.home = "/nonexistent-app-home";
 
 console.log("js checks: ok");

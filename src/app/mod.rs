@@ -1,16 +1,22 @@
 //! The Herdr desktop app host (herdr-app + herdr-core `hc`), selected with
-//! `HERDR_NVIM_HOST=app` (see `host`). The mods in `herdr-app/mods/` call
-//! these through the `herdr-app/bin/herdr-nvim` wrapper.
+//! `HERDR_NVIM_HOST=app` (see `host`, `env`). The mods in `herdr-app/mods/` call
+//! these through their launcher, `mods/herdr-nvim/bin/herdr-nvim`.
 //!
 //! Ids: a pane is a core terminal address (`t7`); a tab is
 //! `<space id>:<tab id>`, so `TabId::workspace()` is the space, exactly as the
 //! TUI's `w26:t2` gives its workspace.
 
-mod cli;
+pub(crate) mod cli;
 pub(crate) mod commands;
+pub(crate) mod discover;
 mod doc;
+pub(crate) mod env;
 mod host;
+// Its readers are the launcher's (src/bin/herdr-nvim-launch.rs).
+#[allow(dead_code)]
+pub(crate) mod launch_record;
 mod layout_patch;
+pub(crate) mod list;
 pub(crate) mod mermaid;
 mod node;
 pub(crate) mod rpc;

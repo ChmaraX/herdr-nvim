@@ -9,7 +9,7 @@
 //! by the app with fonts merman did not measure). The PNG is written beside
 //! `--out` and renamed onto it, so a reader never sees half of one.
 
-use std::{env, fs, path::Path, process};
+use std::{fs, path::Path, process};
 
 use anyhow::{anyhow, bail, Context, Result};
 use merman::svg::export::{
@@ -47,7 +47,7 @@ impl Theme {
 }
 
 pub fn mermaid_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let usage = "usage: herdr-nvim app-mermaid --theme <dark|light> --out <file.png> --code <text>";
     let theme = Theme::parse(cli::flag(&args, "--theme")?.context(usage)?)?;
     let out = Path::new(cli::flag(&args, "--out")?.context(usage)?);

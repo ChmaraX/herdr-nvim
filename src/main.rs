@@ -1,4 +1,5 @@
 mod app;
+mod argv;
 mod bridge;
 mod candidates;
 mod config;
@@ -10,17 +11,22 @@ mod gitscan;
 mod herdr;
 mod home;
 mod host;
+mod install;
 mod layout;
 mod maneuver;
 mod nvim_check;
+mod nvim_get;
 mod openlink;
+mod osfs;
 mod path;
 mod pathkey;
 mod picker;
 mod sessions;
 mod state;
+mod stdio_inherit;
 #[cfg(test)]
 mod test_support;
+mod winproc;
 
 /// The app's commands its mods wait on (`exec`, no timeout of its own): each
 /// ends within `deadline`, whatever it waits for, so a mod is never left
@@ -39,6 +45,7 @@ const SHORT: &[&str] = &[
     "open-link",
     "app-config",
     "app-mermaid",
+    "app-list",
 ];
 
 fn deadline(after: std::time::Duration) {
@@ -50,12 +57,31 @@ fn deadline(after: std::time::Duration) {
 }
 
 fn main() {
+    stdio_inherit::keep_std_handles_to_self();
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
     // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
     // Must happen before anything spawns a child or a thread.
     path::augment_path();
+    // The app's launcher and terminals pass the app context in argv; from
+    // here on it is env, for this process and its children. Before any
+    // thread too.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    match app::env::AppEnv::take_prefix(&mut args) {
+        Ok(Some(app)) => app.export(),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("herdr-nvim: {e:#}");
+            std::process::exit(2);
+        }
+    }
+    argv::init(args);
 
-    let mode = std::env::args().nth(1).unwrap_or_default();
+    let mode = argv::args().nth(1).unwrap_or_default();
+    // The installer finds the app first, then serves it (it exports the app
+    // context), so it runs before a host is chosen from the env.
+    if mode == "app-install" {
+        std::process::exit(run(install::app_install_cmd));
+    }
     // The one place that asks which Herdr this is (`host`).
     let host = host::choose();
     let app = host == host::Host::App;
@@ -86,14 +112,15 @@ fn main() {
         ("app-current", true) => run(app::tree::current_cmd),
         ("app-reveal", true) => run(app::tree::reveal_cmd),
         ("app-preview", true) => run(app::sidebar::preview_cmd),
-        // The install script runs these before the wrapper exists.
+        // The installer runs these before the mods are in place.
         ("app-setup", _) => run(app::setup::setup_cmd),
         ("app-config", _) => run(app::settings::app_config_cmd),
         ("app-nvim-check", _) => run(nvim_check::check_cmd),
         // The markdown preview's diagrams.
         ("app-mermaid", _) => run(app::mermaid::mermaid_cmd),
+        ("app-list", _) => run(app::list::list_cmd),
         // The "Neovim is needed" card's Install button (a terminal tab).
-        ("app-install-nvim", true) => run(app::commands::install_nvim_cmd),
+        ("app-install-nvim", true) => run(nvim_get::install_nvim_cmd),
         (
             "app-agents" | "app-send" | "app-watch" | "open" | "fs" | "app-find" | "app-current"
             | "app-reveal" | "app-preview" | "app-install-nvim",
@@ -104,7 +131,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-mermaid>"
+                "usage: herdr-nvim <toggle|sidebar|daemon-gc|on-event|daemons|doctor|pick-file|picker|open-link|app-agents|app-send|app-watch|app-install|app-setup|open|fs|app-find|app-current|app-reveal|app-preview|app-config|app-nvim-check|app-install-nvim|app-mermaid>"
             );
             2
         }

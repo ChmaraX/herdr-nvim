@@ -794,8 +794,7 @@ fn spawn_finish(handoff_path: &str) -> Result<()> {
         // the finisher must not carry it.
         .env_remove("HC_TERMINAL_ID")
         .env_remove("HC_SCOPE");
-    crate::daemon::detach_command(&mut command);
-    command.spawn().context("spawning finisher")?;
+    crate::daemon::spawn_detached(&mut command).context("spawning finisher")?;
     Ok(())
 }
 

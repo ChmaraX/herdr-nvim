@@ -1,16 +1,30 @@
 -- The native tree's file operations, done by nvim (lua/herdr-nvim/fs.lua).
--- Headless nvim without Snacks: herdr-nvim's own rename/delete path.
--- Only where the Herdr app version installs (macOS, Linux: its installer is
--- a shell script, its release bundles are for those); fs.lua loads only in
--- an nvim started for the app, and its paths are POSIX ones.
-if vim.fn.has("win32") == 1 then return end
+-- Headless nvim without Snacks: herdr-nvim's own rename/copy/delete path.
+-- Paths are compared the way fs.lua answers them: real, with "/" on Windows.
 local fs = require("herdr-nvim.fs")
+local WIN = vim.fn.has("win32") == 1
 
 local function tmpdir()
-  local dir = vim.fn.resolve(vim.fn.tempname())
+  local dir = vim.fn.tempname()
   vim.fn.mkdir(dir .. "/src", "p")
   vim.fn.writefile({ "hello" }, dir .. "/src/a.txt")
-  return dir
+  return vim.fs.normalize(vim.uv.fs_realpath(dir))
+end
+
+-- A folder link; a junction on Windows, which needs no privilege.
+local function link_dir(target, at)
+  assert(vim.uv.fs_symlink(target, at, { dir = true, junction = true }))
+end
+
+-- The name of `buf` (default: the current one), with "/" on Windows.
+local function name(buf)
+  return vim.fs.normalize(vim.api.nvim_buf_get_name(buf or 0))
+end
+
+-- Whether the file system under `dir` tells `x` and `X` apart.
+local function case_sensitive(dir)
+  vim.fn.writefile({}, dir .. "/probe")
+  return vim.uv.fs_stat(dir .. "/PROBE") == nil
 end
 
 local function run(req)
@@ -23,7 +37,7 @@ T.test("fs: create makes a folder, or a file opened in nvim", function()
   T.eq(vim.fn.isdirectory(root .. "/src/new"), 1)
   T.eq(run({ op = "create", root = root, path = root .. "/src/new/b.lua" }).ok, true)
   T.eq(vim.fn.filereadable(root .. "/src/new/b.lua"), 1)
-  T.eq(vim.fn.expand("%:t"), "b.lua")
+  T.eq(vim.fs.basename(name()), "b.lua")
   T.ok(run({ op = "create", root = root, path = root .. "/src/a.txt" }).error:find("already exists"))
 end)
 
@@ -34,7 +48,7 @@ T.test("fs: rename moves the open buffer with the file", function()
   T.eq(r.ok, true)
   T.eq(vim.fn.filereadable(root .. "/src/deep/b.txt"), 1)
   T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 0)
-  T.eq(vim.fn.expand("%:p"), root .. "/src/deep/b.txt")
+  T.eq(name(), root .. "/src/deep/b.txt")
   T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
 end)
 
@@ -42,7 +56,7 @@ T.test("fs: renaming a folder moves the buffers inside it", function()
   local root = tmpdir()
   vim.cmd.edit(root .. "/src/a.txt")
   T.eq(run({ op = "rename", root = root, path = root .. "/src", to = root .. "/lib" }).ok, true)
-  T.eq(vim.fn.expand("%:p"), root .. "/lib/a.txt")
+  T.eq(name(), root .. "/lib/a.txt")
 end)
 
 T.test("fs: a rename keeps unsaved edits, undo, and a plain :w", function()
@@ -52,7 +66,7 @@ T.test("fs: a rename keeps unsaved edits, undo, and a plain :w", function()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "unsaved" })
   T.eq(run({ op = "rename", root = root, path = root .. "/src/a.txt", to = root .. "/src/b.txt" }).ok, true)
   T.eq(vim.api.nvim_get_current_buf(), buf)
-  T.eq(vim.api.nvim_buf_get_name(buf), root .. "/src/b.txt")
+  T.eq(name(buf), root .. "/src/b.txt")
   T.eq(vim.bo[buf].modified, true)
   T.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "unsaved" })
   T.eq(vim.fn.readfile(root .. "/src/b.txt"), { "hello" })
@@ -70,7 +84,7 @@ T.test("fs: a folder rename keeps the unsaved edits of a hidden buffer", functio
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "unsaved" })
   vim.cmd("hide enew")
   T.eq(run({ op = "rename", root = root, path = root .. "/src", to = root .. "/lib" }).ok, true)
-  T.eq(vim.api.nvim_buf_get_name(buf), root .. "/lib/a.txt")
+  T.eq(name(buf), root .. "/lib/a.txt")
   T.eq(vim.bo[buf].modified, true)
   T.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "unsaved" })
 end)
@@ -119,7 +133,7 @@ T.test("fs: a symlink in the root is itself: renaming or deleting it touches onl
   local root = tmpdir()
   local other = tmpdir()
   vim.fn.writefile({ "keep" }, other .. "/kept.txt")
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "rename", root = root, path = root .. "/link", to = root .. "/link2" })
   T.eq(r.ok, true, vim.inspect(r))
   T.eq(vim.uv.fs_lstat(root .. "/link2").type, "link")
@@ -132,7 +146,7 @@ end)
 T.test("fs: going through a symlink to elsewhere asks first (outside)", function()
   local root = tmpdir()
   local other = tmpdir()
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "create", root = root, path = root .. "/link/x.txt" })
   T.eq(r.outside, root .. "/link/x.txt", vim.inspect(r))
 end)
@@ -140,7 +154,7 @@ end)
 T.test("fs: a symlink in the root to elsewhere is outside", function()
   local root = tmpdir()
   local other = tmpdir()
-  vim.uv.fs_symlink(other, root .. "/link")
+  link_dir(other, root .. "/link")
   local r = run({ op = "create", root = root, path = root .. "/link/new.txt" })
   T.ok(r.error and r.error:find("outside"), vim.inspect(r))
   T.eq(vim.fn.filereadable(other .. "/new.txt"), 0)
@@ -149,3 +163,115 @@ T.test("fs: a symlink in the root to elsewhere is outside", function()
   T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 1)
   T.eq(run({ op = "create", root = root, path = root .. "/src/new/x.txt" }).ok, true)
 end)
+
+T.test("fs: copying a folder copies everything in it, links as links", function()
+  local root = tmpdir()
+  local other = tmpdir()
+  vim.fn.mkdir(root .. "/src/deep", "p")
+  vim.fn.writefile({ "deep" }, root .. "/src/deep/b.txt")
+  assert(vim.uv.fs_symlink("b.txt", root .. "/src/deep/to-b"))
+  link_dir(other, root .. "/src/away")
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/copy" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readfile(root .. "/copy/a.txt"), { "hello" })
+  T.eq(vim.fn.readfile(root .. "/copy/deep/b.txt"), { "deep" })
+  T.eq(vim.uv.fs_lstat(root .. "/copy/deep/to-b").type, "link")
+  T.eq(vim.fn.readfile(root .. "/copy/deep/to-b"), { "deep" })
+  T.eq(vim.uv.fs_lstat(root .. "/copy/away").type, "link")
+  T.eq(vim.fs.normalize(vim.uv.fs_realpath(root .. "/copy/away")), other, "the copy points where the link did")
+  T.eq(vim.fn.readfile(root .. "/src/a.txt"), { "hello" }, "the original stays")
+end)
+
+T.test("fs: a folder copied into itself gets the folder as it was", function()
+  local root = tmpdir()
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/src/again" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readdir(root .. "/src/again"), { "a.txt" })
+end)
+
+T.test("fs: a folder copied into a folder deeper inside itself is refused", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/src/deep", "p")
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/src/deep/again" })
+  T.eq(r.ok, nil, vim.inspect(r))
+  T.ok(r.error:find("inside it", 1, true), r.error)
+  T.eq(vim.fn.readdir(root .. "/src/deep"), {})
+end)
+
+T.test("fs: a copy into a folder deeper inside itself, named in other case, is refused", function()
+  local root = tmpdir()
+  if case_sensitive(root) then return end
+  vim.fn.mkdir(root .. "/src/deep", "p")
+  local r = run({ op = "copy", root = root, path = root .. "/src", to = root .. "/SRC/deep/again" })
+  T.eq(r.ok, nil, vim.inspect(r))
+  T.ok(r.error:find("inside it", 1, true), r.error)
+  T.eq(vim.fn.readdir(root .. "/src/deep"), {})
+end)
+
+T.test("fs: a read-only folder is copied whole, and the copy is read-only too", function()
+  if WIN then return end
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/src/ro", "p")
+  vim.fn.writefile({ "x" }, root .. "/src/ro/f.txt")
+  assert(vim.uv.fs_chmod(root .. "/src/ro", tonumber("555", 8)))
+  local r = run({ op = "copy", root = root, path = root .. "/src/ro", to = root .. "/ro2" })
+  vim.uv.fs_chmod(root .. "/src/ro", tonumber("755", 8))
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readfile(root .. "/ro2/f.txt"), { "x" })
+  T.eq(vim.uv.fs_stat(root .. "/ro2").mode % 512, tonumber("555", 8))
+  vim.uv.fs_chmod(root .. "/ro2", tonumber("755", 8))
+end)
+
+T.test("fs: the file system's root as the tab's folder holds everything on it", function()
+  local root = tmpdir()
+  local top = root:match("^%a:/") or "/"
+  local r = run({ op = "create", root = top, path = root .. "/src/new.txt" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.filereadable(root .. "/src/new.txt"), 1)
+end)
+
+T.test("fs: a rename that only changes the case of a name", function()
+  local root = tmpdir()
+  vim.cmd.edit(root .. "/src/a.txt")
+  local r = run({ op = "rename", root = root, path = root .. "/src/a.txt", to = root .. "/src/A.txt" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readdir(root .. "/src"), { "A.txt" })
+  T.eq(vim.fn.readfile(root .. "/src/A.txt"), { "hello" })
+  T.eq(name(), root .. "/src/A.txt")
+  r = run({ op = "rename", root = root, path = root .. "/src", to = root .. "/Src" })
+  T.eq(r.ok, true, vim.inspect(r))
+  T.eq(vim.fn.readdir(root), { "Src" })
+  T.eq(name(), root .. "/Src/A.txt")
+end)
+
+T.test("fs: a rename onto another file that differs only in case is refused", function()
+  local root = tmpdir()
+  if not case_sensitive(root) then return end
+  vim.fn.writefile({ "other" }, root .. "/src/A.txt")
+  local r = run({ op = "rename", root = root, path = root .. "/src/a.txt", to = root .. "/src/A.txt" })
+  T.ok(r.error and r.error:find("already exists"), vim.inspect(r))
+  T.eq(vim.fn.readfile(root .. "/src/A.txt"), { "other" })
+end)
+
+T.test("fs: a folder named in other case is inside only where the file system says it is the same", function()
+  local root = tmpdir()
+  vim.fn.mkdir(root .. "/Proj", "p")
+  local r = run({ op = "create", root = root .. "/Proj", path = root .. "/PROJ/new.txt" })
+  if case_sensitive(root) then
+    T.ok(r.error and r.error:find("outside"), vim.inspect(r))
+  else
+    T.eq(r.ok, true, vim.inspect(r))
+    T.eq(vim.fn.filereadable(root .. "/Proj/new.txt"), 1)
+  end
+end)
+
+if WIN then
+  T.test("fs: on Windows a path in other case still finds its buffers", function()
+    local root = tmpdir()
+    vim.cmd.edit(root .. "/src/a.txt")
+    vim.cmd.enew()
+    T.eq(run({ op = "delete", root = root, paths = { root .. "/SRC/A.TXT" } }).ok, true)
+    T.eq(vim.fn.filereadable(root .. "/src/a.txt"), 0)
+    T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
+  end)
+end

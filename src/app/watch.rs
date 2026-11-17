@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::{config, daemon::registry};
 
-use super::{cli, doc, rpc};
+use super::{doc, rpc};
 
 pub(crate) const NAME: &str = "herdr-nvim-watch";
 
@@ -82,14 +82,63 @@ pub fn app_watch_cmd() -> Result<()> {
     Ok(())
 }
 
+/// Ends the watcher, if it runs, and waits until it has exited: it runs the
+/// runtime it started with, which an install then prunes (Windows can't
+/// remove a runtime an exe in it runs from).
+pub(crate) fn stop() -> anyhow::Result<()> {
+    if !runs()? {
+        return Ok(());
+    }
+    let _ = hc(&["kill", NAME]);
+    let started = std::time::Instant::now();
+    while runs()? {
+        if started.elapsed() > std::time::Duration::from_secs(3) {
+            anyhow::bail!("the watcher terminal {NAME} did not end");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Whether the watcher terminal exists: `hc get` finds it, or says it
+/// doesn't (exit 3, `not_found`). Anything else is an error: hc ran, but
+/// that says nothing about the watcher.
+fn runs() -> anyhow::Result<bool> {
+    let output = hc(&["get", NAME, "--json"])?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.code() == Some(3) && said.contains("not_found") {
+        return Ok(false);
+    }
+    anyhow::bail!("hc get {NAME} failed: {}", said.trim())
+}
+
+fn hc(args: &[&str]) -> anyhow::Result<std::process::Output> {
+    use anyhow::Context;
+    rpc::hc()
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("cannot run {}", rpc::hc_bin().to_string_lossy()))
+}
+
 /// Start the watcher unless it runs. Its name is unique among live
 /// terminals, so a second start is refused by herdr-core: no lock needed.
 pub(crate) fn ensure_running() {
-    let Ok(me) = cli::self_command() else { return };
+    let Ok(mut argv) = super::env::self_argv() else {
+        return;
+    };
+    argv.push("app-watch".to_owned());
     let _ = rpc::call(
         "terminal.run",
         json!({
-            "argv": [me.to_string_lossy(), "app-watch"],
+            "argv": argv,
             "name": NAME,
             "no_parent": true,
             "rm": true,

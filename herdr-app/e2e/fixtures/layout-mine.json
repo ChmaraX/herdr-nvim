@@ -1,0 +1,55 @@
+{
+  "id": "root",
+  "type": "row",
+  "cloned_from": {
+    "name": "main",
+    "version": "0.1.11"
+  },
+  "children": [
+    {
+      "id": "panel",
+      "type": "column",
+      "hidden": true,
+      "size": {
+        "px": 368
+      },
+      "children": [
+        {
+          "id": "panel-body",
+          "type": "stack",
+          "active": "files",
+          "children": [
+            {
+              "id": "files",
+              "type": "block",
+              "content": {
+                "mod": "files"
+              }
+            },
+            {
+              "id": "changes",
+              "type": "block",
+              "content": {
+                "mod": "changes"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tabs",
+      "type": "block",
+      "content": {
+        "mod": "tabs",
+        "pane": {
+          "header": {
+            "content": {
+              "mod": "pane"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -16,6 +16,12 @@
 //!   keeps it but still stops the healthy daemon after it, `--force` kills
 //!   it by its pid. Covered:
 //!   `a_hung_daemon_is_listed_refused_then_killed_with_force` (Unix only).
+//! - Force on every OS (on Windows through taskkill, by the pid the
+//!   registry marker records): a dirty daemon that will not quit and a busy
+//!   one are refused by a plain `daemons stop --all`, then killed by
+//!   `--force` together with the processes they started (their LSP
+//!   servers). Covered:
+//!   `dirty_and_busy_daemons_are_killed_by_force_with_what_they_started`.
 //! - Process table unreadable (`ps` fails): a refused socket cannot be
 //!   told from a hung daemon whose listen queue is full, so nothing is
 //!   taken for gone: the stale entry stays, a stop of it fails, and so does
@@ -32,7 +38,8 @@
 //! - Unknown tab, bad arguments, empty registry. Covered:
 //!   `empty_listing_in_text_and_json`,
 //!   `stopping_an_unknown_tab_or_bad_arguments_fail`.
-//! - Not covered on Windows: the fake herdr is a shell script, and
+//! - Not covered on Windows, apart from the force test (which runs with
+//!   herdr unreachable): the fake herdr is a shell script, and
 //!   `Command::new("herdr")` only resolves `.exe` there.
 //!
 //! The E2E tests write their steps to `target/test-artifacts/<test>/log.md`.
@@ -45,7 +52,6 @@ fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-#[cfg(unix)]
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -346,5 +352,71 @@ fn a_hung_daemon_is_listed_refused_then_killed_with_force() {
     let killed = format!("killed it (pid {})", hung.pid());
     assert!(stderr(&forced).contains(&killed), "{}", stderr(&forced));
     hung.assert_gone(&sandbox);
+    log.note("result: pass");
+}
+
+#[test]
+fn dirty_and_busy_daemons_are_killed_by_force_with_what_they_started() {
+    use support::{nvim_available, wait_dead, Artifact, Daemon};
+
+    if !nvim_available() {
+        eprintln!("skipping: nvim not found on PATH");
+        return;
+    }
+    let sandbox = Sandbox::new("daemons-force");
+    let mut log =
+        Artifact::new("dirty_and_busy_daemons_are_killed_by_force_with_what_they_started");
+    let mut dirty = Daemon::spawn_unquittable(&sandbox, "wHnDf:t1");
+    let mut busy = Daemon::spawn(&sandbox, "wHnDf:t2");
+    let children = [dirty.start_child(), busy.start_child()];
+    dirty
+        .eval(r#"execute('setlocal noswapfile | call setline(1, "unsaved")')"#)
+        .expect("leave an unsaved buffer");
+    busy.busy();
+    log.note(&format!(
+        "dirty pid {}, busy pid {}, their children {children:?}",
+        dirty.pid(),
+        busy.pid()
+    ));
+
+    let listed = sandbox.run(&["daemons", "--json"], None);
+    log.step("daemons --json", "", &listed);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let value: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(value[0]["unsaved_buffers"], 1, "{value}");
+    assert_eq!(value[1]["state"], "unresponsive", "{value}");
+    assert_eq!(value[1]["pid"], busy.pid(), "{value}");
+
+    let plain = sandbox.run(&["daemons", "stop", "--all"], None);
+    log.step("daemons stop --all", "", &plain);
+    assert_eq!(plain.status.code(), Some(1));
+    assert!(
+        stderr(&plain).contains("1 unsaved buffer(s)"),
+        "{}",
+        stderr(&plain)
+    );
+    assert!(
+        stderr(&plain).contains("busy or hung"),
+        "{}",
+        stderr(&plain)
+    );
+    assert!(
+        dirty.running() && busy.running(),
+        "a plain stop kills nothing"
+    );
+    assert!(dirty.entry.exists() && busy.entry.exists(), "nor forgets");
+
+    let forced = sandbox.run(&["daemons", "stop", "--all", "--force"], None);
+    log.step("daemons stop --all --force", "", &forced);
+    assert!(forced.status.success(), "{}", stderr(&forced));
+    for daemon in [&dirty, &busy] {
+        let killed = format!("killed it (pid {})", daemon.pid());
+        assert!(stderr(&forced).contains(&killed), "{}", stderr(&forced));
+    }
+    dirty.assert_gone(&sandbox);
+    busy.assert_gone(&sandbox);
+    for child in children {
+        assert!(wait_dead(child), "child {child} outlived its daemon");
+    }
     log.note("result: pass");
 }

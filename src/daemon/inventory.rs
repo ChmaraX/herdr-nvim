@@ -9,7 +9,7 @@
 //! through `herdr api snapshot`, and measured with one OS process-table
 //! snapshot. Stopping goes through the shared `registry::stop_probed`.
 
-use std::{env, thread};
+use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde::{Serialize, Serializer};
@@ -211,6 +211,8 @@ impl Serialize for DaemonInfo {
             unsaved_buffers: Option<u32>,
             pending_comments: Option<u32>,
             stale: bool,
+            /// The runtime it runs (`""`: one from before stamps).
+            stamp: Option<&'a str>,
             error: Option<&'a str>,
         }
         let tab = self.tab.as_ref();
@@ -227,6 +229,7 @@ impl Serialize for DaemonInfo {
             unsaved_buffers: self.unsaved(),
             pending_comments: self.comments(),
             stale: self.stale,
+            stamp: self.answered().map(|probe| probe.stamp.as_str()),
             error: self.error(),
         }
         .serialize(serializer)
@@ -275,7 +278,7 @@ pub(crate) fn describe(
         .map(|(key, probe)| {
             let socket = socket_path_for_key(&key);
             let probe = probe
-                .and_then(|reply| liveness(&socket, reply, procs.as_ref().ok()))
+                .and_then(|reply| liveness(&key, &socket, reply, procs.as_ref().ok()))
                 .map_err(|error| format!("{error:#}"));
             let tab = tabs
                 .and_then(|tabs| tabs.iter().find(|tab| tab.tab_id.key() == key))
@@ -283,7 +286,7 @@ pub(crate) fn describe(
             let answered = probe.as_ref().ok().and_then(Liveness::answered);
             let pid = match (answered, &procs) {
                 (Some(answer), _) => Some(answer.pid),
-                (None, Ok(procs)) => procs.daemon(&socket).ok().flatten(),
+                (None, Ok(procs)) => procs.daemon(&key).ok().flatten(),
                 (None, Err(_)) => None,
             };
             let (rss_bytes, uptime_secs) = match (pid, &procs) {
@@ -366,7 +369,7 @@ pub(crate) fn stop(
         if let Ok(Liveness::Answered(_)) = daemon.probe {
             let socket = socket_path_for_key(&daemon.key);
             daemon.probe = probe(&daemon.key, sidebar)
-                .and_then(|reply| liveness(&socket, reply, None))
+                .and_then(|reply| liveness(&daemon.key, &socket, reply, None))
                 .map_err(|error| format!("{error:#}"));
         }
         if let (false, Some(refusal)) = (force, daemon.refusal()) {
@@ -398,7 +401,7 @@ pub(crate) fn stop(
 }
 
 pub fn daemons_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
     let command = parse_args(&args)?;
     let sidebar = crate::config::load().sidebar;
     let mut herdr = crate::host::ops().herdr();
@@ -413,35 +416,50 @@ pub fn daemons_cmd() -> Result<()> {
             }
             Ok(())
         }
-        Invocation::Stop { target, force } => {
-            let outcome = stop(herdr, &sidebar, &target, force)?;
-            for line in &outcome.stopped {
-                println!("{line}");
-            }
-            let problems: Vec<&String> = outcome.refused.iter().chain(&outcome.failed).collect();
-            if outcome.stopped.is_empty() && problems.is_empty() {
-                println!(
-                    "{}",
-                    if target == Target::Orphans {
-                        "no orphaned nvim daemons"
-                    } else {
-                        "no nvim daemons running"
-                    }
-                );
-            }
-            if !problems.is_empty() {
-                bail!(
-                    "{}",
-                    problems
-                        .iter()
-                        .map(|line| line.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-            }
-            Ok(())
-        }
+        Invocation::Stop { target, force } => stop_and_report(herdr, &sidebar, &target, force),
     }
+}
+
+/// `daemons stop --all [--force]`, for the app's uninstall.
+pub(crate) fn stop_all(force: bool) -> Result<()> {
+    let sidebar = crate::config::load().sidebar;
+    let mut herdr = crate::host::ops().herdr();
+    stop_and_report(&mut *herdr, &sidebar, &Target::All, force)
+}
+
+/// Stops `target`, prints what stopped, and fails listing what didn't.
+fn stop_and_report(
+    herdr: &mut dyn Herdr,
+    sidebar: &Sidebar,
+    target: &Target,
+    force: bool,
+) -> Result<()> {
+    let outcome = stop(herdr, sidebar, target, force)?;
+    for line in &outcome.stopped {
+        println!("{line}");
+    }
+    let problems: Vec<&String> = outcome.refused.iter().chain(&outcome.failed).collect();
+    if outcome.stopped.is_empty() && problems.is_empty() {
+        println!(
+            "{}",
+            if *target == Target::Orphans {
+                "no orphaned nvim daemons"
+            } else {
+                "no nvim daemons running"
+            }
+        );
+    }
+    if !problems.is_empty() {
+        bail!(
+            "{}",
+            problems
+                .iter()
+                .map(|line| line.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
@@ -549,10 +567,11 @@ fn hints(daemons: &[DaemonInfo]) -> String {
          stop all: herdr-nvim daemons stop --all\n"
     );
     if daemons.iter().any(|daemon| daemon.stale) {
-        out.push_str(
-            "stale:    runs an older herdr-nvim; reopening its pane (Files or cmd-e, twice) \
+        out.push_str(&format!(
+            "stale:    runs an older herdr-nvim; reopening its pane (Files or {}, twice) \
              restarts it unless it has unsaved work\n",
-        );
+            crate::app::setup::files_key()
+        ));
     }
     if daemons.iter().any(DaemonInfo::tab_gone) {
         out.push_str("orphans:  herdr-nvim daemons stop --orphans   (safe: their tabs are gone)\n");

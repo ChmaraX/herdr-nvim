@@ -10,23 +10,27 @@ pub(crate) mod process;
 pub(crate) mod registry;
 
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread::sleep,
     time::{Duration, Instant},
 };
 #[cfg(not(unix))]
-use std::{io::Read, process::Child, sync::mpsc, thread};
+use std::{io::Read, sync::mpsc, thread};
 
 use anyhow::{bail, Context, Result};
 
 use crate::{
     config::{Config, Sidebar},
-    state::TabId,
+    state::{tab_key, TabId},
 };
 
 use registry::socket_path;
+
+/// What `ensure_daemon` asks a daemon to learn that it is up: its pid, which
+/// the registry records (`registry::register_daemon`).
+const PID_EXPR: &str = "getpid()";
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long `ensure_daemon` may take in all: probing an existing daemon
@@ -82,14 +86,13 @@ pub fn ensure_daemon(
 ) -> Result<PathBuf> {
     let deadline = Instant::now() + HEALTH_POLL_TIMEOUT;
     let socket = socket_path(tab);
-    match liveness_until(&socket, &config.sidebar, deadline)? {
-        Liveness::Answered(_) => {
-            // Also (re)register an already-running daemon, so one spawned
-            // before the Windows marker existed still becomes discoverable.
-            #[cfg(windows)]
-            registry::register_daemon(tab)?;
-            return Ok(socket);
-        }
+    match liveness_until(
+        &crate::state::tab_key(tab),
+        &socket,
+        &config.sidebar,
+        deadline,
+    )? {
+        Liveness::Answered(_) => return Ok(socket),
         // Never a second nvim on its socket: it may hold unsaved work.
         Liveness::Unresponsive => return Err(hung(tab)),
         Liveness::Gone => {}
@@ -98,12 +101,10 @@ pub fn ensure_daemon(
     // (the tree's request and nvim's pane, opening together) would each
     // start one, and the second, taking the socket path, would leave the
     // first running unreachable. The one that waited finds it up.
-    #[cfg(unix)]
-    let _starting = StartLock::take(&socket)?;
-    #[cfg(unix)]
+    let _starting = StartLock::take(tab)?;
     if let Reply::Answered(_) = remote_expr(
         &socket,
-        "1+1",
+        PID_EXPR,
         &config.sidebar,
         RPC_TIMEOUT.min(deadline.saturating_duration_since(Instant::now())),
     )? {
@@ -124,9 +125,11 @@ pub fn ensure_daemon(
         crate::state::remove_file_if_exists(&socket)?;
     }
 
-    spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?;
-    #[cfg(windows)]
-    registry::register_daemon(tab)?;
+    // Registered before it answers, so one that never does is still found.
+    registry::register_daemon(
+        tab,
+        spawn_daemon(tab, &socket, plugin_root, &config.sidebar, cwd)?,
+    )?;
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -136,7 +139,7 @@ pub fn ensure_daemon(
                 HEALTH_POLL_TIMEOUT.as_secs()
             );
         }
-        match remote_expr(&socket, "1+1", &config.sidebar, remaining)? {
+        match remote_expr(&socket, PID_EXPR, &config.sidebar, remaining)? {
             Reply::Answered(_) => return Ok(socket),
             Reply::Refused | Reply::TimedOut => {}
             Reply::Failed(error) => bail!("{error}"),
@@ -145,20 +148,17 @@ pub fn ensure_daemon(
     }
 }
 
-/// An exclusive lock on `<socket>.lock` while a tab's daemon starts; let go
-/// when dropped (and by the system if the process dies). The file stays:
-/// removing it while another process waits on it would let a third take a
-/// new one.
-#[cfg(unix)]
+/// An exclusive lock on the tab's `registry::start_lock_path` while its
+/// daemon starts; let go when dropped (and by the system if the process
+/// dies). The file stays: removing it while another process waits on it
+/// would let a third take a new one.
 struct StartLock {
     _held: fs::File,
 }
 
-#[cfg(unix)]
 impl StartLock {
-    fn take(socket: &Path) -> Result<Self> {
-        use std::os::fd::AsRawFd;
-        let path = socket.with_extension("lock");
+    fn take(tab: &str) -> Result<Self> {
+        let path = registry::start_lock_path(&tab_key(tab));
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)
                 .with_context(|| format!("failed to create runtime directory {}", dir.display()))?;
@@ -169,21 +169,20 @@ impl StartLock {
             .write(true)
             .open(&path)
             .with_context(|| format!("cannot open {}", path.display()))?;
-        // SAFETY: flock on a descriptor this File owns.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("cannot lock {}", path.display());
-        }
+        file.lock()
+            .with_context(|| format!("cannot lock {}", path.display()))?;
         Ok(Self { _held: file })
     }
 }
 
+/// Start the daemon of `tab`, detached; its pid.
 fn spawn_daemon(
     tab: &str,
     socket: &Path,
     plugin_root: &Path,
     sidebar: &Sidebar,
     cwd: &Path,
-) -> Result<()> {
+) -> Result<u32> {
     // The pre-init `set rtp+=` below is not enough on its own: configs that
     // rebuild runtimepath from scratch during startup (any plugin manager with
     // an rtp reset, e.g. lazy.nvim's default `performance.rtp.reset = true`)
@@ -224,23 +223,21 @@ fn spawn_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     crate::host::ops().daemon_env(&mut command, tab, plugin_root);
-    detach_command(&mut command);
-    let child = command
-        .spawn()
-        .context("failed to spawn nvim daemon (is nvim installed?)")?;
-
-    // Read the pid (useful for diagnostics) and drop the handle without waiting:
-    // the daemon is now a session leader in its own session and keeps running,
-    // tracked from here on only by its socket.
-    let _pid = child.id();
-    drop(child);
-    Ok(())
+    // The handle is dropped without waiting: the daemon runs on, tracked
+    // from here on by its socket and registry entry.
+    Ok(spawn_detached(&mut command)
+        .context("failed to spawn nvim daemon (is nvim installed?)")?
+        .id())
 }
 
 /// The app host's daemon outlives the terminal that started it, so it must
 /// not keep that terminal's identity (`hc` would treat the daemon's sends as
-/// the terminal's), and its Lua calls this binary back through the wrapper
-/// (`HERDR_NVIM_SELF`, see `herdr-nvim.agents`/`dispatch`).
+/// the terminal's), and its Lua calls herdr-nvim back (`HERDR_NVIM_SELF`,
+/// see `herdr-nvim.agents`/`dispatch`) with the app context it inherits:
+/// through the mod's launcher, so a long-lived nvim's callbacks run the
+/// newest install, not the runtime it started with (which an upgrade may
+/// prune once nothing reports it). Only the launcher's short runs touch the
+/// mod folder; the daemon itself runs from its runtime.
 ///
 /// It also names its window: the app's pane header shows the terminal title,
 /// which nvim sets from `titlestring` (a user config may still change it).
@@ -262,10 +259,11 @@ pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>
         .env("HERDR_NVIM_HOST", "app")
         .env_remove("HC_TERMINAL_ID")
         .env_remove("HC_SCOPE");
-    if env::var_os("HERDR_NVIM_SELF").is_none() {
-        if let Ok(exe) = env::current_exe() {
-            command.env("HERDR_NVIM_SELF", exe);
-        }
+    let launcher = crate::app::env::AppEnv::from_env()
+        .map(|app| crate::app::launch_record::launcher_path(&app.home))
+        .filter(|launcher| launcher.is_file());
+    if let Some(me) = launcher.or_else(|| env::current_exe().ok()) {
+        command.env("HERDR_NVIM_SELF", me);
     }
 }
 
@@ -273,7 +271,7 @@ pub(crate) fn app_daemon(command: &mut Command, tab: &str, stamp: Option<String>
 pub(crate) const STAMP_ENV: &str = "HERDR_NVIM_RUNTIME_STAMP";
 
 /// The installed runtime's stamp: `<plugin root>/runtime-stamp`, a hash of
-/// the binary and Lua that `herdr-app/install.sh` writes. `None` without one
+/// the binary and Lua that the installer writes (`install::runtime`). `None` without one
 /// (a build run from the repo): then no daemon counts as stale.
 pub(crate) fn runtime_stamp(plugin_root: &Path) -> Option<String> {
     fs::read_to_string(plugin_root.join("runtime-stamp"))
@@ -282,8 +280,8 @@ pub(crate) fn runtime_stamp(plugin_root: &Path) -> Option<String> {
         .filter(|stamp| !stamp.is_empty())
 }
 
-/// Detach a child that must survive the pane process which launched it.
-pub(crate) fn detach_command(command: &mut Command) {
+/// Spawn a child that must survive the pane process which launched it.
+pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -299,18 +297,36 @@ pub(crate) fn detach_command(command: &mut Command) {
                 Ok(())
             });
         }
+        command.spawn()
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::{
+            Foundation::ERROR_ACCESS_DENIED,
+            System::Threading::{
+                CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+            },
+        };
 
         // CREATE_NO_WINDOW keeps the headless daemon out of the user's console,
         // while CREATE_NEW_PROCESS_GROUP keeps it independent from the pane's
         // console process group. Unlike DETACHED_PROCESS, it still permits the
         // redirected standard handles used above.
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        // It holds none of this process's own handles: `stdio_inherit`.
+        let detached = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+        // Out of the launcher's Job Object, if it is in one, so closing
+        // the job does not end the child. A job that forbids breakaway
+        // refuses the flag with ACCESS_DENIED: then the child stays in it.
+        match command
+            .creation_flags(detached | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+        {
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                command.creation_flags(detached).spawn()
+            }
+            spawned => spawned,
+        }
     }
 }
 
@@ -321,7 +337,12 @@ pub(crate) fn detach_command(command: &mut Command) {
 /// close at once, its message unseen.
 pub(crate) fn ready_to_open(tab: &str, sidebar: &Sidebar) -> Result<()> {
     let socket = socket_path(tab);
-    match liveness_until(&socket, sidebar, Instant::now() + HEALTH_POLL_TIMEOUT)? {
+    match liveness_until(
+        &crate::state::tab_key(tab),
+        &socket,
+        sidebar,
+        Instant::now() + HEALTH_POLL_TIMEOUT,
+    )? {
         Liveness::Answered(_) => Ok(()),
         Liveness::Unresponsive => Err(hung(tab)),
         // It has to be started: an nvim that can run herdr-nvim is needed.
@@ -345,8 +366,8 @@ fn hung(tab: &str) -> anyhow::Error {
 /// both are answered at once by a daemon that is really there.
 const UNSTICK_WITHIN: Duration = Duration::from_secs(2);
 
-/// What the daemon on `socket` is, within `deadline`: answering, hung (its
-/// process holds the socket but does not answer) or gone.
+/// What the daemon on `socket` is, within `deadline`: answering (with its
+/// pid), hung (its process holds the socket but does not answer) or gone.
 ///
 /// A daemon that only waits for input -- a normal-mode command waiting for
 /// its next key (a stray `g`, `z`, `"` typed into it), a prompt waiting for
@@ -354,7 +375,12 @@ const UNSTICK_WITHIN: Duration = Duration::from_secs(2);
 /// first short probe is unstuck once and asked again. One that refuses while
 /// its process listens is asked again until the deadline: it may be one that
 /// another caller has just spawned, not accepting yet.
-fn liveness_until(socket: &Path, sidebar: &Sidebar, deadline: Instant) -> Result<Liveness> {
+fn liveness_until(
+    key: &str,
+    socket: &Path,
+    sidebar: &Sidebar,
+    deadline: Instant,
+) -> Result<Liveness> {
     let mut unstuck_once = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -363,7 +389,12 @@ fn liveness_until(socket: &Path, sidebar: &Sidebar, deadline: Instant) -> Result
         } else {
             UNSTICK_WITHIN.min(left)
         };
-        match liveness(socket, remote_expr(socket, "1+1", sidebar, within)?, None)? {
+        match liveness(
+            key,
+            socket,
+            remote_expr(socket, PID_EXPR, sidebar, within)?,
+            None,
+        )? {
             Liveness::Answered(answer) => return Ok(Liveness::Answered(answer)),
             Liveness::Gone => return Ok(Liveness::Gone),
             Liveness::Unresponsive if !unstuck_once => {
@@ -462,13 +493,17 @@ impl<T> Liveness<T> {
 /// was deleted) makes it `Unresponsive`, and a table that cannot be read is
 /// an error, never `Gone`. A `Failed` request says nothing about liveness
 /// either, so it is an error too. `table` is one already loaded, if any; else one
-/// is loaded when the verdict needs it. Windows reads no command lines, so
-/// there a refusal stands and no table is loaded.
+/// is loaded when the verdict needs it. Windows reads no command lines: there
+/// a refusal is `Gone` unless the process the registry marker of `key`
+/// records still runs.
 pub(crate) fn liveness<T>(
+    key: &str,
     socket: &Path,
     reply: Reply<T>,
     table: Option<&process::ProcessTable>,
 ) -> Result<Liveness<T>> {
+    #[cfg(unix)]
+    let _ = key;
     Ok(match reply {
         Reply::Answered(answer) => Liveness::Answered(answer),
         Reply::TimedOut => Liveness::Unresponsive,
@@ -476,7 +511,10 @@ pub(crate) fn liveness<T>(
         #[cfg(windows)]
         Reply::Refused => {
             let _ = (socket, table);
-            Liveness::Gone
+            match registry::registered(key)? {
+                registry::Registered::Running(_) => Liveness::Unresponsive,
+                registry::Registered::Gone | registry::Registered::Unknown => Liveness::Gone,
+            }
         }
         #[cfg(unix)]
         Reply::Refused => {
@@ -924,16 +962,23 @@ mod tests {
     /// Several processes opening a tab's nvim at once (the tree's request
     /// and nvim's pane): one daemon, which they all get. Two would leave one
     /// running with its socket taken by the other, out of reach.
-    #[cfg(unix)]
     #[test]
     fn starting_a_tabs_daemon_at_once_from_several_places_starts_one() {
+        use crate::test_support::{kill, process_alive, wait_dead};
+
         if !nvim_available() {
             eprintln!("skipping: nvim not found on PATH");
             return;
         }
-        let _env = TestEnv::new();
+        let env = TestEnv::new();
         let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let config = Config::default();
+        // Every nvim started for the tab writes its pid down as it starts.
+        let started = env.dir.join("started");
+        let mut config = Config::default();
+        config.sidebar.nvim_env = vec![format!(
+            "VIMINIT=lua vim.fn.writefile({{tostring(vim.fn.getpid())}}, {:?}, 'a')",
+            started.to_string_lossy()
+        )];
         let sockets: Vec<PathBuf> = std::thread::scope(|scope| {
             // A few ms apart, as they come: the later one finds no daemon
             // yet, and the earlier one's nvim has its socket by the time it
@@ -954,23 +999,26 @@ mod tests {
         });
         let socket = sockets[0].clone();
         assert!(sockets.iter().all(|s| *s == socket));
-        let listening: Vec<u32> = String::from_utf8_lossy(
-            &Command::new("pgrep")
-                .args(["-f", "--", &format!("--listen {}", socket.display())])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
-        for pid in &listening {
-            crate::test_support::kill(*pid);
+        let daemon: u32 = ask_expr(&socket, "getpid()", &config.sidebar)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pids: Vec<u32> = fs::read_to_string(&started)
+            .unwrap()
+            .lines()
+            .map(|line| line.trim().parse().unwrap())
+            .collect();
+        for &pid in pids.iter().filter(|&&pid| pid != daemon) {
+            wait_dead(pid);
+        }
+        let running: Vec<u32> = pids.iter().copied().filter(|&p| process_alive(p)).collect();
+        for &pid in &pids {
+            kill(pid);
         }
         assert_eq!(
-            listening.len(),
-            1,
-            "nvim daemons started for one tab: {listening:?}"
+            running,
+            [daemon],
+            "nvim daemons running for one tab (of {pids:?} started)"
         );
     }
 

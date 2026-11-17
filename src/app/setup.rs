@@ -16,7 +16,7 @@
 //!   reported (AGENTS.md: ask before replacing one).
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -28,13 +28,6 @@ use super::{
     layout_patch::{self, DEFAULT_PANEL_PX},
 };
 
-fn home() -> PathBuf {
-    env::var_os("HERDR_APP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| crate::home::home_dir().map(|home| home.join(".config/herdr-app")))
-        .unwrap_or_else(|| PathBuf::from(".config/herdr-app"))
-}
-
 /// Herdr's own layouts (`installed.json` lists them as `layout:<name>`).
 fn shipped(home: &Path, name: &str) -> bool {
     fs::read_to_string(home.join("installed.json"))
@@ -44,7 +37,9 @@ fn shipped(home: &Path, name: &str) -> bool {
 }
 
 /// Read, change, and replace `path` whole, unless it changed meanwhile (then
-/// read again). `edit` returns whether it changed anything.
+/// read again). `edit` returns whether it changed anything. Written as the
+/// app writes it (two-space indent; CRLF lines where the file had them: the
+/// app on Windows), so taking an edit out again gives the same bytes.
 fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> Result<bool> {
     for _ in 0..5 {
         let before = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
@@ -55,7 +50,12 @@ fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> R
         }
         let name = path.file_name().context("no file name")?.to_string_lossy();
         let tmp = path.with_file_name(format!(".{name}.herdr-nvim.tmp"));
-        fs::write(&tmp, format!("{}\n", serde_json::to_string_pretty(&value)?))?;
+        let mut text = format!("{}\n", serde_json::to_string_pretty(&value)?);
+        // JSON text holds no raw line break but between tokens.
+        if before.windows(2).any(|pair| pair == b"\r\n") {
+            text = text.replace('\n', "\r\n");
+        }
+        fs::write(&tmp, text)?;
         if fs::read(path)? != before {
             let _ = fs::remove_file(&tmp);
             continue;
@@ -266,10 +266,68 @@ fn uninstall_layouts(home: &Path) -> Result<()> {
     Ok(())
 }
 
-fn keys_file(args: &[String]) -> Result<Value> {
-    let path = cli::flag(args, "--keys")?.context("--keys <keys.json> is required")?;
-    serde_json::from_str(&fs::read_to_string(path)?)
-        .with_context(|| format!("{path}: invalid JSON"))
+/// herdr-nvim's keys, built in, so an uninstall needs no source tree.
+const KEYS: &str = include_str!("../../herdr-app/keys.json");
+
+/// herdr-nvim's keys for each OS (`herdr-app/keys.json`: `{"macos": …,
+/// "linux": …, "windows": …}`), each in the shape of the person's keys.json.
+/// Windows has its own: `cmd-` there is the Windows key, and Win+E is
+/// Explorer's.
+struct OurKeys(Value);
+
+impl OurKeys {
+    /// `--keys <keys.json>` (a checkout's, for tests), else the built-in ones.
+    fn load(args: &[String]) -> Result<Self> {
+        let value = match cli::flag(args, "--keys")? {
+            Some(path) => serde_json::from_str(&fs::read_to_string(path)?)
+                .with_context(|| format!("{path}: invalid JSON"))?,
+            None => serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON"),
+        };
+        Ok(Self(value))
+    }
+
+    fn built_in() -> Self {
+        Self(serde_json::from_str(KEYS).expect("herdr-app/keys.json is JSON"))
+    }
+
+    /// This OS's set.
+    fn here(&self) -> &Value {
+        &self.0[std::env::consts::OS]
+    }
+
+    /// What an older install on this OS bound that this one doesn't: on
+    /// Windows the `cmd-*` set (the Git Bash era merged the macOS keys
+    /// there). Taken out where it still has our action. Elsewhere nothing:
+    /// no install there ever wrote another set, so a binding of our action
+    /// to another key is the person's own.
+    fn left_by_older_installs(&self) -> Vec<&Value> {
+        if cfg!(windows) {
+            vec![&self.0["macos"]]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn every(&self) -> impl Iterator<Item = &Value> {
+        self.0.as_object().into_iter().flatten().map(|(_, set)| set)
+    }
+}
+
+/// The key this OS's set binds to `action`, for messages ("press …").
+pub(crate) fn key_for(action: &str) -> String {
+    OurKeys::built_in()
+        .here()
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, bindings)| bindings.as_object().into_iter().flatten())
+        .find(|(_, bound)| bound.as_str() == Some(action))
+        .map_or_else(|| action.to_owned(), |(key, _)| key.clone())
+}
+
+/// The key that opens Files with nvim (`cmd-e`, `alt-e` on Windows).
+pub(crate) fn files_key() -> String {
+    key_for("mod.open:herdr-nvim")
 }
 
 /// `--panel-width N` (logical px), else herdr-nvim's default.
@@ -283,10 +341,34 @@ fn panel_width(args: &[String]) -> Result<u32> {
     }
 }
 
+/// Takes out herdr-nvim's keys (every OS's set) and its edits to every
+/// personal layout. The app's uninstall runs it in-process.
+pub(crate) fn uninstall_keys_and_layouts(home: &Path) -> Result<()> {
+    uninstall(home, &OurKeys::built_in())
+}
+
+fn uninstall(home: &Path, ours: &OurKeys) -> Result<()> {
+    let keys = home.join("keys.json");
+    if keys.exists() {
+        let mut removed = Vec::new();
+        edit_json(&keys, &mut |value| {
+            removed = drop_retired(value);
+            for set in ours.every() {
+                removed.extend(unmerge_keys(value, set));
+            }
+            Ok(!removed.is_empty())
+        })?;
+        removed
+            .iter()
+            .for_each(|line| println!("keys: removed {line}"));
+    }
+    uninstall_layouts(home)
+}
+
 pub fn setup_cmd() -> Result<()> {
-    let args: Vec<String> = env::args().skip(2).collect();
-    let home = home();
-    let ours = keys_file(&args)?;
+    let args: Vec<String> = crate::argv::args().skip(2).collect();
+    let home = super::env::home_from_env();
+    let ours = OurKeys::load(&args)?;
     let keys = home.join("keys.json");
     if !keys.exists() {
         fs::write(&keys, "{}\n")?;
@@ -301,7 +383,10 @@ pub fn setup_cmd() -> Result<()> {
             let (mut report, mut dropped) = ((Vec::new(), Vec::new()), Vec::new());
             edit_json(&keys, &mut |value| {
                 dropped = drop_retired(value);
-                report = merge_keys(value, &ours);
+                for other in ours.left_by_older_installs() {
+                    dropped.extend(unmerge_keys(value, other));
+                }
+                report = merge_keys(value, ours.here());
                 Ok(!report.0.is_empty() || !dropped.is_empty())
             })?;
             dropped
@@ -324,20 +409,9 @@ pub fn setup_cmd() -> Result<()> {
             }
             Ok(())
         }
-        Some("uninstall") => {
-            let mut removed = Vec::new();
-            edit_json(&keys, &mut |value| {
-                removed = drop_retired(value);
-                removed.extend(unmerge_keys(value, &ours));
-                Ok(!removed.is_empty())
-            })?;
-            removed
-                .iter()
-                .for_each(|line| println!("keys: removed {line}"));
-            uninstall_layouts(&home)
-        }
+        Some("uninstall") => uninstall(&home, &ours),
         _ => bail!(
-            "usage: herdr-nvim app-setup check|install|uninstall --keys <keys.json> [--panel-width N]"
+            "usage: herdr-nvim app-setup check|install|uninstall [--keys <keys.json>] [--panel-width N]"
         ),
     }
 }

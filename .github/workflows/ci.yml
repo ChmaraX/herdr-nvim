@@ -43,9 +43,63 @@ jobs:
       # nvim named-pipe daemon health check.
       - name: cargo test
         run: cargo test
+      # Each integration test writes what it ran and saw here.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-windows
+          path: target/test-artifacts/
       # Same Lua test surface the Linux job exercises, on Windows nvim.
       - name: lua tests
         run: nvim --headless --noplugin -u NONE -l tests/run.lua
+
+  # The Herdr app install end to end, without the app: the bootstrap (on
+  # Windows install.ps1 under Windows PowerShell 5.1) into private folders
+  # against a stand-in herdr-app and hc (examples/herdr_app_stub.rs): fresh
+  # install with a Neovim download, arguments through the launcher, upgrade
+  # while held, migration, crash recovery, byte-exact uninstall. Its
+  # transcript and snapshots are uploaded on every run.
+  install-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - run: cargo build --release --bins --example herdr_app_stub
+      # On Windows it also installs with install.ps1 fetched from this commit
+      # by Windows PowerShell 5.1's irm and run from memory (step 1b).
+      - name: install e2e
+        shell: pwsh
+        run: pwsh -NoProfile -File herdr-app/e2e/install-e2e.ps1 -Out e2e-out/${{ runner.os }} -NvimDownload -ScriptUrl $env:SCRIPT_URL
+        env:
+          # Neovim's release lookup (api.github.com) is rate-limited without it.
+          GITHUB_TOKEN: ${{ github.token }}
+          # The commit under test, from the repo it lives in (a fork's PR too).
+          SCRIPT_URL: https://raw.githubusercontent.com/${{ github.event.pull_request.head.repo.full_name || github.repository }}/${{ github.event.pull_request.head.sha || github.sha }}/install.ps1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-e2e-${{ runner.os }}
+          path: e2e-out/
+
+  # The Lua suite on macOS too (copy, case-only rename, roots: APFS ignores
+  # case, unlike the Linux runner's ext4).
+  lua-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - run: nvim --headless --noplugin -u NONE -l tests/run.lua
 
   # The plugin's Windows build hook, run the way `herdr plugin install` runs
   # it: the prebuilt download, the source-build fallback, and the error when

@@ -18,6 +18,15 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     home_dir_from(|var| env::var_os(var))
 }
 
+/// `$XDG_DATA_HOME`, else `~/.local/share`, on Windows too: the app runtime
+/// and the Neovim herdr-nvim installs live where they do on every OS.
+pub(crate) fn data_dir() -> Option<PathBuf> {
+    env::var_os("XDG_DATA_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".local/share")))
+}
+
 /// Pure: [`home_dir`] over an injected env lookup; empty values count as unset.
 fn home_dir_from(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let non_empty = |name: &str| var(name).filter(|value| !value.is_empty());

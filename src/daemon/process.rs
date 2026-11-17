@@ -6,20 +6,24 @@
 //! that is gone: only an inspection that succeeds and finds no such
 //! process says it is.
 
-use std::{collections::HashMap, path::Path, process::Command};
-#[cfg(unix)]
 use std::{
+    collections::HashMap,
+    path::Path,
+    process::Command,
     thread::sleep,
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
 
+use super::registry;
+
 struct Proc {
     ppid: u32,
     rss_bytes: u64,
     uptime_secs: u64,
-    /// The command line, its arguments joined by spaces (empty on Windows).
+    /// The command line, its arguments joined by spaces.
+    #[cfg(unix)]
     args: String,
 }
 
@@ -80,8 +84,8 @@ impl ProcessTable {
 
     /// Every nvim process listening on `socket` (see `is_daemon`), sorted.
     /// Normally one: the daemon. Two when a launcher shim starts the real
-    /// nvim as its child instead of `exec`ing it. Always empty on Windows,
-    /// where command lines are not read.
+    /// nvim as its child instead of `exec`ing it.
+    #[cfg(unix)]
     pub(crate) fn listeners(&self, socket: &Path) -> Result<Vec<u32>> {
         let mut pids = Vec::new();
         // The snapshot's command lines rule out all but a few.
@@ -94,11 +98,13 @@ impl ProcessTable {
         Ok(pids)
     }
 
-    /// The daemon listening on `socket`: its one listener or, when a shim
-    /// and the nvim it started both listen, the innermost one. `None` when
-    /// nothing listens.
-    pub(crate) fn daemon(&self, socket: &Path) -> Result<Option<u32>> {
-        let pids = self.listeners(socket)?;
+    /// The daemon of `key`, listening on its socket: its one listener or,
+    /// when a shim and the nvim it started both listen, the innermost one.
+    /// `None` when nothing listens.
+    #[cfg(unix)]
+    pub(crate) fn daemon(&self, key: &str) -> Result<Option<u32>> {
+        let socket = registry::socket_path_for_key(key);
+        let pids = self.listeners(&socket)?;
         let innermost: Vec<u32> = pids
             .iter()
             .copied()
@@ -118,6 +124,17 @@ impl ProcessTable {
             ),
         }
     }
+
+    /// Windows: the daemon of `key`, by its registry marker (`registry::
+    /// registered`). `None` when that process is gone, or an older marker
+    /// doesn't say which it is.
+    #[cfg(windows)]
+    pub(crate) fn daemon(&self, key: &str) -> Result<Option<u32>> {
+        Ok(match registry::registered(key)? {
+            registry::Registered::Running(pid) => Some(pid),
+            registry::Registered::Gone | registry::Registered::Unknown => None,
+        })
+    }
 }
 
 /// Whether the command line `args` has `--listen <socket>` as a whole
@@ -125,6 +142,7 @@ impl ProcessTable {
 /// a longer socket path sharing the prefix, or a zombie (whose command line
 /// `ps` shows as `[nvim]` or `(nvim)`) never match. Which program it is, is
 /// for `is_nvim` to say.
+#[cfg_attr(windows, allow(dead_code))]
 fn listens_on(args: &str, socket: &Path) -> bool {
     let pair = format!(" --listen {}", socket.to_string_lossy());
     args.match_indices(&pair)
@@ -174,12 +192,6 @@ fn is_daemon(pid: u32, socket: &Path) -> Result<bool> {
     Ok(ps_field(pid, "comm=")?.is_some_and(|name| is_nvim(&name)))
 }
 
-/// Windows: command lines are not read, so no process is known to be one.
-#[cfg(windows)]
-fn is_daemon(_pid: u32, _socket: &Path) -> Result<bool> {
-    Ok(false)
-}
-
 /// Wait up to `timeout` for `pid`, the nvim listening on `socket`, to exit
 /// (or to stop being that process); `true` once it has.
 #[cfg(unix)]
@@ -196,14 +208,13 @@ pub(crate) fn wait_gone(pid: u32, socket: &Path, timeout: Duration) -> Result<bo
     }
 }
 
-/// How long a daemon gets to exit after SIGTERM, and then after SIGKILL.
-#[cfg(unix)]
+/// How long a daemon gets to exit after SIGTERM, and then after SIGKILL
+/// (on Windows, after taskkill).
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
-#[cfg(unix)]
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Kill the nvim daemon listening on `socket` -- one that does not answer
-/// over it, or will not quit -- and return its pid once it is gone. SIGTERM
+/// Kill the nvim daemon of `key` -- one that does not answer over its
+/// socket, or will not quit -- and return its pid once it is gone. SIGTERM
 /// first (with SIGCONT, so a stopped daemon gets to act on it), SIGKILL if
 /// it is still there after `EXIT_TIMEOUT`: a busy-looping nvim needs that,
 /// as it handles SIGTERM on the very loop that is stuck. A daemon that
@@ -217,8 +228,9 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// before any signal. Several unrelated listeners are an error that signals
 /// nothing.
 #[cfg(unix)]
-pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
-    let Some(pid) = ProcessTable::load()?.daemon(socket)? else {
+pub(crate) fn kill_daemon(key: &str) -> Result<Option<u32>> {
+    let socket = &registry::socket_path_for_key(key);
+    let Some(pid) = ProcessTable::load()?.daemon(key)? else {
         return Ok(None);
     };
     let Some(pgid) = ps_field(pid, "pgid=")? else {
@@ -250,13 +262,37 @@ pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
     )
 }
 
+/// Windows: kill the nvim daemon of `key` and every process it started
+/// (its LSP servers and jobs), once its registry marker proves which process
+/// it is (`registry::registered`: same pid, same creation time), and return
+/// that pid once it is gone. `None` when the daemon had already exited. A
+/// daemon an older herdr-nvim started has no such record, so it is not
+/// killed.
 #[cfg(windows)]
-pub(crate) fn kill_daemon(socket: &Path) -> Result<Option<u32>> {
-    bail!(
-        "cannot force-stop an nvim daemon on Windows; \
-         end the nvim.exe listening on {} by hand",
-        socket.display()
-    )
+pub(crate) fn kill_daemon(key: &str) -> Result<Option<u32>> {
+    let pid = match registry::registered(key)? {
+        registry::Registered::Gone => return Ok(None),
+        registry::Registered::Unknown => bail!(
+            "its registry entry doesn't say which process it is (an older herdr-nvim started \
+             it); end the nvim.exe serving {} by hand",
+            registry::socket_path_for_key(key).display()
+        ),
+        registry::Registered::Running(pid) => pid,
+    };
+    // Whether it took is for the wait below to say: taskkill also fails
+    // for a daemon that exits on its own meanwhile.
+    let killed = crate::winproc::terminate_tree(pid);
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while registry::registered(key)? == registry::Registered::Running(pid) {
+        if Instant::now() >= deadline {
+            return Err(match killed {
+                Err(error) => anyhow::Error::new(error),
+                Ok(()) => anyhow::anyhow!("nvim daemon pid {pid} survived taskkill"),
+            });
+        }
+        sleep(EXIT_POLL_INTERVAL);
+    }
+    Ok(Some(pid))
 }
 
 /// Unix: one `ps` call; `rss` is in KiB, `etime` is `[[dd-]hh:]mm:ss`, and
@@ -331,7 +367,6 @@ fn read_processes() -> Result<HashMap<u32, Proc>> {
                     ppid,
                     rss_bytes,
                     uptime_secs,
-                    args: String::new(),
                 },
             ))
         })
