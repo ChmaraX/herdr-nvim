@@ -54,9 +54,10 @@ pub fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Removes a folder (or file) whole, or not at all as far as its name goes:
 /// it is first renamed to a `.trash-*` sibling, which Windows refuses while
-/// an exe inside runs (`Err`, nothing changed; retried a few seconds), then
-/// deleted. A delete that fails halfway leaves only the `.trash-*` name,
-/// which `sweep` takes later.
+/// a file inside is open without delete sharing (`Err`, nothing changed;
+/// retried a few seconds), then deleted. Windows allows the rename while an
+/// exe inside runs (doc/windows-facts.md row 12): then the delete fails
+/// halfway, which leaves only the `.trash-*` name for `sweep` to take later.
 pub fn remove_tree(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path).is_err() {
         return Ok(());
