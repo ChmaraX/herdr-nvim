@@ -1,4 +1,5 @@
-//! The Windows facts probe (doc/windows-facts.md, herdr-app/e2e/WINDOWS-CHECKLIST.md).
+//! The Windows facts probe (doc/windows-facts.md), run against the real app
+//! by herdr-app/e2e/windows-app.ps1 (the windows-real-app workflow).
 //!
 //! `winprobe [--log FILE] [--tag TAG] COMMAND [ARGS...]`
 //!

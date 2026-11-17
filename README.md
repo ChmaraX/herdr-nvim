@@ -43,8 +43,10 @@ https://github.com/user-attachments/assets/328ab066-29f3-4c39-84c4-30b98449e55e
 The Herdr app 0.1.11+ on macOS, Linux or Windows (x64, Windows 10 1803 or
 later), and nvim ≥ 0.10. Without nvim the installer offers to install it
 (Homebrew's, else Neovim's own release into `~/.local/share/herdr-nvim/nvim`,
-no sudo or admin). Windows is checked in CI against a stand-in app; a run
-with the real app is still to come (`herdr-app/e2e/WINDOWS-CHECKLIST.md`).
+no sudo or admin). Windows is checked in CI against a stand-in app, and in
+the real app (0.1.16) on a hosted Windows runner by the hand-run
+`windows-real-app` workflow; what only a person can check is in
+`herdr-app/e2e/WINDOWS-CHECKLIST.md`.
 
 The herdr TUI plugin works on all three; see [TUI.md › Install](TUI.md#install).
 

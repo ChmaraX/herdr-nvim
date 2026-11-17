@@ -11,7 +11,7 @@ the one-line install and drives it. Settled with **app 0.1.16, core (hc)
 `log.jsonl`, `cli.jsonl`, screenshots). What CI can't show is in
 [`herdr-app/e2e/WINDOWS-CHECKLIST.md`](../herdr-app/e2e/WINDOWS-CHECKLIST.md).
 
-"1 · exec-args" means the probe's `exec-args` line (checklist step 1).
+"1 · exec-args" means the probe's `exec-args` line.
 
 | # | Fact | Status | What the code does | Probe |
 |---|---|---|---|---|

@@ -318,7 +318,7 @@ try {
         Add-Note "app frame: $(Test-Path -LiteralPath (Join-Path $Out '02-app-started.png')); desktop: $(Test-Path -LiteralPath (Join-Path $Out '02-app-started-desktop.png'))"
     }
 
-    Invoke-Step 'winprobe' 'the Windows facts probe against the real app (WINDOWS-CHECKLIST.md step 1)' {
+    Invoke-Step 'winprobe' 'the Windows facts probe against the real app (doc/windows-facts.md)' {
         $home_ = $env:HERDR_APP_HOME
         $mod = Join-Path $home_ 'mods\winprobe'
         New-Item -ItemType Directory -Force -Path (Join-Path $mod 'bin') | Out-Null
@@ -500,7 +500,8 @@ try {
 
     Invoke-Step 'preview' 'Preview takes nvim''s place, Source brings nvim back' {
         $md = Join-Path $demo 'preview.md'
-        Write-Utf8 $md "# Preview`n`nRendered in place of nvim.`n`n``````mermaid`nflowchart TD`n  A[Windows] --> B{Preview}`n``````n"
+        $fence = '```'
+        Write-Utf8 $md "# Preview`n`nRendered in place of nvim.`n`n$($fence)mermaid`nflowchart TD`n  A[Windows] --> B{Preview}`n$fence`n"
         $ctx = @{ space = $script:Space; tab = $script:Tab; terminal = $script:Agent; cwd = $demo } | ConvertTo-Json -Compress
         $null = Invoke-Native (Get-Launcher) @('open', '--no-focus', $md, '--ctx', $ctx)
         Assert-That (Wait-Until 15 { (Invoke-NvimExpr $script:Daemon 'expand("%:t")') -eq 'preview.md' }) 'nvim shows preview.md'
@@ -508,6 +509,9 @@ try {
         $null = Invoke-AppCommand "herdr-nvim.swap:$($script:Tab):$([Uri]::EscapeDataString($md))"
         Assert-That (Wait-Until 15 { Get-Preview $script:Tab }) 'Preview shows the preview in the tab'
         Assert-That (Wait-Until 10 { -not (Get-SidebarTerminal $script:Tab) }) 'nvim''s pane gives the preview its place'
+        # The diagram, drawn by herdr-nvim into the preview's cache.
+        $cache = Join-Path $env:HERDR_APP_HOME 'mods\herdr-nvim\.cache'
+        Assert-That (Wait-Until 30 { Get-ChildItem -LiteralPath $cache -Filter 'mermaid-*.png' -ErrorAction SilentlyContinue }) 'the mermaid diagram is drawn into the preview''s cache'
         Start-Sleep -Seconds 3
         Save-Shot '07-preview'
         $null = Invoke-AppCommand "herdr-nvim.swap:$($script:Tab):"

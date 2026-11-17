@@ -1,6 +1,7 @@
 // winprobe: a throwaway mod that asks the real app the Windows facts
 // herdr-nvim's installer and launcher depend on (doc/windows-facts.md).
-// Setup and use: herdr-app/e2e/WINDOWS-CHECKLIST.md, step 1.
+// Installed and run by herdr-app/e2e/windows-app.ps1 (the windows-real-app
+// workflow).
 //
 // Run all (or `herdr-app do winprobe.run`) runs every step below once.
 // Each run writes <appHome>/winprobe-out/<run>/results.json and the probe's
@@ -324,7 +325,7 @@ export default class WinProbe extends View {
   }
 
   // For the app-quit check: a 5-minute daemon whose ticks say whether the
-  // app was running (WINDOWS-CHECKLIST.md, step 1).
+  // app was running (windows-app.ps1 quits the app meanwhile).
   survive(cx) {
     cx.spawn(async (cx) => {
       const r = this.run ?? new Run(new Date().toISOString().replace(/[:.]/g, "-"));
