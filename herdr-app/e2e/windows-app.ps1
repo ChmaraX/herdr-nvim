@@ -372,6 +372,12 @@ try {
         $r = Invoke-OneLineInstall @()
         Assert-That ($r.Code -eq 0 -and $r.Out -match 'herdr-nvim: installed in') 'the install exits 0 and says installed in' "exit $($r.Code)"
         Assert-That (Test-Path -LiteralPath (Get-Launcher)) 'mods\herdr-nvim\bin\herdr-nvim.exe is there'
+        # Mark of the Web (row 21): the one-line install downloads with curl.exe.
+        $runtimeExe = Get-ChildItem -LiteralPath (Join-Path $env:XDG_DATA_HOME 'herdr-nvim\app') -Recurse -Filter 'herdr-nvim.exe' | Select-Object -First 1
+        foreach ($exe in @((Get-Launcher), $runtimeExe.FullName)) {
+            $zone = Get-Item -LiteralPath $exe -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue
+            Assert-That (-not $zone) "$(Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $exe)))\bin\herdr-nvim.exe carries no Mark of the Web"
+        }
         $check = Invoke-App @('check', (Join-Path $home_ 'mods\herdr-nvim'))
         Assert-That ($check.Code -eq 0) 'herdr-app check passes the installed mod'
         $keys = Get-Content -Raw -LiteralPath (Join-Path $home_ 'keys.json') | ConvertFrom-Json -AsHashtable
