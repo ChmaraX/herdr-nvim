@@ -430,6 +430,27 @@ try {
         Save-Shot '06-file-in-nvim'
     }
 
+    Invoke-Step 'picker' 'alt-o''s picker (the core''s terminal.run with env) opens the picked file in nvim' {
+        # What alt-o runs (keys.json).
+        $null = Invoke-AppCommand 'herdr-nvim.pick'
+        $find = {
+            foreach ($t in @(((Invoke-Hc @('ls', '--json') -Quiet).Out | ConvertFrom-Json).terminals)) {
+                if ((Invoke-Hc @('get', $t.address, '--json') -Quiet).Out -match '"picker"') { return $t.address }
+            }
+        }
+        Assert-That (Wait-Until 20 { & $find }) 'the picker opens'
+        $picker = & $find
+        $listed = Wait-Until 20 { (Invoke-Hc @('read', $picker) -Quiet).Out -match 'greet\.js' }
+        $screen = (Invoke-Hc @('read', $picker) -Quiet).Out
+        Write-Utf8 (Join-Path $Out 'picker-screen.txt') $screen
+        Save-Shot '06a-picker'
+        Assert-That $listed 'the picker lists src\greet.js (it got HERDR_NVIM_HANDOFF through terminal.run''s env)' $(($screen -split "`n" | Select-Object -First 5) -join ' / ')
+        $null = Invoke-Hc @('keys', $picker, 'g', 'r', 'e', 'e', 't')
+        Start-Sleep -Milliseconds 500
+        $null = Invoke-Hc @('keys', $picker, 'enter')
+        Assert-That (Wait-Until 15 { (Invoke-NvimExpr $script:Daemon 'expand("%:t")') -eq 'greet.js' }) 'the pick opens greet.js in the tab''s nvim'
+    }
+
     Invoke-Step 'open-cold' 'a file opened in a tab with no nvim yet: the exec returns while the daemon it started runs' {
         $tab = Invoke-AppCommand 'tab.new' @{ name = 'tab B'; space = $script:Space; folder = $demo; argv = @('powershell.exe', '-NoLogo', '-NoProfile') }
         $script:TabB = $tab.tab
