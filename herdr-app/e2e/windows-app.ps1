@@ -45,6 +45,7 @@ $Results = [Collections.Generic.List[object]]::new()
 $Notes = [Collections.Generic.List[string]]::new()
 $script:Stopped = $false
 $script:AddedUserPath = $null
+$script:DaemonB = $null
 $script:App = $null
 # The Neovim this script talks to the daemons with. The app and the core
 # start without it on PATH; the install step adds its folder to the user
@@ -429,6 +430,22 @@ try {
         Save-Shot '06-file-in-nvim'
     }
 
+    Invoke-Step 'open-cold' 'a file opened in a tab with no nvim yet: the exec returns while the daemon it started runs' {
+        $tab = Invoke-AppCommand 'tab.new' @{ name = 'tab B'; space = $script:Space; folder = $demo; argv = @('powershell.exe', '-NoLogo', '-NoProfile') }
+        $script:TabB = $tab.tab
+        $ctx = @{ space = $script:Space; tab = $tab.tab; terminal = $tab.terminal; cwd = $demo } | ConvertTo-Json -Compress
+        # As the app runs it: stdout and stderr are pipes it reads to their end.
+        $started = Get-Date
+        $r = Invoke-Native (Get-Launcher) @('open', '--no-focus', (Join-Path $demo 'src\greet.js'), '--ctx', $ctx) -TimeoutSec 60
+        $took = [int]((Get-Date) - $started).TotalSeconds
+        Assert-That ($r.Code -eq 0) "herdr-nvim open returns, exit 0, in $took s (it must not wait for the daemon it started)" "exit $($r.Code)"
+        Assert-That (Wait-Until 20 { Get-Daemon $tab.tab }) 'tab B''s daemon runs'
+        $script:DaemonB = Get-Daemon $tab.tab
+        Assert-That (Wait-Until 15 { (Invoke-NvimExpr $script:DaemonB 'expand("%:t")') -eq 'greet.js' }) 'tab B''s nvim shows greet.js'
+        Save-Shot '06b-open-cold'
+        $null = Invoke-AppCommand 'tab.select' @{ id = $script:Tab }
+    }
+
     Invoke-Step 'preview' 'Preview takes nvim''s place, Source brings nvim back' {
         $md = Join-Path $demo 'preview.md'
         Write-Utf8 $md "# Preview`n`nRendered in place of nvim.`n`n``````mermaid`nflowchart TD`n  A[Windows] --> B{Preview}`n``````n"
@@ -468,6 +485,12 @@ Add-Type -AssemblyName System.Windows.Forms
 
     Invoke-Step 'uninstall' 'closing the tab ends its daemon; uninstall leaves nothing' {
         $daemonPid = [int]$script:Daemon.pid
+        if ($script:DaemonB) {
+            $pidB = [int]$script:DaemonB.pid
+            $null = Invoke-AppCommand 'tab.close' @{ id = $script:TabB; confirmed = $true }
+            Assert-That (Wait-Until 20 { -not (Get-Process -Id $pidB -ErrorAction SilentlyContinue) }) "closing tab B ends its daemon ($pidB)"
+            Assert-That ([bool](Get-Process -Id $daemonPid -ErrorAction SilentlyContinue)) "tab A's daemon keeps running"
+        }
         $null = Invoke-AppCommand 'space.close' @{ id = $script:Space; confirmed = $true }
         Assert-That (Wait-Until 20 { -not (Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) }) "closing the space ends the tab's daemon ($daemonPid)"
         $r = Invoke-OneLineInstall @('-Uninstall')
