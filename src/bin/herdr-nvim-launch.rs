@@ -9,12 +9,17 @@
 #[path = "../app/launch_record.rs"]
 #[allow(dead_code)]
 mod launch_record;
+#[path = "../stdio_inherit.rs"]
+mod stdio_inherit;
 
 use std::{env, path::PathBuf, process::Command};
 
 use launch_record::{InstallRecord, BIN_FLAG, HOME_FLAG};
 
 fn main() {
+    // The runtime gets duplicates of these; nothing else may (a daemon the
+    // runtime starts would hold the app's exec pipes).
+    stdio_inherit::keep_std_handles_to_self();
     let record = match mod_dir().and_then(|dir| InstallRecord::read_live(&dir)) {
         Ok(record) => record,
         Err(why) => {

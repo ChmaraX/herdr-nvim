@@ -23,6 +23,7 @@ mod pathkey;
 mod picker;
 mod sessions;
 mod state;
+mod stdio_inherit;
 #[cfg(test)]
 mod test_support;
 mod winproc;
@@ -56,6 +57,7 @@ fn deadline(after: std::time::Duration) {
 }
 
 fn main() {
+    stdio_inherit::keep_std_handles_to_self();
     // Prepend common install locations to PATH so `nvim`/`herdr` resolve even
     // when herdr launched us with a minimal PATH (e.g. GUI-started on macOS).
     // Must happen before anything spawns a child or a thread.
