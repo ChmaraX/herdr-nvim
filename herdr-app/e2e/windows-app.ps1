@@ -44,7 +44,13 @@ $AppExe = Join-Path $AppDir 'herdr-app.exe'
 $Results = [Collections.Generic.List[object]]::new()
 $Notes = [Collections.Generic.List[string]]::new()
 $script:Stopped = $false
+$script:AddedUserPath = $null
 $script:App = $null
+# The Neovim this script talks to the daemons with. The app and the core
+# start without it on PATH; the install step adds its folder to the user
+# PATH in the registry, as winget or an installer would, while Herdr runs.
+$Nvim = (Get-Command nvim -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$NvimDir = Split-Path -Parent $Nvim
 
 # --- steps ------------------------------------------------------------------
 
@@ -68,6 +74,7 @@ function Invoke-Step([string]$name, [string]$about, [scriptblock]$body, [switch]
     if ($result -ne 'PASS') {
         Write-Transcript "- $result`: $detail"
         try { Save-Shot "FAIL-$name" } catch { Write-Transcript "no failure screenshot: $_" }
+        try { Get-AppDoc | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $Out "FAIL-$name-doc.json") -Encoding utf8NoBOM } catch { Write-Transcript "no app document: $_" }
         if ($Critical) { $script:Stopped = $true }
     }
     $Results.Add([pscustomobject]@{ Step = $name; Result = $result; Detail = (@($detail) + $Notes | Where-Object { $_ }) -join '; ' })
@@ -162,7 +169,7 @@ function Get-Daemon([string]$tab) {
 }
 
 function Invoke-NvimExpr($daemon, [string]$expr) {
-    $r = Invoke-Native 'nvim' @('--clean', '--headless', '--server', "\\.\pipe\herdr-nvim-$($daemon.key)", '--remote-expr', $expr) -TimeoutSec 10 -Quiet
+    $r = Invoke-Native $Nvim @('--clean', '--headless', '--server', "\\.\pipe\herdr-nvim-$($daemon.key)", '--remote-expr', $expr) -TimeoutSec 10 -Quiet
     if ($r.Code -eq 0) { $r.Out.Trim() } else { $null }
 }
 
@@ -192,8 +199,8 @@ function Find-Node($node, [string]$id) {
     $null
 }
 
-# The file a preview in the tab shows (the app's document, through the core).
-function Get-Preview([string]$tab) {
+# The app's document (spaces, tabs and their layout trees), through the core.
+function Get-AppDoc {
     $hc = Join-Path $CoreDir 'hc.exe'
     $info = [Diagnostics.ProcessStartInfo]::new($hc)
     $info.ArgumentList.Add('connect')
@@ -206,8 +213,12 @@ function Get-Preview([string]$tab) {
     $process.StandardInput.Close()
     $text = $process.StandardOutput.ReadToEndAsync()
     if (-not $process.WaitForExit(10000)) { $process.Kill($true) }
-    $doc = ($text.Result -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.PSObject.Properties['id'] -and $_.id -eq 2 }).result.value
-    $node = @($doc.spaces | ForEach-Object { $_.tabs } | Where-Object { $_.id -eq $tab })[0].root
+    ($text.Result -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.PSObject.Properties['id'] -and $_.id -eq 2 }).result.value
+}
+
+# The file a preview in the tab shows.
+function Get-Preview([string]$tab) {
+    $node = @((Get-AppDoc).spaces | ForEach-Object { $_.tabs } | Where-Object { $_.id -eq $tab })[0].root
     Find-Preview $node
 }
 
@@ -221,6 +232,14 @@ function Find-Preview($node) {
         foreach ($child in $node.children) { $found = Find-Preview $child; if ($found) { return $found } }
     }
     $null
+}
+
+# A folder on the person's PATH in the registry, as an installer adds it
+# (setting a user variable tells running programs the environment changed).
+function Add-UserPath([string]$dir) {
+    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+    [Environment]::SetEnvironmentVariable('Path', "$($user.TrimEnd(';'));$dir", 'User')
+    $script:AddedUserPath = $dir
 }
 
 # install.ps1 from $ScriptUrl, the one-line install's "with options" form,
@@ -244,7 +263,8 @@ try {
         Assert-That (Test-Path -LiteralPath (Join-Path $CoreDir 'hc.exe')) "hc.exe is in $CoreDir"
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
         Add-Note "user PATH has herdr-app: $($userPath -contains $AppDir), herdr-core: $($userPath -contains $CoreDir)"
-        $env:PATH = "$AppDir;$CoreDir;$env:PATH"
+        # The app's and the core's folders, and no Neovim (see $Nvim).
+        $env:PATH = (@($AppDir, $CoreDir) + @($env:PATH -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $NvimDir.TrimEnd('\') })) -join ';'
         $app = Invoke-App @('--version')
         $core = Invoke-Hc @('--version')
         Add-Note "app: $($app.Out.Trim()) - core: $($core.Out.Trim())"
@@ -333,6 +353,9 @@ try {
         $null = Invoke-AppCommand 'overlay.close'
         Copy-Item -LiteralPath $runDir -Destination $probeOut -Recurse
         $null = Invoke-AppCommand 'space.close' @{ id = $made.space; confirmed = $true }
+        # The survive daemon ticks for 5 minutes, from the mod's folder.
+        Get-Process -Name 'winprobe', 'winprobe-outside' -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Seconds 1
         Remove-Item -LiteralPath $mod -Recurse -Force
     }
     if (-not $script:Stopped -and (-not $script:App -or $script:App.HasExited)) { Open-App }
@@ -341,7 +364,10 @@ try {
     Invoke-Step 'install' 'herdr-nvim from this commit: the one-line install, "with options" form' -Critical {
         $home_ = $env:HERDR_APP_HOME
         $script:KeysBefore = Get-ByteContent (Join-Path $home_ 'keys.json')
-        $script:LayoutsBefore = @(Get-ChildItem -LiteralPath (Join-Path $home_ 'layouts') -Filter '*.json' | ForEach-Object Name | Sort-Object)
+        # Neovim installed while Herdr runs: on the user PATH in the
+        # registry (as winget or an installer puts it), not in the app's or
+        # the core's environment, nor in this install's.
+        Add-UserPath $NvimDir
         $r = Invoke-OneLineInstall @()
         Assert-That ($r.Code -eq 0 -and $r.Out -match 'herdr-nvim: installed in') 'the install exits 0 and says installed in' "exit $($r.Code)"
         Assert-That (Test-Path -LiteralPath (Get-Launcher)) 'mods\herdr-nvim\bin\herdr-nvim.exe is there'
@@ -495,6 +521,10 @@ finally {
         Get-Process -Name 'nvim', 'herdr-nvim', 'winprobe' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     catch { Write-Transcript "cleanup: $_" }
+    if ($script:AddedUserPath) {
+        $user = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -ne $script:AddedUserPath }
+        [Environment]::SetEnvironmentVariable('Path', ($user -join ';'), 'User')
+    }
     $failed = @($Results | Where-Object { $_.Result -in 'FAIL', 'ERROR' })
     if ($failed) { $exitCode = 1 }
     $summary = @('| Step | Result | Detail |', '|---|---|---|') + @($Results | ForEach-Object { "| $($_.Step) | $($_.Result) | $(($_.Detail -replace '\|', '/') -replace "`r?`n", ' ') |" })
