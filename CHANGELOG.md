@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0](https://github.com/ChmaraX/herdr-nvim/compare/v1.3.1...v1.4.0) (2026-11-17)
+
+
+### Features
+
+* **app:** draw mermaid diagrams in the markdown preview ([#76](https://github.com/ChmaraX/herdr-nvim/issues/76)) ([06127e9](https://github.com/ChmaraX/herdr-nvim/commit/06127e9312382eb9cb806cb5a2b0e2ef6eb7b63c))
+* **app:** install and run herdr-nvim in the Herdr app on Windows ([#81](https://github.com/ChmaraX/herdr-nvim/issues/81)) ([2905408](https://github.com/ChmaraX/herdr-nvim/commit/2905408e1985db1a319b466ba9873f40e29f5e7a))
+
+
+### Bug Fixes
+
+* **app:** size the markdown preview from the app's font size ([#75](https://github.com/ChmaraX/herdr-nvim/issues/75)) ([50b87a6](https://github.com/ChmaraX/herdr-nvim/commit/50b87a6219c148fd102b239e02071d54b53c385b))
+* **windows:** install the plugin without Visual Studio 2022 ([#79](https://github.com/ChmaraX/herdr-nvim/issues/79)) ([1bc902b](https://github.com/ChmaraX/herdr-nvim/commit/1bc902b6e5f1d7e56fd1480f6ec44d4bfee5e96e))
+
 ## [1.3.1](https://github.com/ChmaraX/herdr-nvim/compare/v1.3.0...v1.3.1) (2026-11-06)
 
 
