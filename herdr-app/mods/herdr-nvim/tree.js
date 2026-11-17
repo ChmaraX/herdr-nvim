@@ -8,11 +8,13 @@ const PER_FOLDER = 500;
 
 // One process per folder: its entries ("d"/"f" + name), then an "x" record,
 // then the names git ignores there (`check-ignore -z`, nothing outside a repo).
-// A link to a folder is a folder, as in the shipped `files` mod; a broken link
-// stays a file.
+// A link to a folder is a folder, as in the shipped `files` mod, followed by an
+// "l" record with its real path (nvim names the files in it by that path); a
+// broken link stays a file.
 const LIST = 'dir=$1; shift; n=0; for p in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
   + 'name=${p##*/}; [ "$name" = .git ] && continue; '
-  + 'if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; set -- "$@" "$name"; '
+  + 'if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; '
+  + '[ "$kind" = d ] && [ -L "$p" ] && printf "l\\0%s\\0" "$(cd "$p" 2>/dev/null && pwd -P)"; set -- "$@" "$name"; '
   + 'n=$((n+1)); [ "$n" -ge ' + PER_FOLDER + ' ] && break; done; test -d "$dir" || exit 1; printf "x\\0x\\0"; '
   + '[ "$#" -gt 0 ] && printf "%s\\0" "$@" | git -C "$dir" check-ignore -z --stdin 2>/dev/null; exit 0';
 
@@ -22,7 +24,10 @@ export async function listFolder(path) {
   if (r.code !== 0) throw new Error(r.stderr.trim() || `Cannot list ${path}`);
   const fields = r.stdout.split("\0"), entries = [];
   let i = 0;
-  for (; i + 1 < fields.length && fields[i] !== "x"; i += 2) entries.push({ name: fields[i + 1], dir: fields[i] === "d" });
+  for (; i + 1 < fields.length && fields[i] !== "x"; i += 2) {
+    if (fields[i] !== "l") entries.push({ name: fields[i + 1], dir: fields[i] === "d" });
+    else if (fields[i + 1]) entries[entries.length - 1].link = fields[i + 1];
+  }
   const ignored = new Set(fields.slice(i + 2).filter(Boolean).map((name) => name.replace(/\/$/, "")));
   entries.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
   return { entries, ignored };
