@@ -456,10 +456,16 @@ try {
         $script:TabB = $tab.tab
         $ctx = @{ space = $script:Space; tab = $tab.tab; terminal = $tab.terminal; cwd = $demo } | ConvertTo-Json -Compress
         # As the app runs it: stdout and stderr are pipes it reads to their end.
+        $before = @(Get-CimInstance Win32_Process | ForEach-Object ProcessId)
         $started = Get-Date
         $r = Invoke-Native (Get-Launcher) @('open', '--no-focus', (Join-Path $demo 'src\greet.js'), '--ctx', $ctx) -TimeoutSec 60
         $took = [int]((Get-Date) - $started).TotalSeconds
-        Assert-That ($r.Code -eq 0) "herdr-nvim open returns, exit 0, in $took s (it must not wait for the daemon it started)" "exit $($r.Code)"
+        # What it started and what still runs (with when each began).
+        Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -notin $before } |
+            ForEach-Object { "$($_.CreationDate.ToString('HH:mm:ss.fff')) pid $($_.ProcessId) parent $($_.ParentProcessId) $($_.Name): $($_.CommandLine)" } |
+            Set-Content -LiteralPath (Join-Path $Out 'open-cold-processes.txt') -Encoding utf8NoBOM
+        Add-Note "open took $took s (started $($started.ToString('HH:mm:ss.fff')))"
+        Assert-That ($r.Code -eq 0 -and $took -le 10) "herdr-nvim open returns, exit 0, in $took s (at most 10: it must not wait for the daemon it started)" "exit $($r.Code)"
         Assert-That (Wait-Until 20 { Get-Daemon $tab.tab }) 'tab B''s daemon runs'
         $script:DaemonB = Get-Daemon $tab.tab
         Assert-That (Wait-Until 15 { (Invoke-NvimExpr $script:DaemonB 'expand("%:t")') -eq 'greet.js' }) 'tab B''s nvim shows greet.js'
