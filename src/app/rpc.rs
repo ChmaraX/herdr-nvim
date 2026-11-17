@@ -18,16 +18,31 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 /// The `hc` binary: `HERDR_NVIM_HC`, else the one beside the app's
-/// `herdr-app` (`HERDR_APP_BIN`; where the app puts `hc` on Windows is
-/// unverified, doc/windows-facts.md), else `hc` on PATH (which includes
-/// `~/.local/bin`, see `path::augment_path`).
+/// `herdr-app` (`HERDR_APP_BIN`; the macOS bundle has it there), else `hc`
+/// on PATH (which includes `~/.local/bin`, see `path::augment_path`). On
+/// Windows the core's installer puts it in its own folder
+/// (`%LOCALAPPDATA%\Programs\herdr-core`) and adds that to the user PATH; an
+/// app started before that PATH change still finds it there.
 pub(crate) fn hc_bin() -> std::ffi::OsString {
     if let Some(hc) = env::var_os("HERDR_NVIM_HC").filter(|hc| !hc.is_empty()) {
         return hc;
     }
+    let exe = format!("hc{}", env::consts::EXE_SUFFIX);
     super::env::app_bin_from_env()
-        .map(|app| app.with_file_name(format!("hc{}", env::consts::EXE_SUFFIX)))
+        .map(|app| app.with_file_name(&exe))
         .filter(|hc| hc.is_file())
+        .or_else(|| {
+            if !cfg!(windows) || !crate::osfs::on_path(&exe).is_empty() {
+                return None;
+            }
+            env::var_os("LOCALAPPDATA")
+                .map(|local| {
+                    std::path::Path::new(&local)
+                        .join("Programs\\herdr-core")
+                        .join(&exe)
+                })
+                .filter(|hc| hc.is_file())
+        })
         .map_or_else(|| "hc".into(), Into::into)
 }
 
