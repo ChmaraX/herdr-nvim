@@ -399,7 +399,10 @@ try {
         Write-Utf8 (Join-Path $demo 'package.json') "{`"name`":`"demo`"}`n"
         $made = Invoke-AppCommand 'space.new' @{ name = 'e2e'; folder = (Join-Path $Root 'work'); tab = 'made' }
         $script:Space = $made.space
-        $tab = Invoke-AppCommand 'tab.new' @{ name = 'tab A'; space = $made.space; folder = $demo; argv = @('powershell.exe', '-NoLogo', '-NoProfile') }
+        # Its terminal is a stand-in agent (the picker lists the files an
+        # agent in the space worked on).
+        $agent = @('powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'dummy-agent.ps1'))
+        $tab = Invoke-AppCommand 'tab.new' @{ name = 'tab A'; space = $made.space; folder = $demo; argv = $agent }
         $script:Tab = $tab.tab
         $script:Agent = $tab.terminal
         $null = Invoke-AppCommand 'tab.close' @{ id = $made.tab; confirmed = $true }
