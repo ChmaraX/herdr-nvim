@@ -259,6 +259,8 @@ try {
             HERDR_NVIM_RUNTIME_DIR = Join-Path $Root 'run'; HERDR_NVIM_STATE_DIR = Join-Path $Root 'nvstate'
         }
         foreach ($name in $vars.Keys) { New-Item -ItemType Directory -Force -Path $vars[$name] | Out-Null; Set-Item "env:$name" $vars[$name] }
+        # Where the spaces start their terminals.
+        New-Item -ItemType Directory -Force -Path (Join-Path $Root 'work') | Out-Null
         $env:HC_SESSION = 'hnwin'
         $env:HERDR_APP_NO_SOUND = '1'; $env:HERDR_TELEMETRY = '0'; $env:DO_NOT_TRACK = '1'
         $env:HERDR_RELEASES_URL = 'http://127.0.0.1:9' # never update the installed app or core
@@ -419,7 +421,7 @@ try {
         Assert-That ((Get-Daemon $script:Tab).pid -eq $script:Daemon.pid) 'the same daemon'
     }
 
-    Invoke-Step 'keys' 'the Windows keys are bound, and ctrl-shift-e works when pressed' {
+    Invoke-Step 'keys' 'alt-e (Files on Windows), pressed, opens the tree and nvim' {
         # Files off: the panel and nvim's pane close together.
         $null = Invoke-AppCommand 'layout.hide' @{ id = 'panel' }
         Assert-That (Wait-Until 15 { (Get-Panel) -eq 'hidden' }) 'Files off hides the panel'
@@ -430,12 +432,12 @@ try {
 if (-not `$shell.AppActivate($($script:App.Id))) { [Console]::Error.WriteLine('AppActivate failed'); exit 3 }
 Start-Sleep -Milliseconds 500
 Add-Type -AssemblyName System.Windows.Forms
-[Windows.Forms.SendKeys]::SendWait('^+e')
+[Windows.Forms.SendKeys]::SendWait('%e')
 "@
         $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-Command', $press) @{ PSModulePath = $null } -TimeoutSec 30
         Add-Note "key press sent: exit $($r.Code)"
-        Assert-That (Wait-Until 15 { (Get-Panel) -eq 'files' -and (Get-SidebarTerminal $script:Tab) }) 'ctrl-shift-e, pressed, opens the tree and nvim'
-        Save-Shot '08-ctrl-shift-e'
+        Assert-That (Wait-Until 15 { (Get-Panel) -eq 'files' -and (Get-SidebarTerminal $script:Tab) }) 'alt-e, pressed, opens the tree and nvim'
+        Save-Shot '08-alt-e'
     }
 
     Invoke-Step 'uninstall' 'closing the tab ends its daemon; uninstall leaves nothing' {
