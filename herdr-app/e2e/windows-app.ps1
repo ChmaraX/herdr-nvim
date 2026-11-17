@@ -211,10 +211,26 @@ function Get-AppDoc {
     $process = [Diagnostics.Process]::Start($info)
     $process.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}')
     $process.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"doc.get","params":{"name":"herdr-app"}}')
-    $process.StandardInput.Close()
-    $text = $process.StandardOutput.ReadToEndAsync()
-    if (-not $process.WaitForExit(10000)) { $process.Kill($true) }
-    ($text.Result -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.PSObject.Properties['id'] -and $_.id -eq 2 }).result.value
+    $process.StandardInput.Flush()
+    # Read until the answer to 2 arrives; only then end the connection (at
+    # the end of its input hc connect may stop before it answers).
+    $deadline = (Get-Date).AddSeconds(10)
+    $doc = $null
+    try {
+        while ($null -eq $doc -and (Get-Date) -lt $deadline) {
+            $line = $process.StandardOutput.ReadLineAsync()
+            if (-not $line.Wait(10000) -or $null -eq $line.Result) { break }
+            if (-not $line.Result.Trim()) { continue }
+            $message = $line.Result | ConvertFrom-Json
+            if ($message.PSObject.Properties['id'] -and $message.id -eq 2) { $doc = $message.result.value }
+        }
+    }
+    finally {
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(5000)) { $process.Kill($true) }
+    }
+    if ($null -eq $doc) { throw 'hc connect gave no app document' }
+    $doc
 }
 
 # The file a preview in the tab shows.
