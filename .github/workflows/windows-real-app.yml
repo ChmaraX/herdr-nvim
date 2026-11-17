@@ -1,0 +1,50 @@
+# herdr-nvim in the real Herdr desktop app on a hosted Windows runner, run by
+# hand (Actions > windows-real-app > Run workflow, or `gh workflow run
+# windows-real-app.yml --ref <branch>`). It installs herdr-core and the app
+# with their official installers, runs the Windows facts probe against the
+# app, installs herdr-nvim from this commit with the one-line install, drives
+# Files, opening a file, Preview and the keys, and uninstalls:
+# herdr-app/e2e/windows-app.ps1. Screenshots, the probe's record, the
+# transcript and the logs are the `windows-real-app` artifact.
+name: windows-real-app
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-app:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - run: cargo build --release --bins --example winprobe
+      # The app bundle a release ships, from this build.
+      - run: herdr-app/bundle.sh target/release/herdr-nvim.exe e2e bundle
+        shell: bash
+      - name: the real app
+        shell: pwsh
+        env:
+          SCRIPT_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1
+        run: >-
+          pwsh -NoProfile -File herdr-app/e2e/windows-app.ps1 -Out real-app-out
+          -Bundle bundle/herdr-nvim-app-e2e.tar.gz -Winprobe target/release/examples/winprobe.exe
+          -ScriptUrl $env:SCRIPT_URL
+      - if: always()
+        name: summary
+        shell: pwsh
+        run: |
+          if (Test-Path real-app-out/summary.md) {
+            "## herdr-nvim in the real Herdr app (Windows)`n" | Add-Content $env:GITHUB_STEP_SUMMARY
+            Get-Content real-app-out/summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-real-app
+          path: real-app-out/
+          if-no-files-found: ignore
