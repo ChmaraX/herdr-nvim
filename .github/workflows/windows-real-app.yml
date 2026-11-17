@@ -9,11 +9,6 @@
 name: windows-real-app
 on:
   workflow_dispatch:
-  # TEMPORARY, while PR #81 builds it: workflow_dispatch can only start a
-  # workflow the default branch has. Removed before merge.
-  push:
-    branches: [feat/windows-app-parity]
-    paths: [.github/workflows/windows-real-app.yml, herdr-app/e2e/windows-app.ps1]
 permissions:
   contents: read
 jobs:

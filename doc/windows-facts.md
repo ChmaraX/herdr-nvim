@@ -7,7 +7,7 @@ on a hosted `windows-latest` runner it installs herdr-core and the app with
 their official installers, runs the probe (`examples/winprobe.rs` and the mod
 in `examples/winprobe-mod/`) against the real app, installs herdr-nvim with
 the one-line install and drives it. Settled with **app 0.1.16, core (hc)
-0.1.21**, run RUN_URL (artifact `windows-real-app`: `winprobe/<run>/results.json`,
+0.1.21**, run https://github.com/ChmaraX/herdr-nvim/actions/runs/44102462170 (artifact `windows-real-app`: `winprobe/<run>/results.json`,
 `log.jsonl`, `cli.jsonl`, screenshots). What CI can't show is in
 [`herdr-app/e2e/WINDOWS-CHECKLIST.md`](../herdr-app/e2e/WINDOWS-CHECKLIST.md).
 
