@@ -52,7 +52,7 @@ export class TreeModel {
     this.loads.set(folder, seq);
     const { entries, ignored } = await listFolder(folder);
     if (this.root !== root || this.loads.get(folder) !== seq) return false;
-    const same = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir);
+    const same = (a, b) => a && a.length === b.length && a.every((e, i) => e.name === b[i].name && e.dir === b[i].dir && e.link === b[i].link);
     const was = this.ignored.get(folder);
     if (same(this.entries.get(folder), entries) && was && was.size === ignored.size && [...ignored].every((n) => was.has(n))) return false;
     this.entries.set(folder, entries);
@@ -150,6 +150,25 @@ export class TreeModel {
   collapseAll() {
     this.open.clear();
     this.version++;
+  }
+
+  // `path` as the tree shows it, or null. nvim names a file by its real path,
+  // so one opened through a link to a folder outside the root (src ->
+  // ../other/src) shows under the listed link whose real path holds it, the
+  // closest such path first; the root is listed first if it isn't yet.
+  async shownPath(path) {
+    const root = this.root, under = (p, dir) => p === dir || p.startsWith(`${dir}/`);
+    if (!root || !path) return null;
+    if (under(path, root)) return path;
+    if (!this.entries.has(root)) await this.load(root).catch(() => {});
+    if (this.root !== root) return null;
+    let best = null;
+    for (const [folder, entries] of this.entries) {
+      for (const { name, link } of entries) {
+        if (link && under(path, link) && link.length > (best?.link.length ?? -1)) best = { link, abs: `${folder}/${name}` };
+      }
+    }
+    return best && `${best.abs}${path.slice(best.link.length)}`;
   }
 
   // Opens every folder on the way to `abs` (inside the root); true if it can

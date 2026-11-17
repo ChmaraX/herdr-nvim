@@ -70,6 +70,43 @@ assert.deepEqual(await listFolder("/r"), {
 app.exec = async () => ({ code: 1, stdout: "", stderr: "" });
 await assert.rejects(listFolder("/gone"), /Cannot list \/gone/);
 
+// The listing script itself, on a real folder: a link to a folder is a
+// folder (it opens like one) that knows its real path, a link to a file or a
+// broken link is a file. nvim names a file by its real path, so a file opened
+// through a link to a folder outside the tab's folder shows under the link.
+{
+  const { execFile } = await import("node:child_process");
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  // Real, as the tree's paths are (/private/var on macOS, not /var).
+  const root = realpathSync(mkdtempSync(joinPath(tmpdir(), "herdr-nvim-list-")));
+  try {
+    mkdirSync(joinPath(root, "other/src/deep"), { recursive: true });
+    writeFileSync(joinPath(root, "other/src/deep/x.ts"), "");
+    writeFileSync(joinPath(root, "other/a.txt"), "");
+    mkdirSync(joinPath(root, "app"));
+    symlinkSync("../other/src", joinPath(root, "app/src"));
+    symlinkSync("../other/a.txt", joinPath(root, "app/a.txt"));
+    symlinkSync("../other/gone", joinPath(root, "app/broken"));
+    app.exec = (cmd, args) => new Promise((done) =>
+      execFile(cmd, args, (err, stdout, stderr) => done({ code: err ? err.code ?? 1 : 0, stdout, stderr })));
+    assert.deepEqual((await listFolder(joinPath(root, "app"))).entries, [
+      { name: "src", dir: true, link: joinPath(root, "other/src") }, { name: "a.txt", dir: false }, { name: "broken", dir: false },
+    ]);
+    const tree = new TreeModel();
+    tree.reset(joinPath(root, "app")); // not listed yet: shownPath lists it
+    const shown = await tree.shownPath(joinPath(root, "other/src/deep/x.ts"));
+    assert.equal(shown, joinPath(root, "app/src/deep/x.ts"));
+    assert.ok(await tree.expandTo(shown));
+    assert.deepEqual(tree.rows().map((r) => r.abs.slice(root.length)),
+      ["/app/src", "/app/src/deep", "/app/src/deep/x.ts", "/app/a.txt", "/app/broken"]);
+    assert.equal(await tree.shownPath(joinPath(root, "app/src/deep/x.ts")), joinPath(root, "app/src/deep/x.ts"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // The tree model: a watch batch lists again only the folders on screen it
 // touches; a build in an ignored folder lists nothing; the same listing
 // again changes no rows.
@@ -98,6 +135,22 @@ assert.deepEqual(listed, []);
 listed = [];
 await model.reloadChanged(["/r"]); // the root itself: anything may have changed
 assert.deepEqual(listed.sort(), ["/r", "/r/src"]);
+
+// A path outside the root shows under the listed link whose real path holds
+// it (the closest such path, when links overlap); a link in a folder not
+// listed yet is unknown.
+listings["/r"] = "d\0all\0l\0/w\0d\0other\0l\0/w/other\0d\0src\0x\0x\0";
+listings["/r/other"] = "d\0vendor\0l\0/v\0x\0x\0";
+const linked = new TreeModel();
+linked.reset("/r");
+await linked.reload();
+assert.equal(await linked.shownPath("/w/other/a.js"), "/r/other/a.js", "not /r/all/other/a.js");
+assert.equal(await linked.shownPath("/w/b.js"), "/r/all/b.js");
+assert.equal(await linked.shownPath("/wx/a.js"), null);
+assert.equal(await linked.shownPath("/v/a.js"), null, "a link in a folder never listed");
+await linked.toggle("/r/other");
+assert.equal(await linked.shownPath("/v/a.js"), "/r/other/vendor/a.js");
+assert.equal(await linked.shownPath("/r/src/a.js"), "/r/src/a.js");
 
 // The Files panel: shown, hidden, or another child (Changes) on top.
 const files = { id: "files", type: "block", content: { mod: "herdr-nvim" } };

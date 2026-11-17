@@ -239,7 +239,9 @@ export class Tree {
     const { file, tab_root } = state?.cwd ? { file: state.file ?? null, tab_root: state.cwd } : await current(this.place);
     if (seq !== this.revealSeq) return;
     if (tab_root && tab_root !== this.tabRoot) this.adopt(this.rootTab, tab_root, cx);
-    if (file && inside(file, this.model.root ?? "")) await this.reveal(file, cx);
+    const shown = await this.model.shownPath(file);
+    if (seq !== this.revealSeq) return;
+    if (shown) await this.reveal(shown, cx);
     else if (arriving) {
       this.selected = 0;
       this.revealing = null;
@@ -249,15 +251,18 @@ export class Tree {
 
   // Selects `path`, opening its folders (after listing everything again,
   // with `reload`); if it isn't listed yet (just created), render selects it
-  // once it is. The latest reveal wins, whichever finishes first.
+  // once it is. The latest reveal wins, whichever finishes first. A path
+  // outside the root shows under a link to its folder (`shownPath`).
   async reveal(path, cx, reload = false) {
-    if (!path || !inside(path, this.model.root ?? "")) return;
+    if (!path || !this.model.root) return;
     const seq = (this.revealSeq = (this.revealSeq ?? 0) + 1);
     if (reload) await this.model.reload().catch(() => {});
-    await this.model.expandTo(path);
+    const shown = await this.model.shownPath(path);
+    if (!shown || seq !== this.revealSeq) return;
+    await this.model.expandTo(shown);
     if (seq !== this.revealSeq) return;
-    this.current = path;
-    this.revealing = path;
+    this.current = shown;
+    this.revealing = shown;
     cx.notify();
   }
 
