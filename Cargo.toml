@@ -34,7 +34,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Daemon control: spawning out of a Job Object (daemon), process list and tree kill (winproc).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Threading"] }
 
 # What only the Windows facts probe (examples/winprobe.rs) and the test
 # harness's daemon markers ask. Dev features stay out of the shipped binary.

@@ -8,12 +8,19 @@
 //! directory" because Homebrew (`/opt/homebrew/bin`), `~/.local/bin`, etc. are
 //! not on PATH.
 //!
+//! On Windows the Herdr app's core gives its terminals the PATH stored in the
+//! registry (the machine's and the person's), while a mod's `exec` runs with
+//! the app's own PATH, from when the app started. A Neovim installed since
+//! (winget, scoop, an installer) is on the one and not the other, so the
+//! process that checks for nvim and the pane that runs it disagree. Each
+//! process adds the registry's PATH, read now, after its own.
+//!
 //! This used to be handled by a `herdr/run.sh` wrapper that exported a wider
 //! PATH before exec'ing the binary. The manifest now invokes the binary
 //! directly (so the same command works on Windows, which has no `sh`), so the
 //! binary augments its own PATH instead — once, at the very start of `main`.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -68,13 +75,42 @@ pub(crate) fn augmented_path_dirs(
     combined
 }
 
-/// Prepend common install locations to this process's PATH so bare-name child
-/// spawns (`nvim`, `herdr`) resolve even under a minimal inherited PATH. No-op
-/// on non-Unix platforms, where GUI-launched processes inherit the user PATH
-/// and herdr resolves PATHEXT shims itself.
+/// `existing`, then each of `extra` it doesn't have yet (Windows: compared
+/// without case or a trailing `\`).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn appended_path_dirs(existing: &[PathBuf], extra: &[PathBuf]) -> Vec<PathBuf> {
+    let key = |dir: &PathBuf| {
+        dir.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    let mut combined: Vec<PathBuf> = Vec::new();
+    for dir in existing.iter().chain(extra) {
+        if dir.as_os_str().is_empty() || combined.iter().any(|seen| key(seen) == key(dir)) {
+            continue;
+        }
+        combined.push(dir.clone());
+    }
+    combined
+}
+
+/// Unix: prepend common install locations to this process's PATH so
+/// bare-name child spawns (`nvim`, `herdr`) resolve even under a minimal
+/// inherited PATH. Windows: append the registry's PATH, as it is now.
 ///
 /// Must run before any threads are spawned (call it first in `main`).
 pub(crate) fn augment_path() {
+    #[cfg(windows)]
+    {
+        let existing: Vec<PathBuf> = env::var_os("PATH")
+            .map(|path| env::split_paths(&path).collect())
+            .unwrap_or_default();
+        let dirs = appended_path_dirs(&existing, &registry::path_dirs());
+        if let Ok(joined) = env::join_paths(dirs) {
+            // Safe: before any thread (see above).
+            env::set_var("PATH", joined);
+        }
+    }
     #[cfg(unix)]
     {
         let existing: Vec<PathBuf> = env::var_os("PATH")
@@ -89,6 +125,76 @@ pub(crate) fn augment_path() {
             // no concurrent access to the process environment.
             env::set_var("PATH", joined);
         }
+    }
+}
+
+/// The PATH Windows stores for new processes: the machine's, then the
+/// person's, `%VARIABLES%` expanded.
+#[cfg(windows)]
+mod registry {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
+
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ,
+        RRF_RT_REG_SZ,
+    };
+
+    pub(super) fn path_dirs() -> Vec<PathBuf> {
+        [
+            (
+                HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            ),
+            (HKEY_CURRENT_USER, "Environment"),
+        ]
+        .into_iter()
+        .filter_map(|(root, key)| read(root, key, "Path"))
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .collect()
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// A string value, `REG_EXPAND_SZ` expanded (RegGetValueW does that).
+    fn read(root: HKEY, key: &str, name: &str) -> Option<OsString> {
+        let (key, name) = (wide(key), wide(name));
+        let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+        let mut bytes: u32 = 0;
+        // SAFETY: a size query with no buffer; both strings end in NUL.
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                key.as_ptr(),
+                name.as_ptr(),
+                flags,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if status != 0 || bytes == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
+        // SAFETY: `buffer` holds `bytes` bytes, as the call is told.
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                key.as_ptr(),
+                name.as_ptr(),
+                flags,
+                ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        Some(OsString::from_wide(&buffer[..len]))
     }
 }
 
@@ -132,6 +238,24 @@ mod tests {
     fn prepends_herdr_bin_dir_first() {
         let dirs = augmented_path_dirs(&[], None, Some(Path::new("/opt/herdr/bin/herdr")));
         assert_eq!(dirs.first(), Some(&p("/opt/herdr/bin")));
+    }
+
+    #[test]
+    fn the_registry_path_comes_after_and_only_once() {
+        let existing = [p(r"C:\Tools\bin"), p(r"C:\Windows\system32")];
+        let extra = [
+            p(r"c:\windows\System32\"),
+            p(r"C:\Program Files\Neovim\bin"),
+            p(""),
+        ];
+        assert_eq!(
+            appended_path_dirs(&existing, &extra),
+            [
+                p(r"C:\Tools\bin"),
+                p(r"C:\Windows\system32"),
+                p(r"C:\Program Files\Neovim\bin")
+            ]
+        );
     }
 
     #[test]
