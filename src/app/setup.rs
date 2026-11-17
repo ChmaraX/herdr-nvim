@@ -318,7 +318,7 @@ pub(crate) fn key_for(action: &str) -> String {
         .map_or_else(|| action.to_owned(), |(key, _)| key.clone())
 }
 
-/// The key that opens Files with nvim (`cmd-e`, `ctrl-shift-e` on Windows).
+/// The key that opens Files with nvim (`cmd-e`, `alt-e` on Windows).
 pub(crate) fn files_key() -> String {
     key_for("mod.open:herdr-nvim")
 }

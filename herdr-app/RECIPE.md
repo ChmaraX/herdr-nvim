@@ -1,8 +1,8 @@
 # herdr-nvim
 
-Neovim beside your agents. The Files button (or `cmd-e`; `ctrl-shift-e` on
+Neovim beside your agents. The Files button (or `cmd-e`; `alt-e` on
 Windows) opens a file tree of the tab's repo with the tab's own nvim next to
-it, and a file you pick opens there. `cmd-o` (`ctrl-shift-y` on Windows)
+it, and a file you pick opens there. `cmd-o` (`alt-o` on Windows)
 lists the files the agent just read and edited, and comments you write in
 nvim go to the agent with their `file:line`.
 
@@ -212,7 +212,7 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
     (`sync.js`) that keeps the panel and each tab's nvim pane together, and
     takes the commands `herdr-nvim.pick`, `.reveal`, `.toggle`,
     `.swap:<tab>:<file>`, `.files`, `.welcome` and `.uninstall`;
-  - an overlay (`mod.open:herdr-nvim`, `cmd-e` / `ctrl-shift-e`): presses the Files button,
+  - an overlay (`mod.open:herdr-nvim`, `cmd-e` / `alt-e`): presses the Files button,
     then closes;
   - props `{preview}`: the preview pane; `{bar}`: the picker's title bar;
     `{card}` and `{dialog}`: the cards and the tree's prompts.
@@ -237,9 +237,10 @@ The tree's keys (LazyVim's Snacks explorer defaults; `?` lists them):
 - **Mod `herdr-nvim-header`**: the app's shipped pane header (`pane-base.js`,
   copied from `mods/pane/main.js` at install) plus the Preview/Source button.
 - **Keys** (`keys.json`, one set per OS, merged into `global` only where
-  free): `mod.open:herdr-nvim` on `cmd-e` (Windows `ctrl-shift-e`),
-  `herdr-nvim.pick` on `cmd-o` (`ctrl-shift-y`), `herdr-nvim.reveal` on
-  `cmd-shift-e` (`ctrl-alt-shift-e`). An install takes out another OS's set
+  free): `mod.open:herdr-nvim` on `cmd-e` (Windows `alt-e`: the app's
+  own Windows keys take `ctrl-shift-e` for a split, and `ctrl-alt` is AltGr),
+  `herdr-nvim.pick` on `cmd-o` (`alt-o`), `herdr-nvim.reveal` on
+  `cmd-shift-e` (`alt-shift-e`). An install takes out another OS's set
   where it still has our action, and keys bound to actions herdr-nvim no
   longer has (`setup.rs` `RETIRED`); uninstall takes out every set.
 

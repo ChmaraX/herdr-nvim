@@ -15,9 +15,9 @@
   },
   "windows": {
     "global": {
-      "ctrl-shift-e": "mod.open:herdr-nvim",
-      "ctrl-shift-y": "herdr-nvim.pick",
-      "ctrl-alt-shift-e": "herdr-nvim.reveal"
+      "alt-e": "mod.open:herdr-nvim",
+      "alt-o": "herdr-nvim.pick",
+      "alt-shift-e": "herdr-nvim.reveal"
     }
   }
 }

@@ -81,9 +81,9 @@ curl -fsSL …/install.sh | sh -s -- --app --uninstall           # back to the s
 
 | Key | Does |
 | --- | --- |
-| `cmd-e` / Files (Windows: `ctrl-shift-e`) | open or close the tree with the tab's nvim |
-| `cmd-shift-e` (Windows: `ctrl-alt-shift-e`) | the keyboard to the tree, on nvim's file |
-| `cmd-o` (Windows: `ctrl-shift-y`) | a file the agent worked on, opened in nvim |
+| `cmd-e` / Files (Windows: `alt-e`) | open or close the tree with the tab's nvim |
+| `cmd-shift-e` (Windows: `alt-shift-e`) | the keyboard to the tree, on nvim's file |
+| `cmd-o` (Windows: `alt-o`) | a file the agent worked on, opened in nvim |
 | `<leader>e` (in nvim or the tree) | show or hide the tree, nvim staying open |
 
 The first nvim pane shows a welcome with these keys, once
