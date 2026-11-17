@@ -37,7 +37,9 @@ fn shipped(home: &Path, name: &str) -> bool {
 }
 
 /// Read, change, and replace `path` whole, unless it changed meanwhile (then
-/// read again). `edit` returns whether it changed anything.
+/// read again). `edit` returns whether it changed anything. Written as the
+/// app writes it (two-space indent; CRLF lines where the file had them: the
+/// app on Windows), so taking an edit out again gives the same bytes.
 fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> Result<bool> {
     for _ in 0..5 {
         let before = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
@@ -48,7 +50,12 @@ fn edit_json(path: &Path, edit: &mut dyn FnMut(&mut Value) -> Result<bool>) -> R
         }
         let name = path.file_name().context("no file name")?.to_string_lossy();
         let tmp = path.with_file_name(format!(".{name}.herdr-nvim.tmp"));
-        fs::write(&tmp, format!("{}\n", serde_json::to_string_pretty(&value)?))?;
+        let mut text = format!("{}\n", serde_json::to_string_pretty(&value)?);
+        // JSON text holds no raw line break but between tokens.
+        if before.windows(2).any(|pair| pair == b"\r\n") {
+            text = text.replace('\n', "\r\n");
+        }
+        fs::write(&tmp, text)?;
         if fs::read(path)? != before {
             let _ = fs::remove_file(&tmp);
             continue;

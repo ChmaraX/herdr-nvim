@@ -128,9 +128,11 @@ function Initialize-PrivateEnv([string]$name) {
     }
     foreach ($path in $vars.Values) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
     $fixtures = Join-Path $PSScriptRoot 'fixtures'
-    # LF whatever the checkout did: the bytes are compared after uninstall.
+    # The line ends the app writes, whatever the checkout did (CRLF on
+    # Windows, app 0.1.16): the bytes are compared after uninstall.
     $keys = (Get-Content -Raw -LiteralPath (Join-Path $fixtures 'keys.json')).Replace("`r`n", "`n")
     $layout = (Get-Content -Raw -LiteralPath (Join-Path $fixtures 'layout-mine.json')).Replace("`r`n", "`n")
+    if ($IsWindows) { $keys = $keys.Replace("`n", "`r`n"); $layout = $layout.Replace("`n", "`r`n") }
     Write-Utf8 (Join-Path $vars.HERDR_APP_HOME 'keys.json') $keys
     Write-Utf8 (Join-Path $vars.HERDR_APP_HOME 'layouts/mine.json') $layout
     Write-Utf8 (Join-Path $vars.HERDR_APP_HOME '.e2e-home') $name
