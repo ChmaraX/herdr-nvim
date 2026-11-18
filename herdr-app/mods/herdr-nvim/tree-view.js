@@ -556,7 +556,7 @@ export class Tree {
     const markColor = mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked;
     // No handlers here: a virtual list's rows take clicks through the list
     // (`clicked`).
-    return h_flex().id(`row-${r.abs}`).h(28).flex_none().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
+    return h_flex().id(`row-${r.abs}`).drag_paths([r.abs]).h(28).flex_none().pl(8 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
       .when(i === this.selected, (el) => el.bg(focusedNow ? t.selected : t.hover))
       .hover((s) => s.bg(t.hover))
       .child(r.dir ? svg(`mods/files/chevron-${this.model.open.has(r.abs) ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
