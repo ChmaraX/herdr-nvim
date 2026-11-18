@@ -93,8 +93,10 @@ and keeps the Neovim it downloaded (it says where).
   starts there and the tree is rooted there.
 - **The tree** gets the keyboard from a click, from the pane keys moving
   right, or from `cmd-shift-e`, which also selects nvim's file. A file opened
-  from it shows in the tab's nvim, which takes the keyboard. It refreshes
-  when files change (a folder watch); git marks at most every 2 s.
+  from it shows in the tab's nvim, which takes the keyboard. A row dragged
+  onto a terminal (an agent's input, a shell) pastes its quoted path there,
+  without Enter, like a file dropped from Finder. It refreshes when files
+  change (a folder watch); git marks at most every 2 s.
 - **The tree key** (`<leader>e` by default) works like LazyVim's explorer:
   in nvim it shows the tree on nvim's file, or hides it with nvim kept open;
   in the tree it hides the tree and goes back to nvim. A key that opens
@@ -307,6 +309,8 @@ copy of it, else clones it once (`<name>-copy`), and switches to it.
 - Files in a tab opens the 300px tree and the tab's nvim, focused; a file
   clicked in the tree opens in it; Files again closes both, and nvim keeps
   running.
+- A file or folder dragged from the tree onto an agent's terminal pastes its
+  quoted path into the input; a click on the same row still opens it.
 - A second tab gets its own nvim; switching tabs shows each tab's own state
   and opens nothing.
 - `cmd-o` over an agent whose log read `package.json`, then edited
