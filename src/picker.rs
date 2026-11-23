@@ -15,8 +15,10 @@
 //! live.
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -62,6 +64,10 @@ pub struct Handoff {
     /// Max entries the default (empty-query) view shows, from
     /// `config.picker.max_files`.
     pub max_files: u32,
+    /// The candidates are not gathered yet: the picker gathers them while it
+    /// already takes typing.
+    #[serde(default)]
+    pub deferred: bool,
 }
 
 /// A candidate that survived filtering, plus how well it matched.
@@ -345,11 +351,29 @@ pub fn picker_cmd() -> Result<()> {
     if fff.is_none() {
         eprintln!("herdr-nvim: fff index failed to initialize; fuzzy fallback tier is empty");
     }
+    let pending = handoff.deferred.then(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gather_from = Handoff {
+            candidates: Vec::new(),
+            chosen: None,
+            workspace: handoff.workspace.clone(),
+            tab: handoff.tab.clone(),
+            focused_pane: handoff.focused_pane.clone(),
+            cwd: handoff.cwd.clone(),
+            max_files: handoff.max_files,
+            deferred: false,
+        };
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::bridge::gather_for(&gather_from));
+        });
+        rx
+    });
+    let max_files = handoff.max_files;
     if let Some(chosen) = run_overlay(
-        &handoff.candidates,
-        &handoff.cwd,
+        &mut handoff,
+        pending,
         home.as_deref(),
-        handoff.max_files,
+        max_files,
         now,
         fff.as_ref(),
     )? {
@@ -388,32 +412,54 @@ impl Drop for TerminalGuard {
 /// Run the interactive overlay. Returns `Some(index)` into `cands` on Enter,
 /// or `None` if the user dismissed it (Esc/Ctrl-c) or there is nothing to pick.
 fn run_overlay(
-    cands: &[Candidate],
-    cwd: &str,
+    handoff: &mut Handoff,
+    mut pending: Option<Receiver<Result<(Vec<Candidate>, PathBuf)>>>,
     home: Option<&str>,
     max_files: u32,
     now: u64,
     fff: Option<&FffIndex>,
 ) -> Result<Option<usize>> {
-    if cands.is_empty() {
+    if pending.is_none() && handoff.candidates.is_empty() {
         return Ok(None);
     }
-    // Display paths depend only on cwd/home, not the query -- compute once.
-    let displays: Vec<String> = cands
-        .iter()
-        .map(|c| display_path(&c.path, cwd, home))
-        .collect();
-    let session_total = cands.iter().filter(|c| c.session).count();
+    let mut cands: Vec<Candidate> = std::mem::take(&mut handoff.candidates);
+    let mut cwd = handoff.cwd.clone();
+    // Display paths depend only on cwd/home, not the query -- compute once
+    // per candidate list.
+    let displays_of = |cands: &[Candidate], cwd: &str| -> Vec<String> {
+        cands
+            .iter()
+            .map(|c| display_path(&c.path, cwd, home))
+            .collect()
+    };
+    let mut displays = displays_of(&cands, &cwd);
+    let mut session_total = cands.iter().filter(|c| c.session).count();
 
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
     let mut cursor = 0usize;
 
     loop {
+        if let Some(rx) = &pending {
+            match rx.try_recv() {
+                Ok(gathered) => {
+                    if let Ok((found, found_cwd)) = gathered {
+                        cands = found;
+                        cwd = found_cwd.to_string_lossy().into_owned();
+                        displays = displays_of(&cands, &cwd);
+                        session_total = cands.iter().filter(|c| c.session).count();
+                    }
+                    pending = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => pending = None,
+            }
+        }
+        let loading = pending.is_some();
         let matches = match (fff, query.is_empty()) {
-            (_, true) => default_view(cands),
-            (Some(index), false) => compute_matches_fff(cands, &displays, &query, index),
-            (None, false) => session_tier_matches(cands, &displays, &query),
+            (_, true) => default_view(&cands),
+            (Some(index), false) => compute_matches_fff(&cands, &displays, &query, index),
+            (None, false) => session_tier_matches(&cands, &displays, &query),
         };
         let shown = visible_count(matches.len(), &query, max_files);
         let visible = &matches[..shown];
@@ -423,17 +469,21 @@ fn run_overlay(
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 20));
         let viewport = viewport_rows(rows);
         render(
-            cands,
+            &cands,
             &displays,
             visible,
             cursor,
             &query,
+            loading,
             session_total,
             now,
             cols,
             rows,
         )?;
 
+        if loading && !event::poll(Duration::from_millis(40)).context("polling terminal")? {
+            continue;
+        }
         let Event::Key(key) = event::read().context("reading terminal event")? else {
             continue;
         };
@@ -444,7 +494,12 @@ fn run_overlay(
         let last = visible.len().saturating_sub(1);
         match key.code {
             KeyCode::Esc => return Ok(None),
-            KeyCode::Enter => return Ok(visible.get(cursor).map(|m| m.index)),
+            KeyCode::Enter => {
+                let chosen = visible.get(cursor).map(|m| m.index);
+                handoff.candidates = std::mem::take(&mut cands);
+                handoff.cwd = cwd;
+                return Ok(chosen);
+            }
             KeyCode::Up => cursor = cursor.saturating_sub(1),
             KeyCode::Down => cursor = (cursor + 1).min(last),
             KeyCode::PageUp => cursor = cursor.saturating_sub(viewport),
@@ -532,6 +587,7 @@ fn render(
     visible: &[FilterMatch],
     cursor: usize,
     query: &str,
+    loading: bool,
     session_total: usize,
     now: u64,
     cols: u16,
@@ -546,7 +602,9 @@ fn render(
 
     // Query line (row 1: one blank top-pad row above it), with a dim count
     // right-aligned.
-    let count = if query.is_empty() {
+    let count = if loading {
+        "loading agent files…".to_string()
+    } else if query.is_empty() {
         format!("{session_total} files")
     } else {
         format!("{} matches", visible.len())
@@ -982,6 +1040,15 @@ mod tests {
     #[test]
     fn visible_count_uncapped_when_query_is_non_empty() {
         assert_eq!(visible_count(50, "main", 20), 50);
+    }
+
+    #[test]
+    fn a_handoff_without_deferred_is_gathered_already() {
+        let handoff: Handoff = serde_json::from_str(
+            r#"{"candidates":[],"chosen":null,"workspace":"w","tab":"t","focused_pane":"p","cwd":"/","max_files":5}"#,
+        )
+        .unwrap();
+        assert!(!handoff.deferred);
     }
 
     #[test]

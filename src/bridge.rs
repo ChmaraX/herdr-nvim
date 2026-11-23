@@ -113,6 +113,23 @@ fn start_pick() -> Result<()> {
     let host = host::ops();
     let ctx = host.ctx()?;
     let config = config::load();
+    if host::choose() == host::Host::App && !env::args().any(|arg| arg == "--list") {
+        let handoff = Handoff {
+            candidates: Vec::new(),
+            chosen: None,
+            workspace: ctx.workspace.clone(),
+            tab: ctx.tab.clone(),
+            focused_pane: ctx.focused_pane.clone(),
+            cwd: ctx.cwd.to_string_lossy().into_owned(),
+            max_files: config.picker.max_files,
+            deferred: true,
+        };
+        let handoff = write_handoff(&handoff)?;
+        return host.show_pick(Pick::Ready {
+            handoff,
+            cwd: ctx.cwd,
+        });
+    }
     let mut herdr = host.herdr();
 
     let target = match target_agent_pane(&mut *herdr, &ctx.workspace, &ctx.tab, &ctx.focused_pane) {
@@ -148,9 +165,31 @@ fn start_pick() -> Result<()> {
         focused_pane: ctx.focused_pane.clone(),
         cwd: cwd.to_string_lossy().into_owned(),
         max_files: config.picker.max_files,
+        deferred: false,
     };
     let handoff = write_handoff(&handoff)?;
     host.show_pick(Pick::Ready { handoff, cwd })
+}
+
+/// The candidates for the tab in `handoff` and the agent's folder, gathered
+/// by the picker itself once its dialog shows.
+pub(crate) fn gather_for(handoff: &Handoff) -> Result<(Vec<Candidate>, PathBuf)> {
+    let config = config::load();
+    let mut herdr = host::ops().herdr();
+    let target = target_agent_pane(
+        &mut *herdr,
+        &handoff.workspace,
+        &handoff.tab,
+        &handoff.focused_pane,
+    )?;
+    let snapshot = herdr.pane_snapshot(&target)?;
+    let lines = effective_scan_lines(config.picker.scan_lines, snapshot.scroll);
+    let text = herdr.read_pane(&target, lines)?;
+    let cwd = snapshot.cwd;
+    let candidates = gather_candidates(snapshot.agent_session.as_ref(), &text, &cwd, &|path| {
+        path.is_file()
+    });
+    Ok((candidates, cwd))
 }
 
 /// Gather candidates from all three layers given the pane's already-fetched
@@ -571,6 +610,7 @@ mod tests {
             focused_pane: "w1:p1".into(),
             cwd: dir.to_string_lossy().into_owned(),
             max_files: 10,
+            deferred: false,
         };
         for (name, contents) in [
             (
