@@ -407,6 +407,7 @@ fn run_overlay(
 
     let _guard = TerminalGuard::enter()?;
     let mut query = String::new();
+    let mut caret = 0usize;
     let mut cursor = 0usize;
 
     loop {
@@ -428,6 +429,7 @@ fn run_overlay(
             visible,
             cursor,
             &query,
+            caret,
             session_total,
             now,
             cols,
@@ -441,6 +443,9 @@ fn run_overlay(
             continue;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let sup = key.modifiers.contains(KeyModifiers::SUPER);
+        let len = query.chars().count();
         let last = visible.len().saturating_sub(1);
         match key.code {
             KeyCode::Esc => return Ok(None),
@@ -451,8 +456,49 @@ fn run_overlay(
             KeyCode::PageDown => cursor = (cursor + viewport).min(last),
             KeyCode::Home => cursor = 0,
             KeyCode::End => cursor = last,
+            KeyCode::Left if sup => caret = 0,
+            KeyCode::Right if sup => caret = len,
+            KeyCode::Left if alt || ctrl => caret = word_left(&query, caret),
+            KeyCode::Right if alt || ctrl => caret = word_right(&query, caret),
+            KeyCode::Char('b') if alt => caret = word_left(&query, caret),
+            KeyCode::Char('f') if alt => caret = word_right(&query, caret),
+            KeyCode::Left => caret = caret.saturating_sub(1),
+            KeyCode::Right => caret = (caret + 1).min(len),
+            KeyCode::Backspace if sup => {
+                remove_chars(&mut query, 0, caret);
+                caret = 0;
+                cursor = 0;
+            }
+            KeyCode::Backspace if alt || ctrl => {
+                let to = word_left(&query, caret);
+                remove_chars(&mut query, to, caret);
+                caret = to;
+                cursor = 0;
+            }
+            KeyCode::Char('w') | KeyCode::Char('h') if ctrl => {
+                let to = word_left(&query, caret);
+                remove_chars(&mut query, to, caret);
+                caret = to;
+                cursor = 0;
+            }
             KeyCode::Backspace => {
-                query.pop();
+                if caret > 0 {
+                    remove_chars(&mut query, caret - 1, caret);
+                    caret -= 1;
+                }
+                cursor = 0;
+            }
+            KeyCode::Delete if alt || ctrl => {
+                let to = word_right(&query, caret);
+                remove_chars(&mut query, caret, to);
+                cursor = 0;
+            }
+            KeyCode::Delete => {
+                remove_chars(&mut query, caret, (caret + 1).min(len));
+                cursor = 0;
+            }
+            KeyCode::Char('k') if ctrl => {
+                remove_chars(&mut query, caret, len);
                 cursor = 0;
             }
             // Ctrl chords: navigation + editing that never reach the query, so
@@ -464,17 +510,63 @@ fn run_overlay(
             KeyCode::Char('a') if ctrl => cursor = 0,
             KeyCode::Char('e') if ctrl => cursor = last,
             KeyCode::Char('u') if ctrl => {
-                query.clear();
+                remove_chars(&mut query, 0, caret);
+                caret = 0;
                 cursor = 0;
             }
-            KeyCode::Char(_) if ctrl => {}
+            KeyCode::Char(_) if ctrl || sup => {}
             KeyCode::Char(c) => {
-                query.push(c);
+                let at = byte_at(&query, caret);
+                query.insert(at, c);
+                caret += 1;
                 cursor = 0;
             }
             _ => {}
         }
     }
+}
+
+/// The byte offset of the `chars`-th character of `s` (its length past the end).
+fn byte_at(s: &str, chars: usize) -> usize {
+    s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
+}
+
+/// Remove the characters `from..to` (character indices) from `s`.
+fn remove_chars(s: &mut String, from: usize, to: usize) {
+    if from < to {
+        let (a, b) = (byte_at(s, from), byte_at(s, to));
+        s.replace_range(a..b, "");
+    }
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Where Alt+Left goes from `caret`: the start of the word before it.
+fn word_left(s: &str, caret: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = caret.min(chars.len());
+    while i > 0 && !is_word(chars[i - 1]) {
+        i -= 1;
+    }
+    while i > 0 && is_word(chars[i - 1]) {
+        i -= 1;
+    }
+    i
+}
+
+/// Where Alt+Right goes from `caret`: the end of the word after it.
+fn word_right(s: &str, caret: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = caret.min(chars.len());
+    while i < chars.len() && !is_word(chars[i]) {
+        i += 1;
+    }
+    while i < chars.len() && is_word(chars[i]) {
+        i += 1;
+    }
+    i
 }
 
 /// Columns of blank inset on the left and right of the content, so it doesn't
@@ -532,6 +624,7 @@ fn render(
     visible: &[FilterMatch],
     cursor: usize,
     query: &str,
+    caret: usize,
     session_total: usize,
     now: u64,
     cols: u16,
@@ -558,7 +651,11 @@ fn render(
         SetForegroundColor(AMBER),
         Print("› "),
         ResetColor,
-        Print(query)
+        Print(&query[..byte_at(query, caret)]),
+        SetAttribute(Attribute::Reverse),
+        Print(query[byte_at(query, caret)..].chars().next().unwrap_or(' ')),
+        SetAttribute(Attribute::Reset),
+        Print(&query[byte_at(query, (caret + 1).min(query.chars().count()))..])
     )
     .context("query line")?;
     let count_col = cols.saturating_sub(count.chars().count() + PAD_X as usize);
@@ -987,6 +1084,30 @@ mod tests {
     #[test]
     fn visible_count_never_exceeds_actual_match_count() {
         assert_eq!(visible_count(5, "", 20), 5);
+    }
+
+    #[test]
+    fn word_left_skips_separators_then_the_word() {
+        assert_eq!(word_left("src/app/host.rs", 15), 13);
+        assert_eq!(word_left("src/app/host.rs", 13), 8);
+        assert_eq!(word_left("src/app/", 8), 4);
+        assert_eq!(word_left("src", 0), 0);
+    }
+
+    #[test]
+    fn word_right_skips_separators_then_the_word() {
+        assert_eq!(word_right("src/app/host.rs", 0), 3);
+        assert_eq!(word_right("src/app/host.rs", 3), 7);
+        assert_eq!(word_right("src", 3), 3);
+    }
+
+    #[test]
+    fn remove_chars_counts_characters_not_bytes() {
+        let mut s = String::from("añb/c");
+        remove_chars(&mut s, 1, 3);
+        assert_eq!(s, "a/c");
+        assert_eq!(byte_at("añb", 2), 3);
+        assert_eq!(byte_at("añb", 9), 4);
     }
 
     #[test]
