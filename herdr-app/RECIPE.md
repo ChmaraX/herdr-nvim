@@ -90,7 +90,10 @@ and keeps the Neovim it downloaded (it says where).
   the panel goes too. Switching the panel to Changes leaves nvim open.
 - **The tab's folder** is the git repo the tab's terminals work in (the
   focused one's folder, else the first one's), else that folder itself. nvim
-  starts there and the tree is rooted there.
+  starts there and the tree is rooted there. A `cd` in the tab's terminal
+  moves it: each time Files shows the tab's nvim (Files opened, or a switch
+  to the tab with Files open), nvim moves to the tab's folder for the tab's
+  terminal last focused, and the tree follows nvim's folder.
 - **The tree** gets the keyboard from a click, from the pane keys moving
   right, or from `cmd-shift-e`, which also selects nvim's file. A file opened
   from it shows in the tab's nvim, which takes the keyboard. It refreshes

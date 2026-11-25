@@ -7,6 +7,7 @@
 --
 -- Every path must be inside `root` (the tab's folder) unless the request says
 -- `outside = true`, which the app sends only after the person confirmed.
+-- `cd` is no file operation: it moves nvim to a new tab's folder.
 local M = {}
 local uv = vim.uv or vim.loop
 local WIN = vim.fn.has("win32") == 1
@@ -319,6 +320,28 @@ function ops.paste(req)
     table.insert(pasted, to)
   end
   return { ok = true, paths = pasted }
+end
+
+-- The tab's folder for `path`: its git repo's top, else `path` itself, as
+-- the app's sidebar works it out (sidebar.rs `nvim_folder`).
+local function tab_folder(path)
+  local ok, r = pcall(function()
+    return vim.system({ "git", "-C", path, "rev-parse", "--show-toplevel" }, { text = true }):wait()
+  end)
+  local top = ok and r.code == 0 and vim.trim(r.stdout or "") or ""
+  return top ~= "" and norm(top) or path
+end
+
+-- {path}: nvim moves to the tab's folder for `path` (where the tab's terminal
+-- is after a `cd`); DirChanged tells the app's tree. `moved`: false when
+-- nvim is there already.
+function ops.cd(req)
+  local path = norm(req.path)
+  if vim.fn.isdirectory(path) ~= 1 then error("not a folder: " .. path) end
+  local folder = tab_folder(path)
+  if norm(vim.fn.getcwd()) == folder then return { ok = true, cwd = folder, moved = false } end
+  vim.cmd.cd(vim.fn.fnameescape(folder))
+  return { ok = true, cwd = norm(vim.fn.getcwd()), moved = true }
 end
 
 function M.run(json)
