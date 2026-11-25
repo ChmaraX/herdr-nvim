@@ -7,6 +7,7 @@
 --
 -- Every path must be inside `root` (the tab's folder) unless the request says
 -- `outside = true`, which the app sends only after the person confirmed.
+-- `cd` is no file operation: it moves nvim to a new tab's folder.
 local M = {}
 local uv = vim.uv or vim.loop
 local WIN = vim.fn.has("win32") == 1
@@ -331,10 +332,9 @@ local function tab_folder(path)
   return top ~= "" and norm(top) or path
 end
 
--- {path}: nvim moves to the tab's folder for `path` (the folder of the tab's
--- shell after a `cd`), which the app's tree follows: its DirChanged rewrites
--- app.lua's state. Not a file operation, so no `root` check. `moved` is
--- false when nvim is there already.
+-- {path}: nvim moves to the tab's folder for `path` (where the tab's terminal
+-- is after a `cd`); DirChanged tells the app's tree. `moved`: false when
+-- nvim is there already.
 function ops.cd(req)
   local path = norm(req.path)
   if vim.fn.isdirectory(path) ~= 1 then error("not a folder: " .. path) end

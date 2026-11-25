@@ -1,45 +1,31 @@
-// The tab's nvim follows the tab's shell when Files shows it.
-//
-// Each tab has its own nvim (label `herdr-nvim.sidebar=<tab>`), started where
-// the tab was the first time Files opened there, then parked while Files is
-// closed. A `cd` in the tab's shell never reaches it, and the tree's root is
-// nvim's folder. So each time Files shows a tab's nvim (Files opened, or a
-// switch to a tab while Files is open), sync.js calls `alignCwd`: nvim `:cd`s
-// to the tab's folder for where the tab's shell is now (its git repo's top,
-// else that folder: fs.lua `ops.cd`) when it is elsewhere; its DirChanged
-// then moves the tree's root (tree-view.js `watchCurrent`).
-//
-// The app's `panes().cwd` does not follow a `cd`, so the shell's folder is
-// asked of herdr-core (`hc get`: its foreground program's folder).
-//
-// A split tab has several terminals, maybe in different folders: the one
-// that counts is the one the person last worked in. sync.js `look()` runs on
-// every focus change and keeps it per tab (`lastShell`).
+// The tab's nvim follows a `cd` in the tab's terminal. It stays parked, in
+// its first folder, while Files is closed, and the tree is rooted at nvim's
+// folder; so each time Files shows it (sync.js `look()`), nvim moves to the
+// tab's folder for where the tab's terminal is now (fs.lua `ops.cd`).
+// The app's `panes().cwd` doesn't follow a `cd`: herdr-core is asked.
 
-import { hc } from "herdr";
-import { nvim } from "./lib.js";
+import { exec, hc } from "herdr";
 import { nvimTerminals, ownPanes } from "./panel.js";
+import { bin } from "./path.js";
 
-// The tab's own terminals (not its nvim, not a mod pane), on this machine.
+// The tab's own terminals: not its nvim, not a mod pane, not remote.
 export const ownTerminals = (tab) => ownPanes(tab).map((p) => p.terminal).filter((t) => t && !t.includes("/"));
 
-// The terminal whose folder the tab's nvim should be in: the tab's own
-// terminal last focused (`last`, if still in the tab), else its first one.
+// The terminal nvim follows: the one last focused (`last`), else the first.
 export function shellOf(tab, last) {
   const own = ownTerminals(tab);
   return own.includes(last) ? last : own[0] ?? null;
 }
 
-// A terminal's folder now: its foreground program's, as herdr-core sees it.
+// Where the terminal's program is now. Not `cwd`: that is where it started.
 async function folderOf(terminal) {
   const r = await hc(["get", terminal]);
-  if (r.code !== 0) return null;
-  const t = JSON.parse(r.stdout);
-  return t.foreground?.cwd || t.cwd || null;
+  return r.code === 0 ? JSON.parse(r.stdout).foreground?.cwd ?? null : null;
 }
 
-// Waits (at most 3 s) for the tab's nvim (Files may have just started it),
-// then moves it to `shell`'s folder. Never starts an nvim of its own.
+// Moves the tab's nvim (waiting up to 3 s for Files to start it; never
+// starting one) to `shell`'s folder. Silent: the person didn't ask for it,
+// so a failure (nvim at a prompt) is not worth a toast.
 export async function alignCwd(at, shell, cx) {
   const path = shell && (await folderOf(shell));
   if (!path) return;
@@ -47,5 +33,6 @@ export async function alignCwd(at, shell, cx) {
     if (Date.now() > end) return;
     await cx.sleep(100);
   }
-  await nvim("fs", [JSON.stringify({ op: "cd", path })], { space: at.space, tab: at.tab, terminal: null, cwd: null }, { quiet: true });
+  const ctx = JSON.stringify({ space: at.space, tab: at.tab, terminal: null, cwd: null });
+  await exec(bin(), ["fs", JSON.stringify({ op: "cd", path }), "--ctx", ctx]);
 }
