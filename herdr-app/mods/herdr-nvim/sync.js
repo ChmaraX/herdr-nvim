@@ -45,6 +45,7 @@ import { appConfig, treeMode } from "./ops.js";
 import { pick } from "./pick.js";
 import { welcome } from "./card.js";
 import { wanted } from "./sync-rule.js";
+import { alignCwd, ownTerminals, shellOf } from "./cwd-sync.js";
 import { ended, filesButton, goToTree, hidePanel, nvimPanes, ownPanes, panelState, parkedNvim, previewPane, showFiles } from "./panel.js";
 
 // How long a preview that went may wait for nvim in its place.
@@ -62,6 +63,7 @@ const EXPECT_MS = 3000;
 export class Sync {
   constructor(cx) {
     this.tabs = new Map(); // tab id -> tabState
+    this.lastShell = new Map(); // tab id -> its own terminal last focused
     // nvim screens already running when this build loaded (an install, an
     // app restart): they may run an older herdr-nvim, so they are closed,
     // not parked, and the next Files makes a new one (`fresh`).
@@ -147,6 +149,8 @@ export class Sync {
     // decision, and the last look stays, so a change made meanwhile (cmd-e's
     // hide) is still read as one when the tab is back.
     if (!p || !f?.tab) return;
+    // The tab's own terminal last focused: nvim follows its folder (cwd-sync.js).
+    if (f.terminal && ownTerminals(f.tab).includes(f.terminal)) this.lastShell.set(f.tab, f.terminal);
     // Our own show or hide, not on screen yet (the app applies it a moment
     // later): nothing to decide until it is, or it's EXPECT_MS old. Read
     // before then, it would look like the person's Files press.
@@ -195,6 +199,25 @@ export class Sync {
     if (want.panel === "show") { this.panelTo(true, () => showFiles(p)); cur.files = true; }
     if (want.panel === "hide") { this.panelTo(false, () => hidePanel(p)); cur.files = false; }
     if (want.nvim) this.act(cur, p, cx);
+    // Files now shows this tab's nvim (opened, or a switch to this tab with
+    // Files open): nvim moves to where the tab's shell is (cwd-sync.js).
+    const local = !spaces().find((s) => s.id === f.space)?.machine;
+    if (local && cur.files && (!prev || prev.tab !== cur.tab || !prev.files)) this.align(cur.at, shellOf(cur.tab, this.lastShell.get(cur.tab)), cx);
+  }
+
+  // One at a time per tab: a look while it runs asks nothing more.
+  align(at, shell, cx) {
+    this.aligning ??= new Set();
+    if (!at?.tab || !shell || this.aligning.has(at.tab)) return;
+    this.aligning.add(at.tab);
+    cx.spawn(async (cx) => {
+      try {
+        await alignCwd(at, shell, cx);
+      } catch {
+      } finally {
+        this.aligning.delete(at.tab);
+      }
+    });
   }
 
   // Shows (true) or hides the panel, and remembers that until the layout
@@ -216,6 +239,7 @@ export class Sync {
   forgetGoneTabs() {
     const known = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
     for (const tab of this.tabs.keys()) if (!known.has(tab)) this.tabs.delete(tab);
+    for (const tab of this.lastShell.keys()) if (!known.has(tab)) this.lastShell.delete(tab);
   }
 
   // `herdr-nvim.swap:<tab>:<file>` (the pane header's Preview, an image

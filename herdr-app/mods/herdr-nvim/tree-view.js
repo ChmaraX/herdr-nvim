@@ -199,12 +199,18 @@ export class Tree {
       // (a batch naming the folder itself may be anything), and it redraws
       // only for a new file or a new FocusGained.
       let seen = await this.nvimState();
+      // nvim may have moved before the watch began (cwd-sync.js right after
+      // Files started it): no change will come for that one.
+      if (this.currentGen === gen && seen.cwd && !same(seen.cwd, this.tabRoot)) this.adopt(where.tab, seen.cwd, cx);
       while (this.currentGen === gen) {
         const changed = await changesIn(dirname(watch));
         if (this.currentGen !== gen) return;
         // Its own file, or the temp file nvim renames over it.
         if (changed.length && !changed.some((p) => key(p).startsWith(key(watch)) || same(p, dirname(watch)))) continue;
         const now = await this.nvimState();
+        // nvim changed folder (`:cd`, or cwd-sync.js after a `cd` in the
+        // tab's shell): the tab's folder moved, so does the root.
+        if (now.cwd && !same(now.cwd, seen.cwd)) this.adopt(where.tab, now.cwd, cx);
         if (now.file && now.file !== seen.file) await this.reveal(now.file, cx);
         // nvim took the keyboard, maybe: draw the focus again (a file
         // outside the root reveals nothing, so this is its own check).

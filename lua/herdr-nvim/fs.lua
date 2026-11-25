@@ -321,6 +321,29 @@ function ops.paste(req)
   return { ok = true, paths = pasted }
 end
 
+-- The tab's folder for `path`: its git repo's top, else `path` itself, as
+-- the app's sidebar works it out (sidebar.rs `nvim_folder`).
+local function tab_folder(path)
+  local ok, r = pcall(function()
+    return vim.system({ "git", "-C", path, "rev-parse", "--show-toplevel" }, { text = true }):wait()
+  end)
+  local top = ok and r.code == 0 and vim.trim(r.stdout or "") or ""
+  return top ~= "" and norm(top) or path
+end
+
+-- {path}: nvim moves to the tab's folder for `path` (the folder of the tab's
+-- shell after a `cd`), which the app's tree follows: its DirChanged rewrites
+-- app.lua's state. Not a file operation, so no `root` check. `moved` is
+-- false when nvim is there already.
+function ops.cd(req)
+  local path = norm(req.path)
+  if vim.fn.isdirectory(path) ~= 1 then error("not a folder: " .. path) end
+  local folder = tab_folder(path)
+  if norm(vim.fn.getcwd()) == folder then return { ok = true, cwd = folder, moved = false } end
+  vim.cmd.cd(vim.fn.fnameescape(folder))
+  return { ok = true, cwd = norm(vim.fn.getcwd()), moved = true }
+end
+
 function M.run(json)
   local ok, req = pcall(vim.json.decode, json)
   if not ok or type(req) ~= "table" or not ops[req.op] then

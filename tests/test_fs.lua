@@ -275,3 +275,21 @@ if WIN then
     T.eq(vim.fn.bufnr(root .. "/src/a.txt"), -1)
   end)
 end
+
+T.test("fs: cd moves nvim to the tab's folder, once", function()
+  local root = tmpdir()
+  local before = vim.fn.getcwd()
+  -- Outside a repo: the folder itself.
+  local r = run({ op = "cd", path = root .. "/src" })
+  T.eq(r.ok, true)
+  T.eq(r.moved, true)
+  T.eq(r.cwd, root .. "/src")
+  T.eq(run({ op = "cd", path = root .. "/src/" }).moved, false)
+  T.ok(run({ op = "cd", path = root .. "/src/a.txt" }).error:find("not a folder"))
+  -- In a repo: its top, as the app's sidebar starts nvim there.
+  vim.system({ "git", "init", "-q", root }):wait()
+  r = run({ op = "cd", path = root .. "/src" })
+  T.eq(r.cwd, root)
+  T.eq(r.moved, true)
+  vim.cmd.cd(vim.fn.fnameescape(before))
+end)

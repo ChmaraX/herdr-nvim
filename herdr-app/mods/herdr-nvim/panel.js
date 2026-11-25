@@ -63,7 +63,7 @@ export function hidePanel(p) {
 }
 
 // The tab's live herdr-nvim terminals (nvim's screen in its pane).
-function nvimTerminals(tab) {
+export function nvimTerminals(tab) {
   return terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address);
 }
 
